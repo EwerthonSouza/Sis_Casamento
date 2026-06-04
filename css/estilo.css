@@ -1,0 +1,345 @@
+/* ============================================================
+   1. IMPORTAÇÃO E VARIÁVEIS GLOBAIS
+   ============================================================ */
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+
+:root {
+    /* Tipografia */
+    --bs-font-sans-serif: 'Poppins', system-ui, -apple-system, sans-serif;
+    
+    /* Cores Base e Bootstrap */
+    --bs-primary: #6366f1; 
+    --bs-body-bg: #f1f5f9; /* Unificado com o tom do painel admin */
+    --bs-body-color: #334155; 
+    --bs-border-color: #e2e8f0;
+    
+    /* Cores do Painel / Status */
+    --verde:  #22c55e;
+    --amarel: #f59e0b;
+    --azul:   #3b82f6;
+    
+    /* UI e Bordas */
+    --radius: 16px;
+}
+
+/* ============================================================
+   2. ESTILOS BASE
+   ============================================================ */
+body {
+    font-family: var(--bs-font-sans-serif);
+    background-color: var(--bs-body-bg);
+    color: var(--bs-body-color);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+.transition-all {
+    transition: all 0.3s ease;
+}
+
+/* Customização da Barra de Rolagem (Unificada) */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-track {
+    background: transparent; 
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb {
+    background: #cbd5e1; 
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8; 
+}
+
+/* ============================================================
+   3. ANIMAÇÕES GLOBAIS
+   ============================================================ */
+@keyframes fadeUp {
+    from { opacity: 0; transform: translateY(15px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes toastIn {
+    from { opacity: 0; transform: translateX(24px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
+/* ============================================================
+   4. TOAST SYSTEM (NOTIFICAÇÕES)
+   ============================================================ */
+#toast-wrap {
+    position: fixed; 
+    bottom: 1.5rem; 
+    right: 1.5rem;
+    z-index: 9999; 
+    display: flex; 
+    flex-direction: column; 
+    gap: 0.4rem;
+}
+.toast-item {
+    display: flex; 
+    align-items: center; 
+    gap: 0.7rem;
+    padding: 0.7rem 1.1rem; 
+    border-radius: 12px; 
+    min-width: 230px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+    font-size: 0.86rem; 
+    font-weight: 600; 
+    color: #fff;
+    animation: toastIn 0.25s ease both;
+}
+.toast-item.verde { background: #16a34a; }
+.toast-item.verm  { background: #dc2626; }
+.toast-item.info  { background: #2563eb; }
+.toast-item.warn  { background: #d97706; }
+
+/* ============================================================
+   5. COMPONENTES GLOBAIS (CARDS, BOTÕES, BADGES)
+   ============================================================ */
+/* Cards Glassmorphism */
+.card {
+    animation: fadeUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    border: 1px solid rgba(255, 255, 255, 0.5) !important; 
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    box-shadow: 0 10px 30px -5px rgba(15, 23, 42, 0.05) !important;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+/* Botões Modernos */
+.btn {
+    border-radius: 10px;
+    font-weight: 500;
+    letter-spacing: 0.3px;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.btn-primary {
+    background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+    border: none;
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
+}
+.btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 20px rgba(99, 102, 241, 0.4);
+}
+.btn-sm {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.85rem;
+}
+
+/* Soft Badges */
+.badge {
+    padding: 0.5em 0.85em;
+    font-weight: 600;
+    font-size: 0.75rem;
+    border-radius: 8px;
+    letter-spacing: 0.5px;
+}
+.bg-success { background-color: #dcfce7 !important; color: #166534 !important; }
+.bg-danger { background-color: #fee2e2 !important; color: #991b1b !important; }
+.bg-warning { background-color: #fef9c3 !important; color: #854d0e !important; }
+.bg-info { background-color: #e0f2fe !important; color: #075985 !important; }
+.bg-secondary { background-color: #f1f5f9 !important; color: #475569 !important; }
+.bg-primary { background-color: #e0e7ff !important; color: #3730a3 !important; }
+
+/* ============================================================
+   6. FORMULÁRIOS, MODAIS E TABELAS
+   ============================================================ */
+/* Inputs e Selects */
+.form-control, .form-select {
+    border-radius: 10px;
+    border: 1px solid #cbd5e1;
+    padding: 0.7rem 1rem;
+    font-size: 0.95rem;
+    background-color: #f8fafc;
+    transition: all 0.2s;
+}
+.form-control:focus, .form-select:focus {
+    background-color: #fff;
+    border-color: #818cf8;
+    box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+}
+
+/* Modais Alto Padrão */
+.modal-content {
+    border: none;
+    border-radius: 24px;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.3);
+    overflow: hidden;
+}
+.modal-header { border-bottom: 1px solid #f1f5f9; padding: 1.5rem; }
+.modal-body { padding: 1.5rem; }
+.modal-footer {
+    border-top: 1px solid #f1f5f9;
+    padding: 1.25rem 1.5rem;
+    background-color: #f8fafc;
+}
+
+/* Tabelas Limpas */
+.table { margin-bottom: 0; }
+.table th {
+    background-color: transparent !important;
+    color: #64748b;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border-bottom: 2px solid var(--bs-border-color);
+    padding: 1rem 0.5rem;
+}
+.table td {
+    padding: 1rem 0.5rem;
+    vertical-align: middle;
+    border-bottom: 1px solid #f1f5f9;
+}
+.table tbody tr:hover { background-color: #f8fafc; }
+.table-success {
+    background-color: #f8fafc !important; 
+    opacity: 0.6; 
+}
+
+/* ============================================================
+   7. ACORDEÃO E PAINÉIS EXPANSÍVEIS
+   ============================================================ */
+.accordion-item { border: none; border-bottom: 1px solid #f1f5f9; }
+.accordion-button { font-weight: 600; padding: 1.25rem 1rem; }
+.accordion-button:not(.collapsed) {
+    background-color: transparent;
+    color: var(--bs-primary);
+    box-shadow: none;
+}
+.accordion-button:focus { box-shadow: none; }
+
+/* Animações Premium para Cabeçalho de Acordeão */
+.card-header[data-bs-toggle="collapse"] { transition: background-color 0.3s ease; }
+.card-header[data-bs-toggle="collapse"]:hover { filter: brightness(1.1); }
+.card-header[data-bs-toggle="collapse"] .bi-chevron-expand { transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+.card-header[data-bs-toggle="collapse"]:not(.collapsed) .bi-chevron-expand { transform: rotate(180deg); }
+
+/* ============================================================
+   8. INTERFACES DE ADMINISTRAÇÃO E EVENTOS
+   ============================================================ */
+/* Cabeçalhos e Fundo Gradient */
+.bg-gradient-admin { background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%); color: white; }
+.bg-gradient-evento { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); color: white; }
+.bg-gradient-inspiracoes { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+.header-topo { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border-radius: var(--radius) var(--radius) 0 0; }
+.card-inspiracoes { background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); }
+
+/* Dashboard Tipografia */
+.dashboard-title { letter-spacing: -0.5px; }
+.dashboard-stats { font-size: 0.95rem; opacity: 0.95; }
+.dashboard-icon-bg { font-size: 5.5rem; opacity: 0.25; }
+.section-subtitle { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; }
+.sec-badge { font-size: 0.72rem; letter-spacing: 0.04rem; }
+
+/* Calendário Admin */
+.celula-dia { cursor: pointer; transition: all 0.2s ease; height: 45px; width: 45px; position: relative; }
+.celula-dia:hover { background-color: rgba(0, 0, 0, 0.03); }
+.dia-numero { width: 32px; height: 32px; }
+.indicador-nota {
+    width: 6px; height: 6px;
+    background-color: #ffc107;
+    border-radius: 50%;
+    position: absolute; bottom: 4px; left: 50%;
+    transform: translateX(-50%);
+}
+
+/* ============================================================
+   9. CHECKLIST, TAREFAS E PROGRESSO
+   ============================================================ */
+/* Progresso Redondo */
+.ring-wrap { position: relative; width: 72px; height: 72px; flex-shrink: 0; }
+.ring-wrap svg { transform: rotate(-90deg); }
+.ring-label {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    color: #fff; font-size: 0.78rem; font-weight: 700; line-height: 1.15;
+}
+
+/* Barras de Progresso */
+.barra { height: 5px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
+.barra-fill { height: 100%; background: var(--verde); border-radius: 999px; transition: width 0.4s; }
+.barra-mini-wrap { width: 72px; height: 4px; background: rgba(255,255,255,0.2); border-radius: 999px; overflow: hidden; }
+.barra-mini-fill { height: 100%; background: var(--verde); border-radius: 999px; transition: width 0.4s; }
+
+/* Acordeão de Etapas (Checklist) */
+.etapa-hdr {
+    background: #1e293b; color: #fff; padding: 0.85rem 1.1rem; border-radius: 12px;
+    cursor: pointer; transition: background 0.2s;
+    display: flex; justify-content: space-between; align-items: center; user-select: none;
+}
+.etapa-hdr:hover { background: #253147; }
+.etapa-hdr[aria-expanded="true"] { border-radius: 12px 12px 0 0; }
+.etapa-body { border-radius: 0 0 12px 12px; }
+.barra-etapa-click { cursor: pointer; transition: background-color 0.2s ease; }
+.barra-etapa-click:hover { opacity: 0.9; }
+
+/* Cards de Tarefas */
+.task-card, .tarefa-card {
+    border-radius: 10px;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.tarefa-card {
+    border-left: 4px solid transparent; border-top: none; border-right: none; border-bottom: none;
+}
+.task-card:hover, .tarefa-card:hover { 
+    transform: translateY(-2px); 
+    box-shadow: 0 4px 12px rgba(0,0,0,0.07) !important; 
+}
+.tarefa-card.done { border-color: var(--verde); }
+.tarefa-card.pend { border-color: var(--amarel); }
+.btn-chk { font-size: 1.4rem; line-height: 1; transition: transform 0.2s; }
+.btn-chk:hover { transform: scale(1.2); }
+
+/* Textos e Ações das Tarefas */
+.task-desc-text { white-space: pre-wrap; font-size: 0.95rem; line-height: 1.6; }
+.task-actions { display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; }
+.comment-box { font-size: 0.8rem; border: 1px solid #f1f5f9; }
+
+/* Toggle Descrição (noivos.php) */
+.btn-toggle-desc .text-abrir { display: inline; }
+.btn-toggle-desc .text-fechar { display: none; }
+.btn-toggle-desc:not(.collapsed) .text-abrir { display: none; }
+.btn-toggle-desc:not(.collapsed) .text-fechar { display: inline; }
+
+/* ============================================================
+   10. GESTÃO DE CONVIDADOS E MURAL DE INSPIRAÇÕES
+   ============================================================ */
+/* Listas com Rolagem */
+.scroll-lista-grande { max-height: 380px; overflow-y: auto; }
+.scroll-lista-pequena { max-height: 220px; overflow-y: auto; }
+
+/* Convidados */
+.conv-row {
+    border-left: 4px solid transparent; border-radius: 10px;
+    transition: opacity 0.3s, transform 0.3s;
+}
+.conv-row.conf { border-color: var(--verde); }
+.conv-row.pend { border-color: var(--amarel); }
+.btn-status-convidado { transition: transform 0.2s; }
+.btn-status-convidado:hover { transform: scale(1.05); }
+.convidado-contato { font-size: 0.7rem; line-height: 1.4; }
+
+/* Mural de Inspirações */
+.text-inspiracoes { color: #764ba2 !important; }
+.foto-card {
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    border: 1px solid rgba(0,0,0,0.05) !important;
+}
+.foto-card:hover { transform: translateY(-5px); box-shadow: 0 15px 30px -10px rgba(0,0,0,0.15) !important; }
+.foto-img-container { position: relative; height: 220px; overflow: hidden; background-color: #f8fafc; }
+.foto-img-container img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.5s ease; }
+.foto-card:hover .foto-img-container img { transform: scale(1.05); }
+.btn-fav { transition: transform 0.2s; }
+.btn-fav:hover { transform: scale(1.15); }
+
+/* Fix Sidebar em Telas Grandes */
+@media (min-width: 768px) { 
+    .sidebar-sticky { position: sticky; top: 20px; } 
+}
