@@ -67,7 +67,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <style>
         /* Força o fundo marrom escuro liso e remove qualquer imagem nesta tela */
         body {
-            background-color: #3e2723 !important;
+            background-color: #140c79 !important;
             background-image: none !important;
             background-repeat: no-repeat !important;
             min-height: 100vh;
