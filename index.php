@@ -67,7 +67,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <style>
         /* Força o fundo marrom escuro liso e remove qualquer imagem nesta tela */
         body {
-            background-color: #140c79 !important;
+            background-color: #aa2710 !important;
             background-image: none !important;
             background-repeat: no-repeat !important;
             min-height: 100vh;
@@ -83,7 +83,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="col-md-5 col-lg-4">
             
             <div class="text-center text-white mb-4">
-                <i class="bi bi-calendar-heart-fill text-danger" style="font-size: 3.5rem;"></i>
+                <i class="bi bi-calendar-heart-fill text-danger" style="font-size: 9.5rem;"></i>
                 <h3 class="mt-2 fw-bold">Cerimonial & Assessoria</h3>
                 <p class="opacity-75 small">Painel de Eventos Integrado</p>
             </div>
