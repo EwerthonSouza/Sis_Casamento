@@ -4,22 +4,32 @@
 @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
 
 :root {
-    /* Tipografia */
-    --bs-font-sans-serif: 'Poppins', system-ui, -apple-system, sans-serif;
+    /* Paleta de Cores (Definida por nome/função, não por lugar) */
+    --color-primary: #6366f1;
+    --color-primary-dark: #4f46e5;
+    --color-success: #22c55e;
+    --color-warning: #f59e0b;
+    --color-danger: #dc2626;
     
-    /* Cores Base e Bootstrap */
-    --bs-primary: #6366f1; 
-    --bs-body-bg: #f1f5f9; /* Unificado com o tom do painel admin */
-    --bs-body-color: #334155; 
-    --bs-border-color: #e2e8f0;
+    /* Espaçamentos Padronizados (Escalabilidade) */
+    --space-xs: 0.25rem;
+    --space-sm: 0.5rem;
+    --space-md: 1rem;
+    --space-lg: 1.5rem;
+
+    /* Sombras (Padronização) */
+    --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+
+    /* Bordas */
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 20px;
     
-    /* Cores do Painel / Status */
-    --verde:  #22c55e;
-    --amarel: #f59e0b;
-    --azul:   #3b82f6;
-    
-    /* UI e Bordas */
-    --radius: 16px;
+    /* Transições */
+    --transition-fast: 0.15s ease;
+    --transition-slow: 0.3s ease;
 }
 
 /* ============================================================
@@ -342,4 +352,78 @@ body {
 /* Fix Sidebar em Telas Grandes */
 @media (min-width: 768px) { 
     .sidebar-sticky { position: sticky; top: 20px; } 
+}
+/* ---- BLOCO DE NOTAS ---- */
+.cor-nota-label { cursor: pointer; }
+.cor-nota-label span {
+  display: inline-block;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  border: 2.5px solid transparent;
+  transition: transform .15s, box-shadow .15s;
+}
+.cor-nota-label:hover span           { transform: scale(1.15); }
+.cor-nota-radio:checked + span {
+  transform: scale(1.3);
+  box-shadow: 0 0 0 3px rgba(0,0,0,.18);
+}
+
+.nota-card {
+  transition: box-shadow .2s, transform .2s;
+  position: relative;
+  overflow: hidden;
+}
+.nota-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, rgba(255,255,255,.6), rgba(255,255,255,.1));
+}
+.nota-card:hover {
+  box-shadow: 0 8px 24px rgba(0,0,0,.12) !important;
+  transform: translateY(-2px);
+}
+
+.nota-form-input {
+  border: 0;
+  background: #f8fafc;
+  border-radius: 8px;
+  transition: background .2s, box-shadow .2s;
+}
+.nota-form-input:focus {
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(250,204,21,.35);
+  outline: none;
+}
+
+.btn-notas-sidebar {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  border: 1.5px solid #fcd34d;
+  border-radius: var(--radius);
+  transition: box-shadow .2s, transform .15s;
+}
+.btn-notas-sidebar:hover {
+  box-shadow: 0 6px 18px rgba(253,211,77,.35);
+  transform: translateY(-1px);
+}
+
+.nota-linhas {
+  background-image: repeating-linear-gradient(
+    transparent,
+    transparent 23px,
+    #e9d5a0 24px
+  );
+  background-size: 100% 24px;
+}
+
+#grid-notas .nota-card-wrap {
+  animation: notaEntra .3s ease both;
+}
+@keyframes notaEntra {
+  from { opacity: 0; transform: scale(.94) translateY(8px); }
+  to   { opacity: 1; transform: scale(1)  translateY(0); }
+}
+#modalConfirmar {
+  z-index: 1075 !important;
 }
