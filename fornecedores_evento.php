@@ -1,19 +1,23 @@
 <?php
 session_start();
-
-// 1. VALIDAÇÃO DE ACESSO
-if (!isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'admin') { 
-    header("Location: index.php"); 
-    exit; 
-}
-
 require_once 'conexao.php';
 
-$evento_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
-if (!$evento_id) { 
-    header("Location: painel_admin.php"); 
-    exit; 
+// ============================================================
+// TRAVA DE SEGURANÇA: Admin e Assistente acessam esta página
+// ============================================================
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente'])) {
+    header("Location: index.php");
+    exit;
 }
+
+// Variável para esconder botões de pagamento do assistente (se necessário)
+$is_admin = ($_SESSION['usuario_tipo'] === 'admin');
+
+// Recebe o ID do evento da URL
+$evento_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
+if (!$evento_id) {
+    header("Location: painel_admin.php");
+    exit;
 
 // Carrega os dados do evento
 $stmt = $pdo->prepare("SELECT e.*, c.nome, c.email FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
