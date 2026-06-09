@@ -273,7 +273,7 @@ body{
 
         <div class="login-title">
             <h2>Cerimonial & Assessoria</h2>
-            <p>Teste rick</p>
+            <p>Sistema Integrado de Gestão de Eventos</p>
         </div>
 
     </div>
