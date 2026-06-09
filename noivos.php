@@ -354,18 +354,21 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     .etapa-hdr[aria-expanded="true"] { border-radius: 12px 12px 0 0; }
     .etapa-body { border-radius: 0 0 12px 12px; }
 
-    /* TAREFA CARD */
+    /* TAREFA CARD
+       FIX FLICKER: removido o transform: translateX(2px) que causava o loop de
+       hover/unhover quando o mouse ficava perto da borda esquerda do card.
+       Agora apenas a sombra muda no hover, sem mover o elemento. */
     .tarefa-card {
       border-left: 4px solid transparent; border-radius: 10px;
       border-top: none; border-right: none; border-bottom: none;
-      transition: transform .15s, box-shadow .15s;
+      transition: box-shadow .2s;
     }
-    .tarefa-card:hover { transform: translateX(2px); box-shadow: 0 4px 12px rgba(0,0,0,.07); }
+    .tarefa-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,.09); }
     .tarefa-card.done { border-color: var(--verde); }
     .tarefa-card.pend { border-color: var(--amarel); }
 
     /* BOTÃO CHECK */
-    .btn-chk { font-size: 1.4rem; line-height: 1; transition: transform .2s; }
+    .btn-chk { font-size: 1.4rem; line-height: 1; transition: transform .2s; will-change: transform; }
     .btn-chk:hover { transform: scale(1.2); }
 
     /* CONVIDADO ROW */
@@ -460,6 +463,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       border: 1.5px solid #a5b4fc;
       border-radius: var(--radius);
       transition: box-shadow .2s, transform .15s;
+      will-change: transform;
       display: block;
       width: 100%;
       text-align: left;
@@ -481,6 +485,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 
 <div id="toast-wrap"></div>
 
+<!-- Modal de confirmação de exclusão de convidado -->
 <div class="modal fade" id="modalExcluir" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered modal-sm">
     <div class="modal-content border-0 shadow-lg rounded-4 p-3 text-center">
@@ -494,6 +499,21 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       <div class="d-flex justify-content-center gap-2 mt-3">
         <button class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
         <button id="btnConfExcluir" class="btn btn-danger btn-sm px-4 rounded-pill fw-bold">Apagar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FIX: Modal de Conversa/Histórico movido para FORA do bloco <script> -->
+<div class="modal fade" id="modalConversa" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header bg-light border-0">
+        <h5 class="modal-title fw-bold" id="conversa-titulo">Histórico</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body p-4" id="conversa-corpo" style="max-height: 400px; overflow-y: auto;">
+        <!-- Histórico injetado via JS -->
       </div>
     </div>
   </div>
@@ -588,12 +608,11 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     <i class="bi bi-bell-fill me-2"></i> Novas Notificações
   </div>
   <div class="card-body p-2">
-    <?php foreach ($notificacoes as $n): 
-        // Identifica se é tarefa ou etapa para buscar o histórico
+    <?php foreach ($notificacoes as $n):
         $tipo = !empty($n['etapa_nome']) ? 'etapa' : 'tarefa';
         $id_busca = ($tipo === 'etapa') ? $n['etapa_nome'] : $n['checklist_id'];
     ?>
-    <div class="notificacao-box p-3 mb-2 bg-white rounded-3 border shadow-sm cursor-pointer"
+    <div class="notificacao-box p-3 mb-2 bg-white rounded-3 border shadow-sm"
          onclick="abrirConversa('<?= $tipo ?>', '<?= addslashes($id_busca) ?>', '<?= htmlspecialchars(!empty($n['etapa_nome']) ? 'Etapa: ' . $n['etapa_nome'] : 'Tarefa: ' . $n['tarefa']) ?>')"
          style="cursor:pointer; border-left: 4px solid var(--azul);">
       <div class="d-flex justify-content-between">
@@ -907,6 +926,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 
           </div>
         </div>
+
         <div class="card shadow-sm border-0" style="border-radius: var(--radius);">
           <div class="card-header bg-white border-0 pt-4 pb-0 text-center">
             <h5 class="fw-bold mb-0"><i class="bi bi-people-fill text-primary me-2"></i> Convidados</h5>
@@ -1034,11 +1054,13 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 
           </div>
         </div>
-        </div>
+
+      </div>
     </div>
   </div>
 </div>
 
+<!-- Modais de descrição de tarefas -->
 <?php foreach ($lista_checklist as $t): ?>
   <?php if (!empty($t['descricao'])): ?>
   <div class="modal fade" id="modalDesc_<?= $t['id'] ?>" tabindex="-1" aria-hidden="true">
@@ -1061,10 +1083,11 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
   <?php endif; ?>
 <?php endforeach; ?>
 
+<!-- Modal de Músicas -->
 <div class="modal fade" id="modalMusicas" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
     <div class="modal-content border-0 shadow-lg rounded-4" style="background:#f8fafc;">
-      
+
       <div class="modal-header border-0 px-4 pt-4 pb-2" style="background:transparent;">
         <div class="d-flex align-items-center gap-3">
           <div class="rounded-3 d-flex align-items-center justify-content-center shadow-sm"
@@ -1086,7 +1109,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               <i class="bi bi-plus-circle-fill text-primary fs-6"></i>
               <span class="fw-bold text-dark small text-uppercase" style="letter-spacing:.06em;">Adicionar Sugestão</span>
             </div>
-            
+
             <form id="form-musica">
               <div class="row g-2 mb-2">
                 <div class="col-md-5">
@@ -1206,6 +1229,50 @@ function parseBrl(s) {
 }
 
 /* ============================================================
+   ABRIR CONVERSA / HISTÓRICO (FIX: função estava ausente)
+   ============================================================ */
+function abrirConversa(tipo, id, titulo) {
+  const modalEl = document.getElementById('modalConversa');
+  if (!modalEl) return;
+  document.getElementById('conversa-titulo').textContent = titulo;
+  const corpo = document.getElementById('conversa-corpo');
+  corpo.innerHTML = '<div class="text-center py-4"><span class="spinner-border text-primary"></span></div>';
+  const modal = new bootstrap.Modal(modalEl);
+  modal.show();
+
+  // Monta lista de comentários já no DOM para o tipo/id informado
+  let comentarios = [];
+  if (tipo === 'tarefa') {
+    document.querySelectorAll('.lista-coment-tarefa').forEach(lista => {
+      const form = lista.nextElementSibling;
+      if (form && form.querySelector('[name="check_id"]')?.value == id) {
+        lista.querySelectorAll('div').forEach(d => comentarios.push(d.innerHTML));
+      }
+    });
+  } else {
+    document.querySelectorAll('.lista-coment-etapa').forEach(lista => {
+      const hidden = lista.closest('form')?.querySelector('[name="etapa_nome"]');
+      if (!hidden) {
+        // busca pelo form que tem o etapa_nome correto dentro do mesmo bloco
+        const bloco = lista.closest('.p-3');
+        if (bloco) {
+          const f = bloco.querySelector('input[name="etapa_nome"]');
+          if (f && f.value === id) {
+            lista.querySelectorAll('div').forEach(d => comentarios.push(d.innerHTML));
+          }
+        }
+      }
+    });
+  }
+
+  if (comentarios.length === 0) {
+    corpo.innerHTML = '<p class="text-muted text-center py-4 mb-0">Nenhum comentário ainda.</p>';
+  } else {
+    corpo.innerHTML = comentarios.map(c => `<div class="mb-2">${c}</div>`).join('');
+  }
+}
+
+/* ============================================================
    TOGGLE TAREFA
    ============================================================ */
 document.querySelectorAll('.btn-toggle-tarefa').forEach(btn => {
@@ -1237,7 +1304,7 @@ document.querySelectorAll('.btn-toggle-tarefa').forEach(btn => {
         titulo.classList.toggle('text-dark', !novo);
       }
 
-      const hdr    = document.getElementById(hdrId);
+      const hdr = document.getElementById(hdrId);
       if (hdr) {
         const concEl = collapso.querySelectorAll('.tarefa-card.done').length;
         const pctE   = etaTot > 0 ? Math.round(concEl / etaTot * 100) : 0;
@@ -1328,10 +1395,8 @@ document.querySelectorAll('.form-ajax-tarefa').forEach(form => {
 });
 
 /* ============================================================
-   CONTROLE DE PAGAMENTO DOS FORNECEDORES (NOVO)
+   CONTROLE DE PAGAMENTO DOS FORNECEDORES
    ============================================================ */
-
-// Recalcula totais globais na tela após cada alteração
 function recalcularTotaisGlobais() {
   let totalContrato = 0;
   let totalPago     = 0;
@@ -1358,7 +1423,6 @@ function recalcularTotaisGlobais() {
   if (elPct)   elPct.textContent   = pct + '%';
 }
 
-// Botões salvar pagamento
 document.querySelectorAll('.btn-salvar-pagamento').forEach(btn => {
   btn.addEventListener('click', async () => {
     const fid   = btn.dataset.id;
@@ -1367,10 +1431,8 @@ document.querySelectorAll('.btn-salvar-pagamento').forEach(btn => {
     const total = parseFloat(input.dataset.total || 0);
     let   valor = parseBrl(input.value);
 
-    // Valida: não pode ser negativo
     if (valor < 0) { toast('O valor não pode ser negativo.', 'verm'); return; }
 
-    // Avisa se ultrapassar o valor do contrato
     if (valor > total) {
       toast('Valor maior que o contrato! Ajustado para o total.', 'info');
       valor = total;
@@ -1394,7 +1456,6 @@ document.querySelectorAll('.btn-salvar-pagamento').forEach(btn => {
         const pct    = total > 0 ? Math.round(pago / total * 100) : 0;
         const quit   = rest <= 0;
 
-        // Atualiza barra individual
         const barra  = card.querySelector('.forn-barra-fill');
         const restEl = card.querySelector('.forn-rest-val');
         const badge  = card.querySelector('.forn-pago-badge');
@@ -1412,7 +1473,6 @@ document.querySelectorAll('.btn-salvar-pagamento').forEach(btn => {
           badge.className   = 'forn-pago-badge ms-2 flex-shrink-0 ' + (quit ? 'bg-success text-white' : 'bg-warning text-dark');
         }
 
-        // Atualiza o dataset do input para recálculo correto
         input.value = pago.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
 
         recalcularTotaisGlobais();
@@ -1429,7 +1489,6 @@ document.querySelectorAll('.btn-salvar-pagamento').forEach(btn => {
   });
 });
 
-// Máscara de moeda nos inputs de pagamento
 document.querySelectorAll('.forn-input-pago').forEach(input => {
   input.addEventListener('blur', () => {
     const n = parseBrl(input.value);
@@ -1437,9 +1496,7 @@ document.querySelectorAll('.forn-input-pago').forEach(input => {
       input.value = n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
   });
-  input.addEventListener('focus', () => {
-    input.select();
-  });
+  input.addEventListener('focus', () => { input.select(); });
 });
 
 /* ============================================================
@@ -1620,9 +1677,9 @@ function atualizarContadoresMusicas() {
 function bindBotoesMusica() {
   document.querySelectorAll('.btn-excluir-musica').forEach(btn => {
     btn.onclick = () => {
-      const id = btn.dataset.id;
+      const id   = btn.dataset.id;
       const wrap = btn.closest('.musica-card-wrap');
-      if(confirm('Deseja realmente remover esta sugestão de música?')) {
+      if (confirm('Deseja realmente remover esta sugestão de música?')) {
         ajax({ excluir_musica_noivos: '1', musica_id: id }).then(r => {
           if (r.ok) {
             wrap.style.transition = 'opacity .25s, transform .25s';
@@ -1654,7 +1711,7 @@ document.getElementById('form-musica')?.addEventListener('submit', async (e) => 
   const titulo  = document.getElementById('musica-titulo').value.trim();
   const link    = document.getElementById('musica-link').value.trim();
 
-  const btn = document.getElementById('btn-salvar-musica');
+  const btn  = document.getElementById('btn-salvar-musica');
   const orig = btn.innerHTML;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>...';
   btn.disabled = true;
@@ -1709,49 +1766,6 @@ document.getElementById('form-musica')?.addEventListener('submit', async (e) => 
 });
 
 bindBotoesMusica();
-<!-- Modal de Conversa/Histórico -->
-<div class="modal fade" id="modalConversa" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered modal-lg">
-    <div class="modal-content border-0 shadow-lg rounded-4">
-      <div class="modal-header bg-light border-0">
-        <h5 class="modal-title fw-bold" id="conversa-titulo">Histórico</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-      </div>
-      <div class="modal-body p-4" id="conversa-corpo" style="max-height: 400px; overflow-y: auto;">
-        <!-- Histórico injetado via JS -->
-      </div>
-    </div>
-  </div>
-</div>
 </script>
-// Adicione isto junto aos seus scripts JS
-async function abrirConversa(tipo, id_ou_nome, titulo) {
-    const modal = new bootstrap.Modal(document.getElementById('modalConversa'));
-    document.getElementById('conversa-titulo').textContent = titulo;
-    const corpo = document.getElementById('conversa-corpo');
-    corpo.innerHTML = '<div class="text-center py-4"><span class="spinner-border text-primary"></span></div>';
-    modal.show();
-
-    // Faz a chamada para buscar o histórico
-    // Você pode criar uma rota nova ou usar um dos endpoints existentes
-    // Exemplo genérico:
-    try {
-        const response = await fetch(`buscar_historico.php?tipo=${tipo}&id=${encodeURIComponent(id_ou_nome)}`);
-        const dados = await response.json();
-        
-        let html = '<div class="d-flex flex-column gap-3">';
-        dados.forEach(c => {
-            html += `
-                <div class="p-3 rounded-3 ${c.autor === 'Noivos' ? 'bg-primary text-white align-self-end' : 'bg-light align-self-start border'}">
-                    <small style="font-size: .65rem; opacity: .8;">${c.autor}</small>
-                    <div class="mt-1">${c.comentario}</div>
-                </div>`;
-        });
-        html += '</div>';
-        corpo.innerHTML = html;
-    } catch (e) {
-        corpo.innerHTML = '<p class="text-danger">Erro ao carregar histórico.</p>';
-    }
-}
 </body>
 </html>
