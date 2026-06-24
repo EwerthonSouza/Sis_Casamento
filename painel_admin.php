@@ -1,7 +1,7 @@
 <?php
 session_start();
 
-// Importa a conexão com o banco de dados para criar a variável $pdo
+// Importa a conexão com o banco de dados
 require_once 'conexao.php';
 
 // ============================================================
@@ -12,7 +12,7 @@ if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['
     exit;
 }
 
-// Variável global para facilitar o bloqueio de seções financeiras
+// Variável global para facilitação de regras de acesso do Admin
 $is_admin = ($_SESSION['usuario_tipo'] === 'admin');
 
 // ============================================================
@@ -36,6 +36,35 @@ function validar_csrf(): void {
 $data_hoje = date('Y-m-d');
 
 // ============================================================
+// MIGRAÇÃO AUTOMÁTICA DA TABELA (executa uma vez se necessário)
+// Garante que a tabela suporte múltiplas anotações por dia com horário
+// ============================================================
+try {
+    $cols = $pdo->query("SHOW COLUMNS FROM calendario_anotacoes")->fetchAll(PDO::FETCH_COLUMN);
+    
+    // 1. Adiciona a coluna 'id' como Primary Key (se não existir)
+    if (!in_array('id', $cols)) {
+        try { $pdo->exec("ALTER TABLE calendario_anotacoes DROP PRIMARY KEY"); } catch(Exception $e) {}
+        $pdo->exec("ALTER TABLE calendario_anotacoes ADD COLUMN id INT AUTO_INCREMENT PRIMARY KEY FIRST");
+    }
+
+    // 2. Adiciona a coluna 'hora_nota' (se não existir)
+    if (!in_array('hora_nota', $cols)) {
+        $pdo->exec("ALTER TABLE calendario_anotacoes ADD COLUMN hora_nota TIME NULL AFTER data_nota");
+    }
+
+    // 3. Remove a restrição única por data (se existir)
+    try {
+        $pdo->exec("ALTER TABLE calendario_anotacoes DROP INDEX data_nota");
+    } catch(Exception $e) {
+        // Ignora silenciosamente se o índice já não existir
+    }
+
+} catch (Exception $e) {
+    error_log("[MIGRAÇÃO calendario_anotacoes] " . $e->getMessage());
+}
+
+// ============================================================
 // 1. NAVEGAÇÃO DO CALENDÁRIO
 // ============================================================
 $mes_atual = filter_input(INPUT_GET, 'mes', FILTER_VALIDATE_INT);
@@ -57,183 +86,256 @@ $mes_seguinte = $mes_atual + 1;
 $ano_seguinte = $ano_atual;
 if ($mes_seguinte == 13) { $mes_seguinte = 1; $ano_seguinte++; }
 
-// ============================================================
-// 2. SALVAR ANOTAÇÃO DIÁRIA
-// ============================================================
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['salvar_anotacao'])) {
-    validar_csrf();
 
-    $data_nota = $_POST['data_nota'] ?? '';
-    $anotacao  = trim($_POST['anotacao'] ?? '');
-    $mes_ret   = (int)($_POST['mes'] ?? $mes_atual);
-    $ano_ret   = (int)($_POST['ano'] ?? $ano_atual);
+// ============================================================
+// BLOCO DE PROCESSAMENTO POST (HANDLERS)
+// ============================================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
-    if (!empty($data_nota) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $data_nota)) {
-        if (empty($anotacao)) {
-            $stmt = $pdo->prepare("DELETE FROM calendario_anotacoes WHERE data_nota = ?");
-            $stmt->execute([$data_nota]);
-        } else {
-            $stmt = $pdo->prepare("
-                INSERT INTO calendario_anotacoes (data_nota, anotacao) VALUES (?, ?)
-                ON DUPLICATE KEY UPDATE anotacao = ?
-            ");
-            $stmt->execute([$data_nota, $anotacao, $anotacao]);
+    $is_ajax = isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
+
+    // 2. SALVAR ANOTAÇÃO DIÁRIA (AJUSTADO PARA AJAX)
+    if (isset($_POST['salvar_anotacao'])) {
+        validar_csrf();
+
+        $data_nota  = $_POST['data_nota'] ?? '';
+        $hora_nota  = !empty(trim($_POST['hora_nota'] ?? '')) ? trim($_POST['hora_nota']) : null;
+        $anotacao   = trim($_POST['anotacao'] ?? '');
+        $nota_id    = (int)($_POST['nota_id'] ?? 0); // 0 = nova anotação
+        $mes_ret    = (int)($_POST['mes'] ?? $mes_atual);
+        $ano_ret    = (int)($_POST['ano'] ?? $ano_atual);
+
+        if (!empty($data_nota) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $data_nota)) {
+            if (empty($anotacao)) {
+                // Se a anotação foi apagada (texto vazio), exclui o registro
+                if ($nota_id > 0) {
+                    $stmt = $pdo->prepare("DELETE FROM calendario_anotacoes WHERE id = ?");
+                    $stmt->execute([$nota_id]);
+                    
+                    if ($is_ajax) {
+                        header('Content-Type: application/json');
+                        echo json_encode(['sucesso' => true, 'acao' => 'excluida', 'id' => $nota_id]);
+                        exit;
+                    }
+                    $_SESSION['msg_sucesso'] = "Anotação removida.";
+                }
+            } else {
+                if ($nota_id > 0) {
+                    // Atualiza anotação existente
+                    $stmt = $pdo->prepare("UPDATE calendario_anotacoes SET hora_nota = ?, anotacao = ? WHERE id = ?");
+                    $stmt->execute([$hora_nota, $anotacao, $nota_id]);
+                    $id_final = $nota_id;
+                    $acao = 'atualizada';
+                } else {
+                    // Insere nova anotação para aquela data
+                    $stmt = $pdo->prepare("INSERT INTO calendario_anotacoes (data_nota, hora_nota, anotacao) VALUES (?, ?, ?)");
+                    $stmt->execute([$data_nota, $hora_nota, $anotacao]);
+                    $id_final = $pdo->lastInsertId();
+                    $acao = 'criada';
+                }
+                
+                if ($is_ajax) {
+                    header('Content-Type: application/json');
+                    echo json_encode([
+                        'sucesso' => true,
+                        'acao' => $acao,
+                        'nota' => [
+                            'id' => $id_final,
+                            'data_nota' => $data_nota,
+                            'hora_nota' => $hora_nota,
+                            'anotacao' => $anotacao
+                        ]
+                    ]);
+                    exit;
+                }
+                $_SESSION['msg_sucesso'] = "Anotação guardada com sucesso!";
+            }
+            
+            if (!$is_ajax) {
+                header("Location: painel_admin.php?mes=$mes_ret&ano=$ano_ret");
+                exit;
+            }
         }
-        $_SESSION['msg_sucesso'] = "Anotação guardada com sucesso!";
-        header("Location: painel_admin.php?mes=$mes_ret&ano=$ano_ret");
+    }
+
+    // 2b. EXCLUIR ANOTAÇÃO INDIVIDUAL (AJUSTADO PARA AJAX)
+    if (isset($_POST['excluir_anotacao'])) {
+        validar_csrf();
+        $nota_id = (int)($_POST['nota_id'] ?? 0);
+        $mes_ret = (int)($_POST['mes'] ?? $mes_atual);
+        $ano_ret = (int)($_POST['ano'] ?? $ano_atual);
+
+        if ($nota_id > 0) {
+            $pdo->prepare("DELETE FROM calendario_anotacoes WHERE id = ?")->execute([$nota_id]);
+            
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode(['sucesso' => true]);
+                exit;
+            }
+            
+            $_SESSION['msg_sucesso'] = "Anotação excluída.";
+        }
+        
+        if (!$is_ajax) {
+            header("Location: painel_admin.php?mes=$mes_ret&ano=$ano_ret");
+            exit;
+        }
+    }
+
+    // 3. EXCLUIR EVENTO
+    if (isset($_POST['excluir_evento'])) {
+        validar_csrf();
+        $evento_id = (int)($_POST['evento_id'] ?? 0);
+
+        if ($evento_id > 0) {
+            try {
+                $pdo->beginTransaction();
+                $pdo->prepare("DELETE FROM checklist WHERE evento_id = ?")->execute([$evento_id]);
+                $pdo->prepare("DELETE FROM convidados WHERE evento_id = ?")->execute([$evento_id]);
+                $pdo->prepare("DELETE FROM fornecedores_evento WHERE evento_id = ?")->execute([$evento_id]);
+                $pdo->prepare("DELETE FROM eventos WHERE id = ?")->execute([$evento_id]);
+                $pdo->commit();
+                $_SESSION['msg_sucesso'] = "Evento e todos os seus dados removidos!";
+            } catch (Exception $e) {
+                $pdo->rollBack();
+                error_log("[EXCLUIR EVENTO] " . $e->getMessage());
+                $_SESSION['msg_erro'] = "Erro ao excluir o evento. Tente novamente.";
+            }
+        }
+        header("Location: painel_admin.php");
+        exit;
+    }
+
+    // 4. CADASTRAR NOVO EVENTO
+    if (isset($_POST['cadastrar_evento'])) {
+        validar_csrf();
+
+        $nome_noiva       = trim($_POST['nome_noiva'] ?? '');
+        $nome_noivo       = trim($_POST['nome_noivo'] ?? '');
+        $nome_cliente     = $nome_noiva . ' & ' . $nome_noivo;
+        $email_cliente    = trim($_POST['email_cliente'] ?? '');
+        $cpf_cliente      = preg_replace('/[^0-9]/', '', trim($_POST['cpf_cliente'] ?? '')); 
+        $telefone_cliente = trim($_POST['telefone_cliente'] ?? '');
+        $senha_raw        = trim($_POST['senha_cliente'] ?? '');
+        $data_evento      = $_POST['data_evento'] ?? '';
+        $hora_evento      = !empty($_POST['hora_evento']) ? $_POST['hora_evento'] : null;
+        $modelo_checklist = $_POST['modelo_checklist'] ?? '';
+
+        if (!empty($nome_noiva) && !empty($nome_noivo) && !empty($email_cliente) && !empty($data_evento)) {
+            
+            $senha_raw = empty($senha_raw) ? '123456' : $senha_raw;
+            $senha_hash = password_hash($senha_raw, PASSWORD_BCRYPT);
+
+            $cpf_liberado = true;
+            if (!empty($cpf_cliente)) {
+                $stmt_check = $pdo->prepare("
+                    SELECT e.data_evento 
+                    FROM clientes c
+                    INNER JOIN eventos e ON c.id = e.cliente_id
+                    WHERE c.cpf = ?
+                ");
+                $stmt_check->execute([$cpf_cliente]);
+                foreach ($stmt_check->fetchAll(PDO::FETCH_ASSOC) as $ev) {
+                    if ($ev['data_evento'] >= $data_hoje) {
+                        $cpf_liberado = false;
+                        break;
+                    }
+                }
+            }
+
+            if (!$cpf_liberado) {
+                $_SESSION['msg_erro'] = "Atenção: Já existe um casamento futuro cadastrado para este CPF.";
+            } else {
+                try {
+                    $pdo->beginTransaction();
+
+                    $stmt_cli_check = $pdo->prepare("SELECT id FROM clientes WHERE email = ? LIMIT 1");
+                    $stmt_cli_check->execute([$email_cliente]);
+                    $cliente_existente = $stmt_cli_check->fetch(PDO::FETCH_ASSOC);
+
+                    if ($cliente_existente) {
+                        $cliente_id = $cliente_existente['id'];
+                        $stmt_cli_up = $pdo->prepare("UPDATE clientes SET nome = ?, cpf = ?, telefone = ? WHERE id = ?");
+                        $stmt_cli_up->execute([$nome_cliente, $cpf_cliente, $telefone_cliente, $cliente_id]);
+                    } else {
+                        $stmt_cli = $pdo->prepare("INSERT INTO clientes (nome, email, cpf, telefone, senha) VALUES (?, ?, ?, ?, ?)");
+                        $stmt_cli->execute([$nome_cliente, $email_cliente, $cpf_cliente, $telefone_cliente, $senha_hash]);
+                        $cliente_id = $pdo->lastInsertId();
+                    }
+
+                    $stmt_eve = $pdo->prepare("INSERT INTO eventos (cliente_id, data_evento, hora_evento) VALUES (?, ?, ?)");
+                    $stmt_eve->execute([$cliente_id, $data_evento, $hora_evento]);
+                    $evento_id = $pdo->lastInsertId();
+
+                    if (!empty($modelo_checklist)) {
+                        $stmt_mod = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ?");
+                        $stmt_mod->execute([$modelo_checklist]);
+                        $modelos = $stmt_mod->fetchAll(PDO::FETCH_ASSOC);
+
+                        if (!empty($modelos)) {
+                            $stmt_ins_task = $pdo->prepare("
+                                INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status)
+                                VALUES (?, ?, ?, ?, 'Assessoria', 'pendente')
+                            ");
+                            foreach ($modelos as $m) {
+                                $stmt_ins_task->execute([$evento_id, $m['etapa'], $m['tarefa'], $m['descricao']]);
+                            }
+                        }
+                    }
+
+                    $pdo->commit();
+                    $_SESSION['msg_sucesso'] = "Casal, contrato e cronograma configurados com sucesso!";
+                } catch (Exception $e) {
+                    $pdo->rollBack();
+                    error_log("[CADASTRAR EVENTO] " . $e->getMessage());
+                    $_SESSION['msg_erro'] = "Erro interno ao cadastrar: " . $e->getMessage();
+                }
+            }
+        } else {
+            $_SESSION['msg_erro'] = "Preencha todos os campos obrigatórios.";
+        }
+        header("Location: painel_admin.php");
+        exit;
+    }
+
+    // 5. RESETAR SENHA
+    if (isset($_POST['resetar_senha'])) {
+        validar_csrf();
+        $cliente_id = (int)($_POST['cliente_id'] ?? 0);
+        $nova_senha = trim($_POST['nova_senha'] ?? '');
+
+        if ($cliente_id > 0 && !empty($nova_senha)) {
+            $nova_senha_hash = password_hash($nova_senha, PASSWORD_BCRYPT);
+            $pdo->prepare("UPDATE clientes SET senha = ? WHERE id = ?")->execute([$nova_senha_hash, $cliente_id]);
+            $_SESSION['msg_sucesso'] = "Senha redefinida com sucesso para o cliente!";
+        } else {
+            $_SESSION['msg_erro'] = "A nova senha não pode estar vazia.";
+        }
+        header("Location: painel_admin.php");
+        exit;
+    }
+
+    // 6. EDITAR DATA
+    if (isset($_POST['editar_data'])) {
+        validar_csrf();
+        $evento_id = (int)($_POST['evento_id_data'] ?? 0);
+        $nova_data = $_POST['nova_data'] ?? '';
+        $nova_hora = !empty($_POST['nova_hora']) ? $_POST['nova_hora'] : null;
+
+        if ($evento_id > 0 && !empty($nova_data) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $nova_data)) {
+            $pdo->prepare("UPDATE eventos SET data_evento = ?, hora_evento = ? WHERE id = ?")->execute([$nova_data, $nova_hora, $evento_id]);
+            $_SESSION['msg_sucesso'] = "Data e horário do evento alterados com sucesso!";
+        } else {
+            $_SESSION['msg_erro'] = "A nova data informada é inválida.";
+        }
+        header("Location: painel_admin.php");
         exit;
     }
 }
 
 // ============================================================
-// 3. EXCLUIR EVENTO
-// ============================================================
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['excluir_evento'])) {
-    validar_csrf();
-    $evento_id = (int)($_POST['evento_id'] ?? 0);
-
-    if ($evento_id > 0) {
-        try {
-            $pdo->beginTransaction();
-            $pdo->prepare("DELETE FROM checklist WHERE evento_id = ?")->execute([$evento_id]);
-            $pdo->prepare("DELETE FROM convidados WHERE evento_id = ?")->execute([$evento_id]);
-            $pdo->prepare("DELETE FROM fornecedores_evento WHERE evento_id = ?")->execute([$evento_id]);
-            $pdo->prepare("DELETE FROM eventos WHERE id = ?")->execute([$evento_id]);
-            $pdo->commit();
-            $_SESSION['msg_sucesso'] = "Evento e todos os seus dados removidos!";
-        } catch (Exception $e) {
-            $pdo->rollBack();
-            error_log("[EXCLUIR EVENTO] " . $e->getMessage());
-            $_SESSION['msg_erro'] = "Erro ao excluir o evento. Tente novamente.";
-        }
-    }
-    header("Location: painel_admin.php");
-    exit;
-}
-
-// ============================================================
-// 4. CADASTRAR NOVO EVENTO
-// ============================================================
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cadastrar_evento'])) {
-    validar_csrf();
-
-    $nome_noiva       = trim($_POST['nome_noiva'] ?? '');
-    $nome_noivo       = trim($_POST['nome_noivo'] ?? '');
-    $nome_cliente     = $nome_noiva . ' & ' . $nome_noivo;
-    $email_cliente    = trim($_POST['email_cliente'] ?? '');
-    $cpf_cliente      = preg_replace('/[^0-9]/', '', trim($_POST['cpf_cliente'] ?? '')); // Limpa a máscara
-    $telefone_cliente = trim($_POST['telefone_cliente'] ?? '');
-    $senha_raw        = trim($_POST['senha_cliente'] ?? '');
-    $data_evento      = $_POST['data_evento'] ?? '';
-    $hora_evento      = !empty($_POST['hora_evento']) ? $_POST['hora_evento'] : null;
-    $modelo_checklist = $_POST['modelo_checklist'] ?? '';
-
-    if (!empty($nome_noiva) && !empty($nome_noivo) && !empty($email_cliente) && !empty($data_evento)) {
-        
-        $senha_raw = empty($senha_raw) ? '123456' : $senha_raw;
-        $senha_hash = password_hash($senha_raw, PASSWORD_BCRYPT);
-
-        $cpf_liberado = true;
-        if (!empty($cpf_cliente)) {
-            $stmt_check = $pdo->prepare("
-                SELECT e.data_evento 
-                FROM clientes c
-                INNER JOIN eventos e ON c.id = e.cliente_id
-                WHERE c.cpf = ?
-            ");
-            $stmt_check->execute([$cpf_cliente]);
-            foreach ($stmt_check->fetchAll(PDO::FETCH_ASSOC) as $ev) {
-                if ($ev['data_evento'] >= $data_hoje) {
-                    $cpf_liberado = false;
-                    break;
-                }
-            }
-        }
-
-        if (!$cpf_liberado) {
-            $_SESSION['msg_erro'] = "Atenção: Já existe um casamento futuro cadastrado para este CPF.";
-        } else {
-            try {
-                $pdo->beginTransaction();
-
-                $stmt_cli = $pdo->prepare("INSERT INTO clientes (nome, email, cpf, telefone, senha) VALUES (?, ?, ?, ?, ?)");
-                $stmt_cli->execute([$nome_cliente, $email_cliente, $cpf_cliente, $telefone_cliente, $senha_hash]);
-                $cliente_id = $pdo->lastInsertId();
-
-                $stmt_eve = $pdo->prepare("INSERT INTO eventos (cliente_id, data_evento, hora_evento) VALUES (?, ?, ?)");
-                $stmt_eve->execute([$cliente_id, $data_evento, $hora_evento]);
-                $evento_id = $pdo->lastInsertId();
-
-                if (!empty($modelo_checklist)) {
-                    $stmt_mod = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ?");
-                    $stmt_mod->execute([$modelo_checklist]);
-                    $modelos = $stmt_mod->fetchAll(PDO::FETCH_ASSOC);
-
-                    if (!empty($modelos)) {
-                        $stmt_ins_task = $pdo->prepare("
-                            INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status)
-                            VALUES (?, ?, ?, ?, 'Assessoria', 'pendente')
-                        ");
-                        foreach ($modelos as $m) {
-                            $stmt_ins_task->execute([$evento_id, $m['etapa'], $m['tarefa'], $m['descricao']]);
-                        }
-                    }
-                }
-                $pdo->commit();
-                $_SESSION['msg_sucesso'] = "Casal, contrato e cronograma configurados com sucesso!";
-            } catch (Exception $e) {
-                $pdo->rollBack();
-                error_log("[CADASTRAR EVENTO] " . $e->getMessage());
-                $_SESSION['msg_erro'] = "Erro interno ao cadastrar. Tente novamente.";
-            }
-        }
-    } else {
-        $_SESSION['msg_erro'] = "Preencha todos os campos obrigatórios.";
-    }
-    header("Location: painel_admin.php");
-    exit;
-}
-
-// ============================================================
-// 5. RESETAR SENHA
-// ============================================================
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['resetar_senha'])) {
-    validar_csrf();
-    $cliente_id = (int)($_POST['cliente_id'] ?? 0);
-    $nova_senha = trim($_POST['nova_senha'] ?? '');
-
-    if ($cliente_id > 0 && !empty($nova_senha)) {
-        $nova_senha_hash = password_hash($nova_senha, PASSWORD_BCRYPT);
-        $pdo->prepare("UPDATE clientes SET senha = ? WHERE id = ?")->execute([$nova_senha_hash, $cliente_id]);
-        $_SESSION['msg_sucesso'] = "Senha redefinida com sucesso para o cliente!";
-    } else {
-        $_SESSION['msg_erro'] = "A nova senha não pode estar vazia.";
-    }
-    header("Location: painel_admin.php");
-    exit;
-}
-
-// ============================================================
-// 6. EDITAR DATA
-// ============================================================
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['editar_data'])) {
-    validar_csrf();
-    $evento_id = (int)($_POST['evento_id_data'] ?? 0);
-    $nova_data = $_POST['nova_data'] ?? '';
-    $nova_hora = !empty($_POST['nova_hora']) ? $_POST['nova_hora'] : null;
-
-    if ($evento_id > 0 && !empty($nova_data) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $nova_data)) {
-        $pdo->prepare("UPDATE eventos SET data_evento = ?, hora_evento = ? WHERE id = ?")->execute([$nova_data, $nova_hora, $evento_id]);
-        $_SESSION['msg_sucesso'] = "Data e horário do evento alterados com sucesso!";
-    } else {
-        $_SESSION['msg_erro'] = "A nova data informada é inválida.";
-    }
-    header("Location: painel_admin.php");
-    exit;
-}
-
-// ============================================================
-// 7. CARREGAMENTO DE DADOS
+// 7. CARREGAMENTO DE DADOS PARA A ESTRUTURA VISUAL
 // ============================================================
 $lista_casamentos = $pdo->query("
     SELECT e.id AS evento_id, e.data_evento, e.hora_evento,
@@ -256,9 +358,21 @@ foreach ($lista_casamentos as $cas) {
     }
 }
 
-$stmt_notas = $pdo->prepare("SELECT data_nota, anotacao FROM calendario_anotacoes WHERE data_nota LIKE ?");
+// Carrega TODAS as anotações do mês (múltiplas por dia, ordenadas por horário)
+$stmt_notas = $pdo->prepare("
+    SELECT id, data_nota, hora_nota, anotacao 
+    FROM calendario_anotacoes 
+    WHERE data_nota LIKE ? 
+    ORDER BY data_nota ASC, hora_nota ASC
+");
 $stmt_notas->execute(["$ano_atual-$mes_atual_str-%"]);
-$anotacoes_do_mes = $stmt_notas->fetchAll(PDO::FETCH_KEY_PAIR);
+$notas_do_mes_raw = $stmt_notas->fetchAll(PDO::FETCH_ASSOC);
+
+// Agrupa as anotações por data (pode ter múltiplas por dia)
+$anotacoes_do_mes = []; 
+foreach ($notas_do_mes_raw as $nota) {
+    $anotacoes_do_mes[$nota['data_nota']][] = $nota;
+}
 
 $numero_dias_mes     = cal_days_in_month(CAL_GREGORIAN, $mes_atual, $ano_atual);
 $primeiro_dia_semana = (int)date('w', strtotime("$ano_atual-$mes_atual_str-01"));
@@ -295,8 +409,83 @@ unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
         .celula-dia { cursor: pointer; transition: background 0.2s; }
         .celula-dia:hover { background-color: #f8f9fa; }
         .indicador-nota { position: absolute; bottom: 4px; right: 4px; width: 8px; height: 8px; background-color: #0d6efd; border-radius: 50%; }
-        /* Toast Container fixo acima de tudo */
         .toast-container { z-index: 1060; }
+
+        /* Estilos do modal de anotações por horário */
+        .nota-item {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 10px;
+            padding: 12px 14px;
+            margin-bottom: 10px;
+            position: relative;
+            transition: box-shadow 0.15s;
+        }
+        .nota-item:hover { box-shadow: 0 2px 8px rgba(13,110,253,0.10); }
+        .nota-item .hora-badge {
+            display: inline-block;
+            background: #0d6efd;
+            color: #fff;
+            font-size: 0.78rem;
+            font-weight: 700;
+            border-radius: 20px;
+            padding: 2px 10px;
+            margin-bottom: 6px;
+            letter-spacing: 0.5px;
+        }
+        .nota-item .hora-badge.sem-hora {
+            background: #6c757d;
+        }
+
+        /* ---- CLASSES CSS PARA TEXTO TRUNCADO E BOTÃO ---- */
+        .nota-item-texto {
+            font-size: 0.88rem;
+            color: #343a40;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .nota-truncada {
+            display: -webkit-box;
+            -webkit-line-clamp: 2; /* Mostra no máximo 2 linhas */
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .nota-expandida {
+            display: block;
+        }
+        .btn-ler-mais {
+            font-size: 0.75rem;
+            cursor: pointer;
+            user-select: none;
+            color: #0d6efd;
+            font-weight: bold;
+            display: inline-block;
+            margin-top: 4px;
+        }
+        .btn-ler-mais:hover {
+            text-decoration: underline;
+        }
+        /* ------------------------------------------------ */
+
+        .btn-editar-nota, .btn-excluir-nota {
+            font-size: 0.78rem;
+            padding: 2px 8px;
+        }
+        .form-nova-nota {
+            background: #eaf1ff;
+            border: 1.5px dashed #0d6efd;
+            border-radius: 10px;
+            padding: 14px;
+            margin-top: 10px;
+        }
+        #lista-notas-dia:empty::after {
+            content: 'Nenhuma anotação para este dia. Adicione abaixo!';
+            color: #adb5bd;
+            font-size: 0.85rem;
+            display: block;
+            text-align: center;
+            padding: 18px 0 10px;
+        }
     </style>
 </head>
 <body class="bg-light">
@@ -332,18 +521,17 @@ unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
         </span>
         <div class="d-flex align-items-center gap-2">
             <span class="text-white small me-2 d-none d-md-block">
-    <i class="bi bi-person-circle"></i> Logado como: 
-    <strong><?= $is_admin ? 'Assessoria Geral' : 'Assistente' ?></strong>
-</span>
+                <i class="bi bi-person-circle"></i> Logado como: 
+                <strong><?= $is_admin ? 'Assessoria Geral' : 'Assistente' ?></strong>
+            </span>
             <?php if ($is_admin): ?>
-<a href="gerenciar_equipe.php" class="btn btn-sm btn-warning fw-bold text-dark border-0 me-2 shadow-sm">
-    <i class="bi bi-people-fill"></i> <span class="d-none d-sm-inline">Equipe</span>
-</a>
-<?php endif; ?>
+            <a href="gerenciar_equipe.php" class="btn btn-sm btn-warning fw-bold text-dark border-0 me-2 shadow-sm">
+                <i class="bi bi-people-fill"></i> <span class="d-none d-sm-inline">Equipe</span>
+            </a>
+            <?php endif; ?>
 
-<a href="modelos_checklist.php" class="btn btn-sm btn-light fw-bold text-dark border-0">
-    <i class="bi bi-gear-fill text-secondary"></i> <span class="d-none d-sm-inline">Checklists</span>
-</a>
+            <a href="modelos_checklist.php" class="btn btn-sm btn-light fw-bold text-dark border-0">
+                <i class="bi bi-gear-fill text-secondary"></i> <span class="d-none d-sm-inline">Checklists</span>
             </a>
             <a href="logout.php" class="btn btn-sm btn-outline-danger">
                 <i class="bi bi-box-arrow-right"></i> <span class="d-none d-sm-inline">Sair</span>
@@ -572,11 +760,17 @@ unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
                                     $tooltip_attrs = "data-bs-toggle='tooltip' data-bs-placement='top' title='" . implode(' | ', $casais_nomes) . "'";
                                 }
 
-                                $anotacao_existente = $anotacoes_do_mes[$data_verificacao] ?? "";
+                                // Anotações do dia (pode ser array com múltiplas)
+                                $notas_dia = $anotacoes_do_mes[$data_verificacao] ?? [];
+                                $tem_nota  = !empty($notas_dia);
+
+                                // Serializa as notas para passar ao JS via data-attribute (JSON)
+                                $notas_json = htmlspecialchars(json_encode($notas_dia, JSON_UNESCAPED_UNICODE), ENT_QUOTES);
+
                                 $borda_hoje = $e_hoje ? "outline: 2px solid #ffc107; outline-offset: -2px;" : "";
 
                                 echo "<td $tooltip_attrs style='height:48px; width:48px; position:relative; $borda_hoje' 
-                                          class='celula-dia' data-date='$data_verificacao' data-note='" . htmlspecialchars($anotacao_existente, ENT_QUOTES) . "'>";
+                                          class='celula-dia' data-date='$data_verificacao' data-notas='$notas_json'>";
 
                                 if (!empty($estilo_celula)) {
                                     echo "<span class='d-flex align-items-center justify-content-center mx-auto shadow-sm' style='width:30px; height:30px; $estilo_celula'>$dia</span>";
@@ -584,7 +778,7 @@ unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
                                     echo "<span class='d-flex align-items-center justify-content-center mx-auto' style='width:30px; height:30px; font-weight: 500;'>$dia</span>";
                                 }
 
-                                if (!empty($anotacao_existente)) {
+                                if ($tem_nota) {
                                     echo "<div class='indicador-nota shadow-sm'></div>";
                                 }
 
@@ -610,7 +804,10 @@ unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
             </div>
         </div>
 
-    </div></div><div class="modal fade" id="modalNovoCasamento" tabindex="-1" aria-labelledby="modalNovoCasamentoLabel" aria-hidden="true">
+    </div>
+</div>
+
+<div class="modal fade" id="modalNovoCasamento" tabindex="-1" aria-labelledby="modalNovoCasamentoLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
         <div class="modal-content border-0 shadow-lg rounded-4">
             <div class="modal-header bg-success text-white border-0 rounded-top-4">
@@ -694,30 +891,60 @@ unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
 </div>
 
 <div class="modal fade" id="modalAnotacaoDia" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-dialog modal-dialog-centered modal-md">
         <div class="modal-content border-0 shadow-lg rounded-4">
-            <div class="modal-header bg-light border-0">
-                <h5 class="modal-title fw-bold text-dark">
-                    <i class="bi bi-pencil-square text-primary"></i> Anotações: <span id="label-data-titulo" class="text-primary"></span>
+            <div class="modal-header bg-primary text-white border-0 rounded-top-4 pb-2">
+                <h5 class="modal-title fw-bold">
+                    <i class="bi bi-calendar2-event-fill me-2"></i>
+                    Agenda de <span id="label-data-titulo" class="ms-1"></span>
                 </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Fechar"></button>
             </div>
-            <form method="POST" action="">
-                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
-                <input type="hidden" name="salvar_anotacao" value="1">
-                <input type="hidden" name="data_nota" id="input-data-modal">
-                <input type="hidden" name="mes" value="<?= $mes_atual ?>">
-                <input type="hidden" name="ano" value="<?= $ano_atual ?>">
 
-                <div class="modal-body p-4 pt-2">
-                    <p class="text-muted small mb-3">Apontamentos técnicos, lembretes ou bloqueio de agenda para esta data.</p>
-                    <textarea class="form-control bg-light" name="anotacao" id="textarea-anotacao-modal" rows="5" placeholder="Escreva aqui... (Limpe para apagar)"></textarea>
+            <div class="modal-body p-4">
+
+                <div id="lista-notas-dia" class="mb-3"></div>
+
+                <div class="form-nova-nota" id="form-nota-wrapper">
+                    <div class="d-flex align-items-center gap-2 mb-3">
+                        <i class="bi bi-plus-circle-fill text-primary fs-5"></i>
+                        <span class="fw-bold text-primary" id="label-form-nota" style="font-size:0.9rem;">Nova anotação</span>
+                        <button type="button" class="btn btn-sm btn-link text-secondary ms-auto p-0" id="btn-cancelar-edicao" style="display:none;" title="Cancelar edição">
+                            <i class="bi bi-x-lg"></i> Cancelar
+                        </button>
+                    </div>
+                    <form method="POST" action="" id="form-salvar-nota">
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
+                        <input type="hidden" name="salvar_anotacao" value="1">
+                        <input type="hidden" name="data_nota" id="input-data-modal">
+                        <input type="hidden" name="nota_id" id="input-nota-id" value="0">
+                        <input type="hidden" name="mes" value="<?= $mes_atual ?>">
+                        <input type="hidden" name="ano" value="<?= $ano_atual ?>">
+
+                        <div class="mb-3">
+                            <label class="form-label fw-bold text-secondary small mb-1">
+                                <i class="bi bi-clock me-1"></i> Horário <span class="text-muted fw-normal">(opcional)</span>
+                            </label>
+                            <input type="time" name="hora_nota" id="input-hora-nota" class="form-control bg-white" style="max-width:160px;">
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label fw-bold text-secondary small mb-1">
+                                <i class="bi bi-pencil me-1"></i> Anotação
+                            </label>
+                            <textarea class="form-control bg-white" name="anotacao" id="textarea-anotacao-modal" rows="3"
+                                      placeholder="Descreva o compromisso ou lembrete..." required></textarea>
+                        </div>
+
+                        <div class="d-flex gap-2 justify-content-end">
+                            <button type="submit" class="btn btn-primary fw-bold px-4 shadow-sm" id="btn-salvar-nota">
+                                <i class="bi bi-floppy-fill me-1"></i> Salvar
+                            </button>
+                        </div>
+                    </form>
                 </div>
-                <div class="modal-footer border-0 pb-4 pt-0 justify-content-center">
-                    <button type="button" class="btn btn-light rounded-pill px-4" data-bs-dismiss="modal">Fechar</button>
-                    <button type="submit" class="btn btn-primary rounded-pill px-4 fw-bold shadow-sm">Salvar Nota</button>
-                </div>
-            </form>
+            </div>
+
         </div>
     </div>
 </div>
@@ -781,8 +1008,8 @@ unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
 document.addEventListener('DOMContentLoaded', function () {
 
     // Inicializa Toasts do Bootstrap
-    const toastElList = document.querySelectorAll('.toast')
-    const toastList = [...toastElList].map(toastEl => new bootstrap.Toast(toastEl))
+    const toastElList = document.querySelectorAll('.toast');
+    [...toastElList].map(toastEl => new bootstrap.Toast(toastEl));
 
     // Inicializa Tooltips do Bootstrap
     function initTooltips() {
@@ -792,17 +1019,17 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     initTooltips();
 
-    // Validação visual de Formulários (Bootstrap Múltiplos)
-    const forms = document.querySelectorAll('.needs-validation')
+    // Validação visual de Formulários (Bootstrap)
+    const forms = document.querySelectorAll('.needs-validation');
     Array.from(forms).forEach(form => {
         form.addEventListener('submit', event => {
             if (!form.checkValidity()) {
-                event.preventDefault()
-                event.stopPropagation()
+                event.preventDefault();
+                event.stopPropagation();
             }
-            form.classList.add('was-validated')
-        }, false)
-    })
+            form.classList.add('was-validated');
+        }, false);
+    });
 
     // Máscaras de Inputs no Modal Novo Casamento
     const elCpf = document.getElementById('input-cpf');
@@ -810,10 +1037,292 @@ document.addEventListener('DOMContentLoaded', function () {
     if (elCpf) { IMask(elCpf, { mask: '000.000.000-00' }); }
     if (elTel) { IMask(elTel, { mask: '(00) 00000-0000' }); }
 
-    // Delegação de cliques para preencher Modais e Navegação Ajax
+    // ================================================================
+    // LÓGICA DO MODAL DE ANOTAÇÕES POR HORÁRIO
+    // ================================================================
+
+    /**
+     * Alterna entre texto expandido e truncado.
+     * Esta função precisa estar disponível globalmente para ser chamada pelo onclick do botão.
+     */
+    window.toggleNota = function(idStr, btnElement) {
+        const divTexto = document.getElementById(idStr);
+        if (!divTexto) return;
+        
+        if (divTexto.classList.contains('nota-truncada')) {
+            // Expandir
+            divTexto.classList.remove('nota-truncada');
+            divTexto.classList.add('nota-expandida');
+            btnElement.innerHTML = 'Ler menos <i class="bi bi-chevron-up"></i>';
+        } else {
+            // Retrair
+            divTexto.classList.remove('nota-expandida');
+            divTexto.classList.add('nota-truncada');
+            btnElement.innerHTML = 'Ler mais <i class="bi bi-chevron-down"></i>';
+        }
+    };
+
+    /**
+     * Renderiza a lista de anotações existentes no modal.
+     */
+    function renderizarNotas(notas) {
+        const lista = document.getElementById('lista-notas-dia');
+        lista.innerHTML = '';
+
+        if (!notas || notas.length === 0) {
+            return;
+        }
+
+        // Ordena por horário (sem hora vai para o final)
+        notas.sort((a, b) => {
+            if (!a.hora_nota && !b.hora_nota) return 0;
+            if (!a.hora_nota) return 1;
+            if (!b.hora_nota) return -1;
+            return a.hora_nota.localeCompare(b.hora_nota);
+        });
+
+        notas.forEach(nota => {
+            const horaLabel = nota.hora_nota
+                ? `<span class="hora-badge"><i class="bi bi-clock-fill me-1"></i>${nota.hora_nota.substring(0,5)}</span>`
+                : `<span class="hora-badge sem-hora"><i class="bi bi-clock me-1"></i>Sem horário</span>`;
+
+            // ---- LÓGICA DE TRUNCAMENTO DE TEXTO ----
+            const divTextoId = `desc-nota-${nota.id}`;
+            const textoEscapado = escapeHtml(nota.anotacao);
+            let btnLerMais = '';
+            
+            // Se o texto for maior que ~80 caracteres, insere o botão de Ler Mais
+            if (textoEscapado.length > 80) {
+                btnLerMais = `
+                    <div class="btn-ler-mais mt-1" onclick="toggleNota('${divTextoId}', this)">
+                        Ler mais <i class="bi bi-chevron-down"></i>
+                    </div>`;
+            }
+            
+            // O texto da anotação começa com a classe 'nota-truncada'
+            const blocoTexto = `
+                <div id="${divTextoId}" class="nota-item-texto mt-1 nota-truncada">
+                    ${textoEscapado}
+                </div>
+                ${btnLerMais}
+            `;
+            // ----------------------------------------
+
+            const div = document.createElement('div');
+            div.className = 'nota-item';
+            div.dataset.id = nota.id;
+            div.innerHTML = `
+                <div class="d-flex justify-content-between align-items-start gap-2">
+                    <div class="flex-grow-1">
+                        ${horaLabel}
+                        ${blocoTexto}
+                    </div>
+                    <div class="d-flex flex-column gap-1 flex-shrink-0">
+                        <button type="button" class="btn btn-sm btn-outline-primary btn-editar-nota"
+                                data-id="${nota.id}"
+                                data-hora="${nota.hora_nota || ''}"
+                                data-texto="${escapeAttr(nota.anotacao)}"
+                                title="Editar">
+                            <i class="bi bi-pencil-fill"></i>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-danger btn-excluir-nota"
+                                data-id="${nota.id}"
+                                title="Excluir">
+                            <i class="bi bi-trash-fill"></i>
+                        </button>
+                    </div>
+                </div>
+            `;
+            lista.appendChild(div);
+        });
+    }
+
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.appendChild(document.createTextNode(str || ''));
+        return div.innerHTML;
+    }
+
+    function escapeAttr(str) {
+        return (str || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    /** Reseta o formulário de nota para o estado "nova anotação" */
+    function resetarFormNota() {
+        document.getElementById('input-nota-id').value = '0';
+        document.getElementById('input-hora-nota').value = '';
+        document.getElementById('textarea-anotacao-modal').value = '';
+        document.getElementById('label-form-nota').textContent = 'Nova anotação';
+        document.getElementById('btn-cancelar-edicao').style.display = 'none';
+        document.getElementById('btn-salvar-nota').innerHTML = '<i class="bi bi-floppy-fill me-1"></i> Salvar';
+    }
+
+    // Quando o modal abre, reseta o formulário
+    document.getElementById('modalAnotacaoDia').addEventListener('show.bs.modal', resetarFormNota);
+
+    // ================================================================
+    // SALVAR E EDITAR ANOTAÇÃO (AJAX)
+    // ================================================================
+    const formSalvarNota = document.getElementById('form-salvar-nota');
+    if (formSalvarNota) {
+        formSalvarNota.addEventListener('submit', function (e) {
+            e.preventDefault(); // Impede o reload da página
+
+            const btnSalvar = document.getElementById('btn-salvar-nota');
+            const iconeOriginal = btnSalvar.innerHTML;
+            btnSalvar.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+            btnSalvar.disabled = true;
+
+            const formData = new FormData(this);
+
+            fetch('painel_admin.php', {
+                method: 'POST',
+                body: formData,
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.sucesso) {
+                    const dataModal = document.getElementById('input-data-modal').value;
+                    const celula = document.querySelector(`.celula-dia[data-date="${dataModal}"]`);
+                    
+                    let notas = [];
+                    if (celula) {
+                        notas = JSON.parse(celula.getAttribute('data-notas') || '[]');
+                    }
+
+                    // Se a ação foi "excluída" (ocorre se salvou a nota com o texto vazio)
+                    if (data.acao === 'excluida') {
+                        notas = notas.filter(n => String(n.id) !== String(data.id));
+                    } 
+                    // Se foi inserida ou atualizada
+                    else {
+                        if (data.acao === 'criada') {
+                            notas.push(data.nota);
+                        } else if (data.acao === 'atualizada') {
+                            const index = notas.findIndex(n => String(n.id) === String(data.nota.id));
+                            if (index !== -1) {
+                                notas[index] = data.nota;
+                            } else {
+                                notas.push(data.nota);
+                            }
+                        }
+                    }
+
+                    // Atualiza a célula (HTML e atributos JS)
+                    if (celula) {
+                        celula.setAttribute('data-notas', JSON.stringify(notas));
+                        
+                        const indicadorExistente = celula.querySelector('.indicador-nota');
+                        if (notas.length > 0 && !indicadorExistente) {
+                            celula.insertAdjacentHTML('beforeend', "<div class='indicador-nota shadow-sm'></div>");
+                        } else if (notas.length === 0 && indicadorExistente) {
+                            indicadorExistente.remove();
+                        }
+                    }
+
+                    // Atualiza a visualização do Modal
+                    renderizarNotas(notas);
+                    resetarFormNota();
+                } else {
+                    alert('Ocorreu um problema ao salvar a anotação.');
+                }
+            })
+            .catch(error => {
+                console.error('Erro no salvamento:', error);
+                alert('Erro de comunicação. Tente novamente.');
+            })
+            .finally(() => {
+                btnSalvar.innerHTML = iconeOriginal;
+                btnSalvar.disabled = false;
+            });
+        });
+    }
+
+    // Delegação de cliques para botões editar/excluir dentro da lista de notas
+    document.getElementById('lista-notas-dia').addEventListener('click', function (e) {
+
+        // Editar nota (apenas joga os dados pro formulário)
+        const btnEdit = e.target.closest('.btn-editar-nota');
+        if (btnEdit) {
+            document.getElementById('input-nota-id').value        = btnEdit.dataset.id;
+            document.getElementById('input-hora-nota').value      = btnEdit.dataset.hora || '';
+            document.getElementById('textarea-anotacao-modal').value = btnEdit.dataset.texto || '';
+            document.getElementById('label-form-nota').textContent = 'Editando anotação';
+            document.getElementById('btn-cancelar-edicao').style.display = 'inline-block';
+            document.getElementById('btn-salvar-nota').innerHTML  = '<i class="bi bi-floppy-fill me-1"></i> Atualizar';
+            document.getElementById('textarea-anotacao-modal').focus();
+            return;
+        }
+
+        // Excluir nota (VIA AJAX)
+        const btnDel = e.target.closest('.btn-excluir-nota');
+        if (btnDel) {
+            if (confirm('Deseja excluir esta anotação?')) {
+                const notaId = btnDel.dataset.id;
+                const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+                const dataModal = document.getElementById('input-data-modal').value;
+
+                const formData = new FormData();
+                formData.append('csrf_token', csrfToken);
+                formData.append('excluir_anotacao', '1');
+                formData.append('nota_id', notaId);
+
+                const iconeOriginal = btnDel.innerHTML;
+                btnDel.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+                btnDel.disabled = true;
+
+                fetch('painel_admin.php', {
+                    method: 'POST',
+                    body: formData,
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest'
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.sucesso) {
+                        const celula = document.querySelector(`.celula-dia[data-date="${dataModal}"]`);
+                        if (celula) {
+                            let notas = JSON.parse(celula.getAttribute('data-notas') || '[]');
+                            notas = notas.filter(n => String(n.id) !== String(notaId));
+                            celula.setAttribute('data-notas', JSON.stringify(notas));
+                            
+                            if (notas.length === 0) {
+                                const indicador = celula.querySelector('.indicador-nota');
+                                if (indicador) indicador.remove();
+                            }
+                        }
+                        
+                        const notaItem = btnDel.closest('.nota-item');
+                        if (notaItem) notaItem.remove();
+
+                        if (document.getElementById('input-nota-id').value === String(notaId)) {
+                            resetarFormNota();
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.error('Erro na exclusão:', error);
+                    alert('Houve um erro ao tentar excluir. Tente novamente.');
+                    btnDel.innerHTML = iconeOriginal;
+                    btnDel.disabled = false;
+                });
+            }
+        }
+    });
+
+    // Botão cancelar edição
+    document.getElementById('btn-cancelar-edicao').addEventListener('click', resetarFormNota);
+
+    // ================================================================
+    // DELEGAÇÃO GERAL DE CLIQUES
+    // ================================================================
     document.addEventListener('click', async function (e) {
 
-        // Modal Editar Data
+        // Modal Editar Data do evento
         const btnData = e.target.closest('.btn-abrir-modal-data');
         if (btnData) {
             document.getElementById('input-evento-id-data').value = btnData.dataset.eventoId || '';
@@ -827,23 +1336,26 @@ document.addEventListener('DOMContentLoaded', function () {
             document.getElementById('input-cliente-id-reset').value = btnSenha.dataset.clienteId || '';
         }
 
-        // Abrir Modal de Anotação Clicando na Célula do Calendário
+        // Clique na célula do calendário → abre modal de anotações
         const celula = e.target.closest('.celula-dia');
         if (celula) {
             const dataAlvo  = celula.getAttribute('data-date');
-            const notaAlvo  = celula.getAttribute('data-note') || '';
+            const notasJson = celula.getAttribute('data-notas') || '[]';
             const partes    = dataAlvo.split('-');
             const formatada = partes[2] + '/' + partes[1] + '/' + partes[0];
 
-            document.getElementById('input-data-modal').value        = dataAlvo;
-            document.getElementById('label-data-titulo').innerText   = formatada;
-            document.getElementById('textarea-anotacao-modal').value = notaAlvo;
+            document.getElementById('input-data-modal').value      = dataAlvo;
+            document.getElementById('label-data-titulo').textContent = formatada;
+
+            let notas = [];
+            try { notas = JSON.parse(notasJson); } catch(err) { notas = []; }
+            renderizarNotas(notas);
 
             bootstrap.Modal.getOrCreateInstance(document.getElementById('modalAnotacaoDia')).show();
             return;
         }
 
-        // Navegação Ajax do Calendário
+        // Navegação AJAX do Calendário
         const navBtn = e.target.closest('.btn-nav-calendario');
         if (navBtn) {
             e.preventDefault();

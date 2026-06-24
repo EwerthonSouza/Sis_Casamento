@@ -427,3 +427,22 @@ body {
 #modalConfirmar {
   z-index: 1075 !important;
 }
+/* ---- TRUNCAR TEXTO DAS ANOTAÇÕES ---- */
+.nota-truncada {
+    display: -webkit-box;
+    -webkit-line-clamp: 2; /* Define quantas linhas vão aparecer minimizadas */
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    transition: all 0.3s ease;
+}
+.nota-expandida {
+    display: block;
+}
+.btn-ler-mais {
+    font-size: 0.75rem;
+    cursor: pointer;
+    user-select: none;
+}
+.btn-ler-mais:hover {
+    text-decoration: underline;
+}

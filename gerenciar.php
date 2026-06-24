@@ -1,13 +1,32 @@
 <?php
 session_start();
 
-require_once 'conexao.php'; 
+require_once 'conexao.php';
 
 if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente'])) {
     header("Location: index.php");
     exit;
 }
 $is_admin = ($_SESSION['usuario_tipo'] === 'admin');
+
+/* ============================================================
+   CSRF TOKEN
+   ============================================================ */
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
+function verificar_csrf(): void {
+    $token_post    = $_POST['csrf_token']    ?? '';
+    $token_header  = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    $token_enviado = $token_post !== '' ? $token_post : $token_header;
+    if (!hash_equals($_SESSION['csrf_token'], $token_enviado)) {
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => false, 'msg' => 'Token CSRF inválido.']);
+        exit;
+    }
+}
 
 /* ============================================================
    AUTO-CONFIGURAÇÃO DO BANCO DE DADOS
@@ -40,17 +59,28 @@ try { $pdo->query("SELECT idades_filhos FROM convidados LIMIT 1"); }
 catch (Exception $e) { $pdo->exec("ALTER TABLE convidados ADD COLUMN idades_filhos VARCHAR(255) NULL"); }
 
 // 3. Coluna de controle de pagamento parcial
-try { $pdo->query("SELECT valor_pago FROM fornecedores_evento LIMIT 1"); }
-catch (Exception $e) { $pdo->exec("ALTER TABLE fornecedores_evento ADD COLUMN valor_pago DECIMAL(10,2) NOT NULL DEFAULT 0.00"); }
+try { $pdo->query("SELECT valor_pago FROM suppliers_evento LIMIT 1"); }
+catch (Exception $e) { 
+    try { $pdo->query("SELECT valor_pago FROM fornecedores_evento LIMIT 1"); }
+    catch (Exception $ex) { $pdo->exec("ALTER TABLE fornecedores_evento ADD COLUMN valor_pago DECIMAL(10,2) NOT NULL DEFAULT 0.00"); }
+}
 
-// 4. Tabela de músicas com status de sugestão/confirmação
+// 4. Tabela de músicas com status e momento
 try {
     $pdo->query("SELECT 1 FROM musicas_evento LIMIT 1");
-    // Tabela existe — garante coluna status
+    
     try { $pdo->query("SELECT status FROM musicas_evento LIMIT 1"); }
-    catch (Exception $e) {
-        $pdo->exec("ALTER TABLE musicas_evento ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'sugestao'");
-    }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE musicas_evento ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'sugestao'"); }
+    
+    try { $pdo->query("SELECT momento FROM musicas_evento LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE musicas_evento ADD COLUMN momento VARCHAR(150) NOT NULL DEFAULT 'Livre / Sem Momento Definido'"); }
+    
+    try { $pdo->query("SELECT artista FROM musicas_evento LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE musicas_evento ADD COLUMN artista VARCHAR(255) NULL"); }
+    
+    try { $pdo->query("SELECT link FROM musicas_evento LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE musicas_evento ADD COLUMN link VARCHAR(500) NULL"); }
+
 } catch (Exception $e) {
     $pdo->exec("
         CREATE TABLE musicas_evento (
@@ -67,10 +97,41 @@ try {
     ");
 }
 
+// 5. Garantir estrutura da tabela checklist_comentarios
+try {
+    $pdo->query("SELECT 1 FROM checklist_comentarios LIMIT 1");
+} catch (Exception $e) {
+    $pdo->exec("
+        CREATE TABLE checklist_comentarios (
+            id            INT AUTO_INCREMENT PRIMARY KEY,
+            checklist_id  INT          NULL,
+            evento_id     INT          NULL,
+            etapa_nome    VARCHAR(255) NULL,
+            autor         VARCHAR(100) DEFAULT 'Assessoria',
+            comentario    TEXT         NOT NULL,
+            criado_em     TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    ");
+}
+
+// 6. Validar colunas específicas em checklist_comentarios caso ela já existisse vazia ou incompleta
+try { $pdo->query("SELECT evento_id FROM checklist_comentarios LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE checklist_comentarios ADD COLUMN evento_id INT NULL"); }
+
+try { $pdo->query("SELECT etapa_nome FROM checklist_comentarios LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE checklist_comentarios ADD COLUMN etapa_nome VARCHAR(255) NULL"); }
+
+try { $pdo->query("SELECT checklist_id FROM checklist_comentarios LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE checklist_comentarios ADD COLUMN checklist_id INT NULL"); }
+
+try { $pdo->query("SELECT criado_em FROM checklist_comentarios LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE checklist_comentarios ADD COLUMN criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP"); }
+
+
 /* ============================================================
-   ID DO EVENTO
+   ID DO EVENTO — valida que é inteiro positivo
    ============================================================ */
-$evento_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
+$evento_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
 if (!$evento_id) {
     header("Location: painel_admin.php");
     exit;
@@ -80,8 +141,10 @@ if (!$evento_id) {
    HELPER
    ============================================================ */
 function json_out(array $data): void {
-    header('Content-Type: application/json');
-    echo json_encode($data);
+    if (!headers_sent()) {
+        header('Content-Type: application/json; charset=utf-8');
+    }
+    echo json_encode($data, JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -110,17 +173,19 @@ $momentos_casamento = [
    ============================================================ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
+    verificar_csrf();
+
     $ajax = isset($_POST['is_ajax']);
 
     // 1. Adicionar fornecedor
     if (isset($_POST['adicionar_fornecedor'])) {
-        $nome    = trim($_POST['nome_fornecedor']);
-        $servico = trim($_POST['servico_fornecedor']);
+        $nome    = trim($_POST['nome_fornecedor']    ?? '');
+        $servico = trim($_POST['servico_fornecedor'] ?? '');
         $contato = trim($_POST['contato_fornecedor'] ?? '');
         $status  = trim($_POST['status_fornecedor']  ?? 'Orçamento');
         $valor   = !empty($_POST['valor_fornecedor'])
-                   ? (float)str_replace(['.', ','], ['', '.'], $_POST['valor_fornecedor'])
-                   : 0.00;
+                    ? (float)str_replace(['.', ','], ['', '.'], $_POST['valor_fornecedor'])
+                    : 0.00;
         if ($nome !== '' && $servico !== '') {
             $pdo->prepare("INSERT INTO fornecedores_evento (evento_id, nome, servico, contato, status, valor, valor_pago) VALUES (?, ?, ?, ?, ?, ?, 0)")
                 ->execute([$evento_id, $nome, $servico, $contato, $status, $valor]);
@@ -129,10 +194,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
-    // 2. Importar padrão
+    // 2. Importar padrão (Apenas Admin)
     if (isset($_POST['gerar_padrao'])) {
-        $tipo  = trim($_POST['tipo_padrao']);
-        $stmt  = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ?");
+        if (!$is_admin) { $_SESSION['msg_erro'] = "Acesso negado."; header("Location: gerenciar.php?id=$evento_id"); exit; }
+
+        $tipo    = trim($_POST['tipo_padrao'] ?? '');
+        $stmt    = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ?");
         $stmt->execute([$tipo]);
         $modelos = $stmt->fetchAll(PDO::FETCH_ASSOC);
         if (!empty($modelos)) {
@@ -145,11 +212,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
-    // 3. Adicionar tarefa manual
+    // 3. Adicionar tarefa manual (Apenas Admin)
     if (isset($_POST['adicionar_manual'])) {
-        $etapa     = trim($_POST['etapa']);
-        $tarefa    = trim($_POST['tarefa']);
-        $descricao = trim($_POST['descricao']);
+        if (!$is_admin) { $_SESSION['msg_erro'] = "Acesso negado."; header("Location: gerenciar.php?id=$evento_id"); exit; }
+
+        $etapa     = trim($_POST['etapa']       ?? '');
+        $tarefa    = trim($_POST['tarefa']      ?? '');
+        $descricao = trim($_POST['descricao'] ?? '');
         if ($etapa !== '' && $tarefa !== '') {
             $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0)")
                 ->execute([$evento_id, $etapa, $tarefa, $descricao]);
@@ -158,34 +227,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
-    // 4. Editar tarefa
+    // Renomear Etapa (Admin)
+    if (isset($_POST['renomear_etapa'])) {
+        if (!$is_admin) { $_SESSION['msg_erro'] = "Acesso negado."; header("Location: gerenciar.php?id=$evento_id"); exit; }
+        $antiga = trim($_POST['etapa_antiga'] ?? '');
+        $nova   = trim($_POST['etapa_nova'] ?? '');
+        if ($antiga !== '' && $nova !== '') {
+            $pdo->prepare("UPDATE checklist SET etapa = ? WHERE etapa = ? AND evento_id = ?")->execute([$nova, $antiga, $evento_id]);
+            $pdo->prepare("UPDATE checklist_comentarios SET etapa_nome = ? WHERE etapa_nome = ? AND evento_id = ?")->execute([$nova, $antiga, $evento_id]);
+            $_SESSION['msg_sucesso'] = "Etapa renomeada!";
+        }
+        header("Location: gerenciar.php?id=$evento_id"); exit;
+    }
+
+    // 4. Editar tarefa (Apenas Admin)
     if (isset($_POST['editar_tarefa'])) {
-        $id        = (int)$_POST['id_tarefa'];
-        $etapa     = trim($_POST['etapa_edit']);
-        $tarefa    = trim($_POST['tarefa_edit']);
-        $descricao = trim($_POST['descricao_edit']);
-        $pdo->prepare("UPDATE checklist SET etapa = ?, tarefa = ?, descricao = ? WHERE id = ? AND evento_id = ?")
-            ->execute([$etapa, $tarefa, $descricao, $id, $evento_id]);
-        $_SESSION['msg_sucesso'] = "Tarefa atualizada!";
+        if (!$is_admin) { $_SESSION['msg_erro'] = "Acesso negado."; header("Location: gerenciar.php?id=$evento_id"); exit; }
+
+        $id        = (int)($_POST['id_tarefa']      ?? 0);
+        $etapa     = trim($_POST['etapa_edit']     ?? '');
+        $tarefa    = trim($_POST['tarefa_edit']    ?? '');
+        $descricao = trim($_POST['descricao_edit'] ?? '');
+        if ($id > 0 && $etapa !== '' && $tarefa !== '') {
+            $pdo->prepare("UPDATE checklist SET etapa = ?, tarefa = ?, descricao = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$etapa, $tarefa, $descricao, $id, $evento_id]);
+            $_SESSION['msg_sucesso'] = "Tarefa atualizada!";
+        }
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
     // 5. Toggle status tarefa (AJAX)
     if (isset($_POST['alternar_status'])) {
-        $id   = (int)$_POST['id_tarefa'];
-        $atual = $_POST['status_atual'];
+        $id    = (int)($_POST['id_tarefa']   ?? 0);
+        $atual = $_POST['status_atual']      ?? '0';
         $novo  = ($atual == 1 || $atual === 'concluido') ? 0 : 1;
-        $pdo->prepare("UPDATE checklist SET status = ?, checado = ? WHERE id = ? AND evento_id = ?")
-            ->execute([$novo ? 'concluido' : 'pendente', $novo, $id, $evento_id]);
+        if ($id > 0) {
+            $pdo->prepare("UPDATE checklist SET status = ?, checado = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$novo ? 'concluido' : 'pendente', $novo, $id, $evento_id]);
+        }
         if ($ajax) json_out(['ok' => true, 'novo' => $novo]);
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
-    // 6. Excluir tarefa (AJAX)
+    // 6. Excluir tarefa (AJAX) (Apenas Admin)
     if (isset($_POST['excluir_tarefa'])) {
-        $id = (int)$_POST['id_tarefa'];
-        $pdo->prepare("DELETE FROM checklist WHERE id = ? AND evento_id = ?")
-            ->execute([$id, $evento_id]);
+        if (!$is_admin) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Acesso negado.']);
+            header("Location: gerenciar.php?id=$evento_id"); exit;
+        }
+        $id = (int)($_POST['id_tarefa'] ?? 0);
+        if ($id > 0) {
+            $pdo->prepare("DELETE FROM checklist WHERE id = ? AND evento_id = ?")
+                ->execute([$id, $evento_id]);
+        }
         if ($ajax) json_out(['ok' => true]);
         $_SESSION['msg_sucesso'] = "Tarefa removida!";
         header("Location: gerenciar.php?id=$evento_id"); exit;
@@ -193,13 +287,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // 7. Comentário de tarefa (AJAX)
     if (isset($_POST['adicionar_comentario'])) {
-        $id    = (int)$_POST['id_tarefa'];
-        $texto = trim($_POST['texto_comentario'] ?? '');
-        $autor_nome = $_SESSION['usuario_nome'] ?? 'Assessoria';
-        if ($texto !== '') {
+        $id         = (int)($_POST['id_tarefa']           ?? 0);
+        $texto      = trim($_POST['texto_comentario']   ?? '');
+        $autor_nome = $_SESSION['usuario_nome']          ?? 'Assessoria';
+        if ($id > 0 && $texto !== '') {
             $pdo->prepare("INSERT INTO checklist_comentarios (checklist_id, autor, comentario) VALUES (?, ?, ?)")
                 ->execute([$id, $autor_nome, $texto]);
-            if ($ajax) json_out(['ok' => true, 'autor' => htmlspecialchars($autor_nome), 'texto' => htmlspecialchars($texto)]);
+            if ($ajax) json_out([
+                'ok'    => true,
+                'autor' => htmlspecialchars($autor_nome, ENT_QUOTES, 'UTF-8'),
+                'texto' => htmlspecialchars($texto,     ENT_QUOTES, 'UTF-8'),
+            ]);
             $_SESSION['msg_sucesso'] = "Comentário adicionado!";
         }
         if (!$ajax) { header("Location: gerenciar.php?id=$evento_id"); exit; }
@@ -208,20 +306,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // 8. Comentário de etapa (AJAX)
     if (isset($_POST['comentario_etapa_admin'])) {
-        $etapa = trim($_POST['etapa_nome'] ?? '');
-        $texto = trim($_POST['novo_comentario_etapa'] ?? '');
-        $autor_nome = $_SESSION['usuario_nome'] ?? 'Assessoria';
+        $etapa      = trim($_POST['etapa_nome']            ?? '');
+        $texto      = trim($_POST['novo_comentario_etapa']   ?? '');
+        $autor_nome = $_SESSION['usuario_nome']               ?? 'Assessoria';
         if ($etapa !== '' && $texto !== '') {
-            $pdo->prepare("INSERT INTO checklist_comentarios (etapa_nome, autor, comentario) VALUES (?, ?, ?)")
-                ->execute([$etapa, $autor_nome, $texto]);
-            if ($ajax) json_out(['ok' => true, 'autor' => htmlspecialchars($autor_nome), 'texto' => htmlspecialchars($texto)]);
+            $pdo->prepare("INSERT INTO checklist_comentarios (evento_id, etapa_nome, autor, comentario) VALUES (?, ?, ?, ?)")
+                ->execute([$evento_id, $etapa, $autor_nome, $texto]);
+            if ($ajax) json_out([
+                'ok'    => true,
+                'autor' => htmlspecialchars($autor_nome, ENT_QUOTES, 'UTF-8'),
+                'texto' => htmlspecialchars($texto,     ENT_QUOTES, 'UTF-8'),
+            ]);
         }
         if (!$ajax) { header("Location: gerenciar.php?id=$evento_id"); exit; }
         exit;
     }
 
-    // 9. Limpar todo checklist
+    // 9. Limpar todo checklist (Apenas Admin)
     if (isset($_POST['excluir_todo_checklist'])) {
+        if (!$is_admin) { $_SESSION['msg_erro'] = "Acesso negado."; header("Location: gerenciar.php?id=$evento_id"); exit; }
         $pdo->prepare("DELETE FROM checklist WHERE evento_id = ?")->execute([$evento_id]);
         $_SESSION['msg_sucesso'] = "Checklist apagado!";
         header("Location: gerenciar.php?id=$evento_id"); exit;
@@ -232,12 +335,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nome       = trim($_POST['nome_convidado']       ?? '');
         $fone       = trim($_POST['telefone_convidado']   ?? '');
         $cat        = trim($_POST['categoria_convidado']  ?? 'Outros');
-        $acomp_qtd  = (int)($_POST['acompanhantes']       ?? 0);
+        $acomp_qtd  = max(0, (int)($_POST['acompanhantes']       ?? 0));
         $acomp_nms  = trim($_POST['nomes_acompanhantes']  ?? '');
-        $filhos_qtd = (int)($_POST['filhos']              ?? 0);
+        $filhos_qtd = max(0, (int)($_POST['filhos']              ?? 0));
         $filhos_ids = trim($_POST['idades_filhos']        ?? '');
         if ($nome !== '') {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)")
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telephone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)")
                 ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids]);
             $_SESSION['msg_sucesso'] = "Convidado adicionado!";
         }
@@ -246,22 +349,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // 11. Toggle convidado (AJAX)
     if (isset($_POST['toggle_convidado'])) {
-        $id  = (int)$_POST['convidado_id'];
-        $novo = (int)$_POST['status_atual'] === 1 ? 0 : 1;
-        $pdo->prepare("UPDATE convidados SET confirmado = ? WHERE id = ? AND evento_id = ?")
-            ->execute([$novo, $id, $evento_id]);
+        $id   = (int)($_POST['convidado_id']  ?? 0);
+        $novo = (int)($_POST['status_atual']  ?? 0) === 1 ? 0 : 1;
+        if ($id > 0) {
+            $pdo->prepare("UPDATE convidados SET confirmado = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$novo, $id, $evento_id]);
+        }
         if ($ajax) json_out(['ok' => true, 'novo' => $novo]);
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
     // 12. Excluir convidado (AJAX)
     if (isset($_POST['excluir_convidado'])) {
-        $id  = (int)$_POST['convidado_id'];
-        $chk = $pdo->prepare("SELECT confirmado FROM convidados WHERE id = ? AND evento_id = ?");
-        $chk->execute([$id, $evento_id]);
-        $row = $chk->fetch();
-        $pdo->prepare("DELETE FROM convidados WHERE id = ? AND evento_id = ?")
-            ->execute([$id, $evento_id]);
+        $id  = (int)($_POST['convidado_id'] ?? 0);
+        $row = null;
+        if ($id > 0) {
+            $chk = $pdo->prepare("SELECT confirmado FROM convidados WHERE id = ? AND evento_id = ?");
+            $chk->execute([$id, $evento_id]);
+            $row = $chk->fetch();
+            $pdo->prepare("DELETE FROM convidados WHERE id = ? AND evento_id = ?")
+                ->execute([$id, $evento_id]);
+        }
         if ($ajax) json_out(['ok' => true, 'era_conf' => $row ? (int)$row['confirmado'] : 0]);
         $_SESSION['msg_sucesso'] = "Convidado removido!";
         header("Location: gerenciar.php?id=$evento_id"); exit;
@@ -269,9 +377,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // 13. Editar locais
     if (isset($_POST['editar_locais'])) {
-        $local_cer   = trim($_POST['local_cerimonia']);
-        $tem_festa   = (int)$_POST['tem_festa'];
-        $local_festa = $tem_festa === 1 ? trim($_POST['local_festa']) : null;
+        $local_cer  = trim($_POST['local_cerimonia'] ?? '');
+        $tem_festa  = (int)($_POST['tem_festa']      ?? 0);
+        $local_festa = $tem_festa === 1 ? trim($_POST['local_festa'] ?? '') : null;
         $pdo->prepare("UPDATE eventos SET local_cerimonia = ?, tem_festa = ?, local_festa = ? WHERE id = ?")
             ->execute([$local_cer, $tem_festa, $local_festa, $evento_id]);
         $_SESSION['msg_sucesso'] = "Locais atualizados!";
@@ -280,34 +388,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // 14. Atualizar valor pago de um fornecedor (AJAX)
     if (isset($_POST['atualizar_valor_pago'])) {
-        $forn_id    = (int)$_POST['fornecedor_id'];
-        $valor_pago = (float)($_POST['valor_pago'] ?? '0');
-        $chk = $pdo->prepare("SELECT valor FROM fornecedores_evento WHERE id = ? AND evento_id = ?");
-        $chk->execute([$forn_id, $evento_id]);
-        $forn = $chk->fetch();
-        if ($forn) {
-            $valor_pago = min(max(0, $valor_pago), (float)$forn['valor']);
-            $pdo->prepare("UPDATE fornecedores_evento SET valor_pago = ? WHERE id = ? AND evento_id = ?")
-                ->execute([$valor_pago, $forn_id, $evento_id]);
-            if ($ajax) json_out([
-                'ok'          => true,
-                'valor_pago'  => $valor_pago,
-                'valor_total' => (float)$forn['valor'],
-                'valor_rest'  => (float)$forn['valor'] - $valor_pago,
-            ]);
+        $forn_id    = (int)($_POST['fornecedor_id'] ?? 0);
+        $valor_pago = (float)($_POST['valor_pago']  ?? 0);
+        if ($forn_id > 0) {
+            $chk = $pdo->prepare("SELECT valor FROM fornecedores_evento WHERE id = ? AND evento_id = ?");
+            $chk->execute([$forn_id, $evento_id]);
+            $forn = $chk->fetch();
+            if ($forn) {
+                $valor_pago = min(max(0.0, $valor_pago), (float)$forn['valor']);
+                $pdo->prepare("UPDATE fornecedores_evento SET valor_pago = ? WHERE id = ? AND evento_id = ?")
+                    ->execute([$valor_pago, $forn_id, $evento_id]);
+                if ($ajax) json_out([
+                    'ok'          => true,
+                    'valor_pago'  => $valor_pago,
+                    'valor_total' => (float)$forn['valor'],
+                    'valor_rest'  => (float)$forn['valor'] - $valor_pago,
+                ]);
+            } else {
+                if ($ajax) json_out(['ok' => false, 'msg' => 'Fornecedor não encontrado.']);
+            }
         } else {
-            if ($ajax) json_out(['ok' => false, 'msg' => 'Fornecedor não encontrado.']);
+            if ($ajax) json_out(['ok' => false, 'msg' => 'ID inválido.']);
         }
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
     // 15. Salvar / editar nota (AJAX)
     if (isset($_POST['salvar_nota'])) {
-        $nota_id  = (int)($_POST['nota_id']      ?? 0);
+        $nota_id  = (int)($_POST['nota_id']     ?? 0);
         $titulo   = trim($_POST['titulo_nota']   ?? '');
         $conteudo = trim($_POST['conteudo_nota'] ?? '');
         $cores_ok = ['amarelo', 'verde', 'azul', 'rosa', 'cinza'];
-        $cor      = in_array($_POST['cor_nota'] ?? '', $cores_ok) ? $_POST['cor_nota'] : 'amarelo';
+        $cor      = in_array($_POST['cor_nota'] ?? '', $cores_ok, true) ? $_POST['cor_nota'] : 'amarelo';
         if ($titulo !== '') {
             if ($nota_id > 0) {
                 $pdo->prepare("UPDATE notas_evento SET titulo=?, conteudo=?, cor=?, atualizado_em=NOW() WHERE id=? AND evento_id=?")
@@ -323,8 +435,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'ok'         => true,
                 'id'         => $ret_id,
                 'novo'       => $nota_id === 0,
-                'titulo'     => htmlspecialchars($titulo),
-                'conteudo'   => htmlspecialchars($conteudo),
+                'titulo'     => htmlspecialchars($titulo,   ENT_QUOTES, 'UTF-8'),
+                'conteudo'   => htmlspecialchars($conteudo, ENT_QUOTES, 'UTF-8'),
                 'cor'        => $cor,
                 'atualizado' => date('d/m/Y \à\s H:i'),
             ]);
@@ -336,31 +448,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // 16. Excluir nota (AJAX)
     if (isset($_POST['excluir_nota'])) {
-        $nota_id = (int)$_POST['nota_id'];
-        $pdo->prepare("DELETE FROM notas_evento WHERE id=? AND evento_id=?")->execute([$nota_id, $evento_id]);
+        $nota_id = (int)($_POST['nota_id'] ?? 0);
+        if ($nota_id > 0) {
+            $pdo->prepare("DELETE FROM notas_evento WHERE id=? AND evento_id=?")->execute([$nota_id, $evento_id]);
+        }
         if ($ajax) json_out(['ok' => true]);
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
-    // 17. Adicionar música — salva como 'sugestao'
+    // 17. Adicionar música
     if (isset($_POST['adicionar_musica'])) {
         $titulo  = trim($_POST['titulo_musica']  ?? '');
         $artista = trim($_POST['artista_musica'] ?? '');
         $link    = trim($_POST['link_musica']    ?? '');
         $momento = trim($_POST['momento_musica'] ?? 'Livre / Sem Momento Definido');
+
+        // Valida protocolo do link
+        if ($link !== '' && !preg_match('/^https?:\/\//i', $link)) {
+            $link = 'https://' . $link;
+        }
+
         if ($titulo !== '') {
             $pdo->prepare("INSERT INTO musicas_evento (evento_id, titulo, artista, link, momento, status) VALUES (?, ?, ?, ?, ?, 'sugestao')")
                 ->execute([$evento_id, $titulo, $artista, $link, $momento]);
             $new_id = (int)$pdo->lastInsertId();
-            if ($ajax) json_out([
-                'ok'      => true,
-                'id'      => $new_id,
-                'titulo'  => htmlspecialchars($titulo),
-                'artista' => htmlspecialchars($artista),
-                'link'    => htmlspecialchars($link),
-                'momento' => htmlspecialchars($momento),
-                'status'  => 'sugestao',
-            ]);
+
+            if ($ajax) {
+                json_out([
+                    'ok'      => true,
+                    'id'      => $new_id,
+                    'titulo'  => htmlspecialchars($titulo,  ENT_QUOTES, 'UTF-8'),
+                    'artista' => htmlspecialchars($artista, ENT_QUOTES, 'UTF-8'),
+                    'link'    => htmlspecialchars($link,    ENT_QUOTES, 'UTF-8'),
+                    'momento' => htmlspecialchars($momento, ENT_QUOTES, 'UTF-8'),
+                    'status'  => 'sugestao',
+                ]);
+            }
             $_SESSION['msg_sucesso'] = "Música sugerida!";
         } else {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o título da música.']);
@@ -370,14 +493,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // 18. Confirmar / desconfirmar música (AJAX)
     if (isset($_POST['confirmar_musica'])) {
-        $musica_id   = (int)$_POST['musica_id'];
-        $novo_status = trim($_POST['novo_status'] ?? 'confirmada');
-        if (!in_array($novo_status, ['sugestao', 'confirmada'])) {
+        $musica_id   = (int)($_POST['musica_id']    ?? 0);
+        $novo_status = trim($_POST['novo_status']    ?? 'confirmada');
+        if (!in_array($novo_status, ['sugestao', 'confirmada'], true)) {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Status inválido.']);
             header("Location: gerenciar.php?id=$evento_id"); exit;
         }
-        $pdo->prepare("UPDATE musicas_evento SET status = ? WHERE id = ? AND evento_id = ?")
-            ->execute([$novo_status, $musica_id, $evento_id]);
+        if ($musica_id > 0) {
+            $pdo->prepare("UPDATE musicas_evento SET status = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$novo_status, $musica_id, $evento_id]);
+        }
         if ($ajax) json_out(['ok' => true, 'novo_status' => $novo_status]);
         $_SESSION['msg_sucesso'] = $novo_status === 'confirmada' ? 'Música confirmada!' : 'Música voltou para sugestões.';
         header("Location: gerenciar.php?id=$evento_id"); exit;
@@ -385,9 +510,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // 19. Excluir música (AJAX)
     if (isset($_POST['excluir_musica'])) {
-        $musica_id = (int)$_POST['musica_id'];
-        $pdo->prepare("DELETE FROM musicas_evento WHERE id = ? AND evento_id = ?")
-            ->execute([$musica_id, $evento_id]);
+        $musica_id = (int)($_POST['musica_id'] ?? 0);
+        if ($musica_id > 0) {
+            $pdo->prepare("DELETE FROM musicas_evento WHERE id = ? AND evento_id = ?")
+                ->execute([$musica_id, $evento_id]);
+        }
         if ($ajax) json_out(['ok' => true]);
         $_SESSION['msg_sucesso'] = "Música removida!";
         header("Location: gerenciar.php?id=$evento_id"); exit;
@@ -444,7 +571,7 @@ foreach ($lista_forn as $f) {
     $total_forn_pago     += $vp;
     $total_forn_restante += ($vt - $vp);
 }
-$total_forn_restante = max(0, $total_forn_restante);
+$total_forn_restante = max(0.0, $total_forn_restante);
 $pct_pago_geral = $total_forn > 0 ? round($total_forn_pago / $total_forn * 100) : 0;
 
 // Convidados
@@ -462,32 +589,60 @@ foreach ($lista_conv as $c) {
 }
 ksort($conv_grupos);
 
-// Checklist
-$rs3 = $pdo->prepare("SELECT * FROM checklist WHERE evento_id = ? ORDER BY etapa ASC, id ASC");
-$rs3->execute([$evento_id]);
+// Checklist - Ordenado dinamicamente pela ordem cronológica de criação/importação das etapas
+$rs3 = $pdo->prepare("
+    SELECT c.* FROM checklist c
+    JOIN (
+        SELECT etapa, MIN(id) as primeiro_id 
+        FROM checklist 
+        WHERE evento_id = ? 
+        GROUP BY etapa
+    ) ordenacao ON c.etapa = ordenacao.etapa
+    WHERE c.evento_id = ? 
+    ORDER BY ordenacao.primeiro_id ASC, c.id ASC
+");
+$rs3->execute([$evento_id, $evento_id]);
 $lista_checklist = $rs3->fetchAll();
 
-// Comentários de tarefas (sem N+1)
+// Comentários de tarefas (com fallback de segurança estrutural)
 $ids = array_column($lista_checklist, 'id');
 $coments_tarefa = [];
 if (!empty($ids)) {
-    $ph  = implode(',', array_fill(0, count($ids), '?'));
-    $rs4 = $pdo->prepare("SELECT * FROM checklist_comentarios WHERE checklist_id IN ($ph) ORDER BY data_cadastro ASC");
-    $rs4->execute($ids);
-    foreach ($rs4->fetchAll() as $c) { $coments_tarefa[$c['checklist_id']][] = $c; }
+    try {
+        $ph  = implode(',', array_fill(0, count($ids), '?'));
+        $rs4 = $pdo->prepare("SELECT * FROM checklist_comentarios WHERE checklist_id IN ($ph) ORDER BY criado_em ASC");
+        $rs4->execute($ids);
+        foreach ($rs4->fetchAll() as $c) { $coments_tarefa[$c['checklist_id']][] = $c; }
+    } catch (Exception $e) {
+        // Fallback caso a coluna de ordenação antiga estivesse em cache ou em uso concorrente
+        try {
+            $rs4 = $pdo->prepare("SELECT * FROM checklist_comentarios WHERE checklist_id IN ($ph) ORDER BY id ASC");
+            $rs4->execute($ids);
+            foreach ($rs4->fetchAll() as $c) { $coments_tarefa[$c['checklist_id']][] = $c; }
+        } catch (Exception $ex) { $coments_tarefa = []; }
+    }
 }
 
-// Comentários de etapas
-$rs5 = $pdo->query("SELECT * FROM checklist_comentarios WHERE etapa_nome IS NOT NULL ORDER BY data_cadastro ASC");
+// Comentários de etapas filtrados pelo evento_id (com tratamento de exceções)
 $coments_etapa = [];
-foreach ($rs5->fetchAll() as $c) { $coments_etapa[$c['etapa_nome']][] = $c; }
+try {
+    $rs5 = $pdo->prepare("SELECT * FROM checklist_comentarios WHERE evento_id = ? AND etapa_nome IS NOT NULL ORDER BY criado_em ASC");
+    $rs5->execute([$evento_id]);
+    foreach ($rs5->fetchAll() as $c) { $coments_etapa[$c['etapa_nome']][] = $c; }
+} catch (Exception $e) {
+    try {
+        $rs5 = $pdo->prepare("SELECT * FROM checklist_comentarios WHERE evento_id = ? AND etapa_nome IS NOT NULL ORDER BY id ASC");
+        $rs5->execute([$evento_id]);
+        foreach ($rs5->fetchAll() as $c) { $coments_etapa[$c['etapa_nome']][] = $c; }
+    } catch (Exception $ex) { $coments_etapa = []; }
+}
 
 // Agrupamento e progresso do checklist
 $passos = []; $prog = [];
 $total_g = 0; $conc_g = 0;
 foreach ($lista_checklist as $t) {
     $e = $t['etapa'];
-    $passos[$e][] = $t;
+    $passos[$e][] = $t; // O PHP vai manter a ordem exata vinda do banco
     if (!isset($prog[$e])) $prog[$e] = ['total' => 0, 'conc' => 0];
     $prog[$e]['total']++;
     $total_g++;
@@ -633,8 +788,12 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       border-color: #7c3aed; box-shadow: 0 0 0 3px rgba(124,58,237,.18);
     }
 
-    /* ---- MODAL CONFIRMAR SEMPRE À FRENTE ---- */
+    /* ---- AJUSTE DE SOBREPOSIÇÃO DOS MODAIS E FUNDOS CINZAS ---- */
+    .modal { z-index: 1055 !important; }
+    .modal-backdrop { z-index: 1050 !important; }
     #modalConfirmar { z-index: 1075 !important; }
+    .modal-backdrop:nth-of-type(2) { z-index: 1070 !important; }
+    
   </style>
 </head>
 <body>
@@ -659,17 +818,22 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   </div>
 </div>
 
-<form id="form-import-com-rec" method="POST" hidden>
+<?php if ($is_admin): ?>
+<form id="form-import-com-rec" method="POST" action="?id=<?= $evento_id ?>" hidden>
+  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
   <input type="hidden" name="gerar_padrao" value="1">
   <input type="hidden" name="tipo_padrao" value="com_recepcao">
 </form>
-<form id="form-import-sem-rec" method="POST" hidden>
+<form id="form-import-sem-rec" method="POST" action="?id=<?= $evento_id ?>" hidden>
+  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
   <input type="hidden" name="gerar_padrao" value="1">
   <input type="hidden" name="tipo_padrao" value="sem_recepcao">
 </form>
-<form id="form-limpar-checklist" method="POST" hidden>
+<form id="form-limpar-checklist" method="POST" action="?id=<?= $evento_id ?>" hidden>
+  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
   <input type="hidden" name="excluir_todo_checklist" value="1">
 </form>
+<?php endif; ?>
 
 <div class="container my-4 my-md-5">
 
@@ -681,7 +845,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         </a>
         <h2 class="fw-bold mb-1 text-white" style="letter-spacing:-.5px;">
           <i class="bi bi-rings text-warning me-2"></i>
-          Casamento de <?= htmlspecialchars($evento['nome']) ?>
+          Casamento de <?= htmlspecialchars($evento['nome'], ENT_QUOTES, 'UTF-8') ?>
         </h2>
         <p class="text-white-50 mb-3 small">Painel de controle do evento</p>
         <div class="d-flex flex-wrap gap-2">
@@ -712,7 +876,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       </div>
       <div class="d-flex align-items-center gap-3">
         <?php if ($total_g > 0):
-          $r_   = 28;
+          $r_  = 28;
           $circ = 2 * M_PI * $r_;
           $off  = $circ - ($circ * $pct_g / 100); ?>
         <div class="ring-wrap" title="<?= $pct_g ?>% do checklist concluído">
@@ -736,18 +900,18 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       <div class="d-flex flex-wrap gap-4">
         <div class="d-flex align-items-center gap-2 text-muted small">
           <span class="bg-light rounded-circle p-2 d-flex"><i class="bi bi-envelope-fill text-primary"></i></span>
-          <?= htmlspecialchars($evento['email']) ?>
+          <?= htmlspecialchars($evento['email'], ENT_QUOTES, 'UTF-8') ?>
         </div>
         <?php if (!empty($evento['telefone'])): ?>
         <div class="d-flex align-items-center gap-2 text-muted small">
           <span class="bg-light rounded-circle p-2 d-flex"><i class="bi bi-whatsapp text-success"></i></span>
-          <?= htmlspecialchars($evento['telefone']) ?>
+          <?= htmlspecialchars($evento['telefone'], ENT_QUOTES, 'UTF-8') ?>
         </div>
         <?php endif; ?>
         <?php if (!empty($evento['cpf'])): ?>
         <div class="d-flex align-items-center gap-2 text-muted small">
           <span class="bg-light rounded-circle p-2 d-flex"><i class="bi bi-person-vcard text-secondary"></i></span>
-          <?= htmlspecialchars($evento['cpf']) ?>
+          <?= htmlspecialchars($evento['cpf'], ENT_QUOTES, 'UTF-8') ?>
         </div>
         <?php endif; ?>
       </div>
@@ -772,7 +936,9 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           </div>
           <?php endif; ?>
         </div>
-        <div class="d-flex flex-wrap gap-2">
+
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+          <?php if ($is_admin): ?>
           <button type="button" class="btn btn-sm btn-outline-success rounded-3 btn-import-padrao"
                   data-form="form-import-com-rec"
                   data-msg="Isso adicionará todas as tarefas padrão (com recepção) ao evento."
@@ -788,13 +954,18 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           <button type="button" class="btn btn-sm btn-primary rounded-3" data-bs-toggle="modal" data-bs-target="#modalManual">
             <i class="bi bi-plus-lg me-1"></i> Manual
           </button>
+          <?php else: ?>
+          <span class="badge bg-light text-muted border shadow-sm px-3 py-2 rounded-3 d-flex align-items-center">
+             <i class="bi bi-lock-fill me-1"></i> Gerenciamento Restrito
+          </span>
+          <?php endif; ?>
         </div>
       </div>
 
       <?php if (empty($passos)): ?>
         <div class="card border-0 shadow-sm text-center py-5 text-muted" style="border-radius: var(--radius);">
           <i class="bi bi-info-circle fs-1 mb-2"></i>
-          <p class="mb-0">Checklist vazio. Use os botões acima para importar um modelo ou adicionar tarefas.</p>
+          <p class="mb-0">Checklist vazio. <?= $is_admin ? 'Use os botões acima para importar um modelo ou adicionar tarefas.' : 'O Administrador ainda não adicionou as tarefas.' ?></p>
         </div>
       <?php else: ?>
         <div class="d-flex flex-column gap-3">
@@ -814,7 +985,15 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                  id="hdr-<?= $cid ?>">
               <div class="d-flex align-items-center gap-2">
                 <i class="bi <?= $ok ? 'bi-check-all text-success' : 'bi-folder2-open text-info' ?> fs-5 icone-etapa"></i>
-                <span class="fw-bold" style="font-size:.88rem;"><?= htmlspecialchars($label) ?></span>
+                <span class="fw-bold" style="font-size:.88rem;"><?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?></span>
+                
+                <?php if ($is_admin): ?>
+                    <button type="button" class="btn btn-sm btn-link text-white p-0 ms-2 btn-renomear-etapa" 
+                            data-nome="<?= htmlspecialchars($etapa, ENT_QUOTES, 'UTF-8') ?>" 
+                            style="opacity: 0.7;" title="Renomear etapa">
+                        <i class="bi bi-pencil"></i>
+                    </button>
+                <?php endif; ?>
               </div>
               <div class="d-flex align-items-center gap-3">
                 <div class="d-none d-sm-flex align-items-center gap-2">
@@ -840,14 +1019,15 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                     <?php foreach ($coments_etapa[$etapa] ?? [] as $ce):
                       $cor = $ce['autor'] === 'Noivos' ? 'bg-danger' : 'bg-primary'; ?>
                       <div class="my-1 bg-white border p-2 rounded-3 shadow-sm" style="font-size:.82rem;">
-                        <span class="badge <?= $cor ?> rounded-pill me-2"><?= htmlspecialchars($ce['autor']) ?></span>
-                        <?= htmlspecialchars($ce['comentario']) ?>
+                        <span class="badge <?= $cor ?> rounded-pill me-2"><?= htmlspecialchars($ce['autor'], ENT_QUOTES, 'UTF-8') ?></span>
+                        <?= htmlspecialchars($ce['comentario'], ENT_QUOTES, 'UTF-8') ?>
                       </div>
                     <?php endforeach; ?>
                   </div>
-                  <form class="d-flex gap-2 form-ajax-etapa">
+                  <form class="d-flex gap-2 form-ajax-etapa" action="?id=<?= $evento_id ?>">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                     <input type="hidden" name="comentario_etapa_admin" value="1">
-                    <input type="hidden" name="etapa_nome" value="<?= htmlspecialchars($etapa) ?>">
+                    <input type="hidden" name="etapa_nome" value="<?= htmlspecialchars($etapa, ENT_QUOTES, 'UTF-8') ?>">
                     <input type="text" name="novo_comentario_etapa" class="form-control form-control-sm" placeholder="Nota geral para os noivos…" required>
                     <button type="submit" class="btn btn-sm btn-dark px-3">Salvar</button>
                   </form>
@@ -873,7 +1053,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                         <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
                           <div>
                             <h6 class="fw-bold mb-1 <?= $done ? 'text-muted text-decoration-line-through' : 'text-dark' ?>" style="line-height:1.4;">
-                              <?= htmlspecialchars($t['tarefa']) ?>
+                              <?= htmlspecialchars($t['tarefa'], ENT_QUOTES, 'UTF-8') ?>
                             </h6>
                             <?php if (!empty($t['descricao'])): ?>
                             <button class="btn btn-sm btn-outline-secondary py-0 px-2 rounded-pill"
@@ -884,6 +1064,8 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                             </button>
                             <?php endif; ?>
                           </div>
+
+                          <?php if ($is_admin): ?>
                           <div class="task-actions">
                             <button type="button"
                                     class="btn btn-sm btn-outline-primary py-0 px-2 rounded"
@@ -899,18 +1081,21 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                               <i class="bi bi-trash"></i>
                             </button>
                           </div>
+                          <?php endif; ?>
+
                         </div>
                         <div class="border-top pt-2">
                           <div class="lista-coment-tarefa mb-2">
                             <?php foreach ($coments_tarefa[$tid] ?? [] as $cm):
                               $corC = $cm['autor'] === 'Noivos' ? 'text-danger' : 'text-primary'; ?>
                               <div class="small my-1 bg-light p-2 rounded-3" style="font-size:.77rem;border:1px solid #f1f5f9;">
-                                <strong class="<?= $corC ?>"><?= htmlspecialchars($cm['autor']) ?>:</strong>
-                                <?= htmlspecialchars($cm['comentario']) ?>
+                                <strong class="<?= $corC ?>"><?= htmlspecialchars($cm['autor'], ENT_QUOTES, 'UTF-8') ?>:</strong>
+                                <?= htmlspecialchars($cm['comentario'], ENT_QUOTES, 'UTF-8') ?>
                               </div>
                             <?php endforeach; ?>
                           </div>
-                          <form class="d-flex gap-2 form-ajax-tarefa">
+                          <form class="d-flex gap-2 form-ajax-tarefa" action="?id=<?= $evento_id ?>">
+                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                             <input type="hidden" name="adicionar_comentario" value="1">
                             <input type="hidden" name="id_tarefa" value="<?= $tid ?>">
                             <input type="text" name="texto_comentario" class="form-control form-control-sm bg-light border-0" placeholder="Comentar nesta tarefa…" required>
@@ -930,11 +1115,14 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           <?php endforeach; ?>
         </div>
 
+        <?php if ($is_admin): ?>
         <div class="text-end mt-3">
           <button type="button" class="btn btn-sm btn-outline-danger rounded-3" id="btn-limpar-checklist">
             <i class="bi bi-trash me-1"></i> Limpar Todo o Checklist
           </button>
         </div>
+        <?php endif; ?>
+
       <?php endif; ?>
     </div>
 
@@ -958,7 +1146,6 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           </div>
         </div>
 
-        <!-- Bloco de Notas -->
         <button type="button" class="btn-notas-sidebar" data-bs-toggle="modal" data-bs-target="#modalNotas">
           <div class="d-flex justify-content-between align-items-center p-3">
             <div class="d-flex align-items-center gap-3">
@@ -979,7 +1166,6 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           </div>
         </button>
 
-        <!-- Playlist do Evento -->
         <button type="button" class="btn-musicas-sidebar" data-bs-toggle="modal" data-bs-target="#modalMusicas">
           <div class="d-flex justify-content-between align-items-center p-3">
             <div class="d-flex align-items-center gap-3">
@@ -1013,7 +1199,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
               <div class="d-flex align-items-start gap-2">
                 <i class="bi bi-church text-secondary mt-1" style="font-size:.85rem;"></i>
                 <span class="small text-dark fw-medium">
-                  <?= !empty($evento['local_cerimonia']) ? htmlspecialchars($evento['local_cerimonia']) : '<span class="text-muted fst-italic">A definir…</span>' ?>
+                  <?= !empty($evento['local_cerimonia']) ? htmlspecialchars($evento['local_cerimonia'], ENT_QUOTES, 'UTF-8') : '<span class="text-muted fst-italic">A definir…</span>' ?>
                 </span>
               </div>
             </div>
@@ -1023,7 +1209,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
               <div class="d-flex align-items-start gap-2">
                 <i class="bi bi-balloon-heart text-secondary mt-1" style="font-size:.85rem;"></i>
                 <span class="small text-dark fw-medium">
-                  <?= !empty($evento['local_festa']) ? htmlspecialchars($evento['local_festa']) : '<span class="text-muted fst-italic">A definir…</span>' ?>
+                  <?= !empty($evento['local_festa']) ? htmlspecialchars($evento['local_festa'], ENT_QUOTES, 'UTF-8') : '<span class="text-muted fst-italic">A definir…</span>' ?>
                 </span>
               </div>
             </div>
@@ -1124,15 +1310,15 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                       $fid    = (int)$f['id'];
                       $fValor = (float)$f['valor'];
                       $fPago  = (float)($f['valor_pago'] ?? 0);
-                      $fRest  = max(0, $fValor - $fPago);
+                      $fRest  = max(0.0, $fValor - $fPago);
                       $fPct   = $fValor > 0 ? round($fPago / $fValor * 100) : 0;
                       $fQuit  = $fRest <= 0;
                       $barClr = $fQuit ? 'bg-success' : ($fPct >= 50 ? 'bg-info' : 'bg-warning');
                     ?>
                     <div class="forn-pago-row" id="forn-adm-<?= $fid ?>">
                       <div>
-                        <div class="forn-info-nome"><?= htmlspecialchars($f['servico']) ?></div>
-                        <div class="forn-info-sub"><?= htmlspecialchars($f['nome']) ?></div>
+                        <div class="forn-info-nome"><?= htmlspecialchars($f['servico'], ENT_QUOTES, 'UTF-8') ?></div>
+                        <div class="forn-info-sub"><?= htmlspecialchars($f['nome'], ENT_QUOTES, 'UTF-8') ?></div>
                         <div class="d-flex align-items-center gap-2 mt-1">
                           <div style="flex:1;height:3px;background:#e2e8f0;border-radius:999px;overflow:hidden;">
                             <div class="forn-barra-fill-adm <?= $barClr ?>" style="height:100%;width:<?= $fPct ?>%;border-radius:999px;transition:width .4s;"></div>
@@ -1155,7 +1341,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                                value="<?= number_format($fPago, 2, ',', '.') ?>"
                                placeholder="0,00" inputmode="decimal" title="Valor já pago (R$)">
                         <button type="button" class="forn-btn-salvar forn-btn-salvar-adm"
-                                data-id="<?= $fid ?>" title="Salvar pagamento">
+                                 data-id="<?= $fid ?>" title="Salvar pagamento">
                           <i class="bi bi-floppy"></i>
                         </button>
                       </div>
@@ -1212,20 +1398,20 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                     <p class="text-center text-muted small py-4 mb-0">Nenhum convidado cadastrado.</p>
                   <?php else: ?>
                     <?php foreach ($conv_grupos as $grp => $convidadosDoGrupo): ?>
-                    <div class="grupo-sec" data-grupo="<?= htmlspecialchars($grp) ?>">
+                    <div class="grupo-sec" data-grupo="<?= htmlspecialchars($grp, ENT_QUOTES, 'UTF-8') ?>">
                       <div class="badge bg-secondary text-white w-100 text-start px-3 py-2 rounded-2 mb-1 mt-2 sec-badge">
                         <i class="bi bi-tag-fill me-1"></i>
-                        <?= htmlspecialchars($grp) ?> (<span class="cnt-grp"><?= count($convidadosDoGrupo) ?></span>)
+                        <?= htmlspecialchars($grp, ENT_QUOTES, 'UTF-8') ?> (<span class="cnt-grp"><?= count($convidadosDoGrupo) ?></span>)
                       </div>
                       <?php foreach ($convidadosDoGrupo as $con):
                         $cConf = (bool)$con['confirmado']; ?>
                       <div class="conv-row <?= $cConf ? 'conf' : 'pend' ?> p-2 mb-2 bg-light shadow-sm"
                            data-id="<?= $con['id'] ?>"
                            data-conf="<?= (int)$cConf ?>"
-                           data-nome="<?= strtolower(htmlspecialchars($con['nome'])) ?>">
+                           data-nome="<?= strtolower(htmlspecialchars($con['nome'], ENT_QUOTES, 'UTF-8')) ?>">
                         <div class="d-flex justify-content-between align-items-start mb-1">
-                          <h6 class="mb-0 small fw-bold text-dark text-truncate pe-2" title="<?= htmlspecialchars($con['nome']) ?>">
-                            <?= htmlspecialchars($con['nome']) ?>
+                          <h6 class="mb-0 small fw-bold text-dark text-truncate pe-2" title="<?= htmlspecialchars($con['nome'], ENT_QUOTES, 'UTF-8') ?>">
+                            <?= htmlspecialchars($con['nome'], ENT_QUOTES, 'UTF-8') ?>
                           </h6>
                           <div class="d-flex align-items-center gap-1 flex-shrink-0">
                             <button type="button" class="btn p-0 border-0 bg-transparent btn-toggle-conv" data-id="<?= $con['id'] ?>">
@@ -1241,18 +1427,18 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                         <?php if (!empty($con['telefone']) || $con['acompanhantes'] > 0 || $con['filhos'] > 0): ?>
                         <div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.4;">
                           <?php if (!empty($con['telefone'])): ?>
-                            <div><i class="bi bi-whatsapp me-1 text-success"></i><?= htmlspecialchars($con['telefone']) ?></div>
+                            <div><i class="bi bi-whatsapp me-1 text-success"></i><?= htmlspecialchars($con['telefone'], ENT_QUOTES, 'UTF-8') ?></div>
                           <?php endif; ?>
                           <?php if ($con['acompanhantes'] > 0): ?>
                             <div>
-                              <i class="bi bi-person-plus me-1"></i>Acomp (<?= $con['acompanhantes'] ?>):
-                              <?= !empty($con['nomes_acompanhantes']) ? htmlspecialchars($con['nomes_acompanhantes']) : '<span class="fst-italic text-black-50">Nomes não informados</span>' ?>
+                              <i class="bi bi-person-plus me-1"></i>Acomp (<?= (int)$con['acompanhantes'] ?>):
+                              <?= !empty($con['nomes_acompanhantes']) ? htmlspecialchars($con['nomes_acompanhantes'], ENT_QUOTES, 'UTF-8') : '<span class="fst-italic text-black-50">Nomes não informados</span>' ?>
                             </div>
                           <?php endif; ?>
                           <?php if ($con['filhos'] > 0): ?>
                             <div>
-                              <i class="bi bi-emoji-smile me-1"></i>Filhos (<?= $con['filhos'] ?>):
-                              <?= !empty($con['idades_filhos']) ? htmlspecialchars($con['idades_filhos']) : '<span class="fst-italic text-black-50">Idades não informadas</span>' ?>
+                              <i class="bi bi-emoji-smile me-1"></i>Filhos (<?= (int)$con['filhos'] ?>):
+                              <?= !empty($con['idades_filhos']) ? htmlspecialchars($con['idades_filhos'], ENT_QUOTES, 'UTF-8') : '<span class="fst-italic text-black-50">Idades não informadas</span>' ?>
                             </div>
                           <?php endif; ?>
                         </div>
@@ -1273,10 +1459,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   </div>
 </div>
 
-<!-- ============================================================
-     MODAIS
-     ============================================================ -->
-
+<?php if ($is_admin): ?>
 <div class="modal fade" id="modalManual" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content border-0 shadow-lg rounded-4">
@@ -1284,12 +1467,13 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         <h5 class="modal-title fw-bold"><i class="bi bi-plus-circle text-primary me-2"></i> Adicionar Tarefa Manual</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
-      <form method="POST">
+      <form method="POST" action="?id=<?= $evento_id ?>">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
         <input type="hidden" name="adicionar_manual" value="1">
         <div class="modal-body p-4">
           <div class="mb-3">
-            <label class="form-label small fw-bold text-secondary">Etapa (Número ou Nome)</label>
-            <input type="text" name="etapa" class="form-control" placeholder="Ex: 1  ou  Pré-Casamento" required>
+            <label class="form-label small fw-bold text-secondary">Etapa (Nome da etapa)</label>
+            <input type="text" name="etapa" class="form-control" placeholder="Ex: Pré-Casamento" required>
           </div>
           <div class="mb-3">
             <label class="form-label small fw-bold text-secondary">Nome da Tarefa</label>
@@ -1309,6 +1493,33 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   </div>
 </div>
 
+<div class="modal fade" id="modalRenomear" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header bg-light border-0">
+        <h5 class="modal-title fw-bold"><i class="bi bi-pencil text-primary me-2"></i> Renomear Etapa</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="POST" action="?id=<?= $evento_id ?>">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
+        <input type="hidden" name="renomear_etapa" value="1">
+        <input type="hidden" name="etapa_antiga" id="renomear_antiga">
+        <div class="modal-body p-4">
+          <div class="mb-3">
+            <label class="form-label small fw-bold text-secondary">Novo nome para a etapa:</label>
+            <input type="text" name="etapa_nova" id="renomear_nova" class="form-control" required>
+          </div>
+        </div>
+        <div class="modal-footer border-0 pt-0">
+          <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
+          <button type="submit" class="btn btn-primary btn-sm px-4 rounded-pill fw-bold">Renomear</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+<?php endif; ?>
+
 <div class="modal fade" id="modalFornecedor" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content border-0 shadow-lg rounded-4">
@@ -1316,7 +1527,8 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         <h5 class="modal-title fw-bold"><i class="bi bi-person-plus text-success me-2"></i> Adicionar Fornecedor</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
-      <form method="POST">
+      <form method="POST" action="?id=<?= $evento_id ?>">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
         <input type="hidden" name="adicionar_fornecedor" value="1">
         <div class="modal-body p-4">
           <div class="mb-3">
@@ -1359,13 +1571,14 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         <h5 class="modal-title fw-bold"><i class="bi bi-geo-alt-fill text-danger me-2"></i> Locais do Evento</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
-      <form method="POST">
+      <form method="POST" action="?id=<?= $evento_id ?>">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
         <input type="hidden" name="editar_locais" value="1">
         <div class="modal-body p-4">
           <div class="mb-3">
             <label class="form-label small fw-bold text-secondary">Local da Cerimônia</label>
             <input type="text" name="local_cerimonia" class="form-control" placeholder="Igreja, Cartório…"
-                   value="<?= htmlspecialchars($evento['local_cerimonia'] ?? '') ?>">
+                   value="<?= htmlspecialchars($evento['local_cerimonia'] ?? '', ENT_QUOTES, 'UTF-8') ?>">
           </div>
           <div class="mb-3">
             <label class="form-label small fw-bold text-secondary">Haverá recepção em outro local?</label>
@@ -1377,7 +1590,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           <div id="div-local-festa" <?= ($evento['tem_festa'] == 1) ? '' : 'style="display:none;"' ?>>
             <label class="form-label small fw-bold text-secondary">Local da Recepção / Festa</label>
             <input type="text" name="local_festa" class="form-control" placeholder="Espaço, Salão…"
-                   value="<?= htmlspecialchars($evento['local_festa'] ?? '') ?>">
+                   value="<?= htmlspecialchars($evento['local_festa'] ?? '', ENT_QUOTES, 'UTF-8') ?>">
           </div>
         </div>
         <div class="modal-footer border-0 pt-0">
@@ -1396,7 +1609,8 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         <h5 class="modal-title fw-bold"><i class="bi bi-person-plus text-success me-2"></i> Cadastrar Convidado</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
-      <form method="POST">
+      <form method="POST" action="?id=<?= $evento_id ?>">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
         <input type="hidden" name="adicionar_convidado_admin" value="1">
         <div class="modal-body p-4">
           <div class="mb-3">
@@ -1411,7 +1625,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                 <?php
                   if (!empty($conv_grupos)) {
                       foreach (array_keys($conv_grupos) as $nomeGrp) {
-                          echo '<option value="' . htmlspecialchars($nomeGrp) . '">';
+                          echo '<option value="' . htmlspecialchars($nomeGrp, ENT_QUOTES, 'UTF-8') . '">';
                       }
                   } else {
                       echo '<option value="Família"><option value="Amigos"><option value="Trabalho">';
@@ -1469,8 +1683,8 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
         </div>
         <div class="modal-body p-4">
-          <h6 class="fw-bold mb-3 border-bottom pb-2"><?= htmlspecialchars($t['tarefa']) ?></h6>
-          <div style="white-space:pre-wrap;font-size:.93rem;line-height:1.7;"><?= htmlspecialchars(trim($t['descricao'])) ?></div>
+          <h6 class="fw-bold mb-3 border-bottom pb-2"><?= htmlspecialchars($t['tarefa'], ENT_QUOTES, 'UTF-8') ?></h6>
+          <div style="white-space:pre-wrap;font-size:.93rem;line-height:1.7;"><?= htmlspecialchars(trim($t['descricao']), ENT_QUOTES, 'UTF-8') ?></div>
         </div>
         <div class="modal-footer border-0 pt-0">
           <button class="btn btn-secondary btn-sm px-4 rounded-pill fw-bold" data-bs-dismiss="modal">Fechar</button>
@@ -1480,6 +1694,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   </div>
   <?php endif; ?>
 
+  <?php if ($is_admin): ?>
   <div class="modal fade" id="modalEditar_<?= $tid ?>" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content border-0 shadow-lg rounded-4">
@@ -1487,21 +1702,22 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           <h5 class="modal-title fw-bold"><i class="bi bi-pencil-square text-primary me-2"></i> Editar Tarefa</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
         </div>
-        <form method="POST">
+        <form method="POST" action="?id=<?= $evento_id ?>">
+          <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
           <input type="hidden" name="editar_tarefa" value="1">
           <input type="hidden" name="id_tarefa" value="<?= $tid ?>">
           <div class="modal-body p-4">
             <div class="mb-3">
               <label class="form-label small fw-bold text-secondary">Etapa</label>
-              <input type="text" name="etapa_edit" class="form-control" value="<?= htmlspecialchars($t['etapa']) ?>" required>
+              <input type="text" name="etapa_edit" class="form-control" value="<?= htmlspecialchars($t['etapa'], ENT_QUOTES, 'UTF-8') ?>" required>
             </div>
             <div class="mb-3">
               <label class="form-label small fw-bold text-secondary">Tarefa</label>
-              <input type="text" name="tarefa_edit" class="form-control" value="<?= htmlspecialchars($t['tarefa']) ?>" required>
+              <input type="text" name="tarefa_edit" class="form-control" value="<?= htmlspecialchars($t['tarefa'], ENT_QUOTES, 'UTF-8') ?>" required>
             </div>
             <div class="mb-1">
               <label class="form-label small fw-bold text-secondary">Descrição</label>
-              <textarea name="descricao_edit" class="form-control" rows="4"><?= htmlspecialchars($t['descricao']) ?></textarea>
+              <textarea name="descricao_edit" class="form-control" rows="4"><?= htmlspecialchars($t['descricao'], ENT_QUOTES, 'UTF-8') ?></textarea>
             </div>
           </div>
           <div class="modal-footer border-0 pt-0">
@@ -1512,12 +1728,10 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       </div>
     </div>
   </div>
+  <?php endif; ?>
 
 <?php endforeach; ?>
 
-<!-- ============================================================
-     MODAL PLAYLIST DO EVENTO
-     ============================================================ -->
 <div class="modal fade" id="modalMusicas" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
     <div class="modal-content border-0 shadow-lg rounded-4" style="background:#f5f3ff;">
@@ -1538,9 +1752,8 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 
       <div class="modal-body px-4 pb-4 pt-2">
 
-        <!-- Formulário de sugestão -->
         <div class="card border-0 shadow-sm rounded-4 mb-4 musica-modal-form"
-             style="border:1.5px solid #a78bfa !important;background:#fff;">
+              style="border:1.5px solid #a78bfa !important;background:#fff;">
           <div class="card-body p-3 p-sm-4">
             <div class="d-flex align-items-center gap-2 mb-3">
               <i class="bi bi-plus-circle-fill fs-6" style="color:#7c3aed;"></i>
@@ -1566,7 +1779,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                 </label>
                 <select id="musica-momento" class="form-select">
                   <?php foreach ($momentos_casamento as $momento): ?>
-                  <option value="<?= htmlspecialchars($momento) ?>"><?= htmlspecialchars($momento) ?></option>
+                  <option value="<?= htmlspecialchars($momento, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($momento, ENT_QUOTES, 'UTF-8') ?></option>
                   <?php endforeach; ?>
                 </select>
               </div>
@@ -1594,7 +1807,6 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           </div>
         </div>
 
-        <!-- Abas Sugestões / Confirmadas -->
         <div class="d-flex align-items-center gap-2 mb-3">
           <button type="button" id="aba-sugestoes"
                   class="btn btn-sm fw-bold rounded-pill px-3"
@@ -1612,7 +1824,6 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           </button>
         </div>
 
-        <!-- Painel Sugestões -->
         <div id="painel-sugestoes">
           <?php if (empty($musicas_sugeridas)): ?>
           <div class="text-center py-5 text-muted" id="sug-vazia">
@@ -1622,10 +1833,10 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           <?php else: ?>
           <div id="lista-sugestoes-grupos">
             <?php foreach ($musicas_sugeridas as $momento => $musicas_do_momento): ?>
-            <div class="musica-grupo mb-3" data-momento="<?= htmlspecialchars($momento) ?>" data-aba="sugestao">
+            <div class="musica-grupo mb-3" data-momento="<?= htmlspecialchars($momento, ENT_QUOTES, 'UTF-8') ?>" data-aba="sugestao">
               <div class="musica-grupo-header" style="background:linear-gradient(90deg,#ede9fe,#f5f3ff);">
                 <i class="bi bi-collection-play" style="color:#7c3aed;font-size:.85rem;"></i>
-                <span class="momento-label" style="color:#5b21b6;"><?= htmlspecialchars($momento) ?></span>
+                <span class="momento-label" style="color:#5b21b6;"><?= htmlspecialchars($momento, ENT_QUOTES, 'UTF-8') ?></span>
                 <span class="cnt-grp-mus" style="background:#7c3aed;"><?= count($musicas_do_momento) ?></span>
               </div>
               <div class="musica-lista-items d-flex flex-column gap-2">
@@ -1639,21 +1850,23 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                 ?>
                 <div class="musica-item d-flex align-items-center gap-2 p-2 bg-white rounded-3 shadow-sm"
                      data-id="<?= $m['id'] ?>" data-status="sugestao"
+                     data-artista="<?= htmlspecialchars($m['artista'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                     data-link="<?= htmlspecialchars($m['link'] ?? '',    ENT_QUOTES, 'UTF-8') ?>"
                      style="border-left:3px solid #a78bfa;">
                   <div class="d-flex align-items-center justify-content-center rounded-2 flex-shrink-0"
                        style="width:34px;height:34px;background:#ede9fe;">
                     <i class="bi bi-lightbulb" style="color:#7c3aed;font-size:.9rem;"></i>
                   </div>
                   <div class="flex-fill" style="min-width:0;">
-                    <div class="fw-bold text-dark text-truncate" style="font-size:.84rem;"><?= htmlspecialchars($m['titulo']) ?></div>
+                    <div class="fw-bold text-dark text-truncate musica-titulo-txt" style="font-size:.84rem;"><?= htmlspecialchars($m['titulo'], ENT_QUOTES, 'UTF-8') ?></div>
                     <?php if (!empty($m['artista'])): ?>
-                    <div class="text-muted" style="font-size:.69rem;">
-                      <i class="bi bi-person-fill me-1" style="font-size:.6rem;"></i><?= htmlspecialchars($m['artista']) ?>
+                    <div class="text-muted musica-artista-txt" style="font-size:.69rem;">
+                      <i class="bi bi-person-fill me-1" style="font-size:.6rem;"></i><?= htmlspecialchars($m['artista'], ENT_QUOTES, 'UTF-8') ?>
                     </div>
                     <?php endif; ?>
                   </div>
                   <?php if (!empty($m['link'])): ?>
-                  <a href="<?= htmlspecialchars($m['link']) ?>" target="_blank" rel="noopener"
+                  <a href="<?= htmlspecialchars($m['link'], ENT_QUOTES, 'UTF-8') ?>" target="_blank" rel="noopener noreferrer"
                      class="btn btn-sm py-1 px-2 rounded-pill flex-shrink-0"
                      style="background:#ede9fe;color:#7c3aed;font-size:.65rem;border:none;white-space:nowrap;">
                     <?php if ($plat === 'youtube'): ?><i class="bi bi-youtube text-danger me-1"></i>YouTube
@@ -1682,7 +1895,6 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           <?php endif; ?>
         </div>
 
-        <!-- Painel Confirmadas -->
         <div id="painel-confirmadas" style="display:none;">
           <?php if (empty($musicas_confirmadas)): ?>
           <div class="text-center py-5 text-muted" id="conf-vazia">
@@ -1692,10 +1904,10 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           <?php else: ?>
           <div id="lista-confirmadas-grupos">
             <?php foreach ($musicas_confirmadas as $momento => $musicas_do_momento): ?>
-            <div class="musica-grupo mb-3" data-momento="<?= htmlspecialchars($momento) ?>" data-aba="confirmada">
+            <div class="musica-grupo mb-3" data-momento="<?= htmlspecialchars($momento, ENT_QUOTES, 'UTF-8') ?>" data-aba="confirmada">
               <div class="musica-grupo-header" style="background:linear-gradient(90deg,#dcfce7,#f0fdf4);">
                 <i class="bi bi-collection-play" style="color:#16a34a;font-size:.85rem;"></i>
-                <span class="momento-label" style="color:#14532d;"><?= htmlspecialchars($momento) ?></span>
+                <span class="momento-label" style="color:#14532d;"><?= htmlspecialchars($momento, ENT_QUOTES, 'UTF-8') ?></span>
                 <span class="cnt-grp-mus" style="background:#16a34a;"><?= count($musicas_do_momento) ?></span>
               </div>
               <div class="musica-lista-items d-flex flex-column gap-2">
@@ -1709,21 +1921,23 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                 ?>
                 <div class="musica-item d-flex align-items-center gap-2 p-2 bg-white rounded-3 shadow-sm"
                      data-id="<?= $m['id'] ?>" data-status="confirmada"
+                     data-artista="<?= htmlspecialchars($m['artista'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                     data-link="<?= htmlspecialchars($m['link'] ?? '',    ENT_QUOTES, 'UTF-8') ?>"
                      style="border-left:3px solid #86efac;">
                   <div class="d-flex align-items-center justify-content-center rounded-2 flex-shrink-0"
                        style="width:34px;height:34px;background:#dcfce7;">
                     <i class="bi bi-check-circle-fill" style="color:#16a34a;font-size:.9rem;"></i>
                   </div>
                   <div class="flex-fill" style="min-width:0;">
-                    <div class="fw-bold text-dark text-truncate" style="font-size:.84rem;"><?= htmlspecialchars($m['titulo']) ?></div>
+                    <div class="fw-bold text-dark text-truncate musica-titulo-txt" style="font-size:.84rem;"><?= htmlspecialchars($m['titulo'], ENT_QUOTES, 'UTF-8') ?></div>
                     <?php if (!empty($m['artista'])): ?>
-                    <div class="text-muted" style="font-size:.69rem;">
-                      <i class="bi bi-person-fill me-1" style="font-size:.6rem;"></i><?= htmlspecialchars($m['artista']) ?>
+                    <div class="text-muted musica-artista-txt" style="font-size:.69rem;">
+                      <i class="bi bi-person-fill me-1" style="font-size:.6rem;"></i><?= htmlspecialchars($m['artista'], ENT_QUOTES, 'UTF-8') ?>
                     </div>
                     <?php endif; ?>
                   </div>
                   <?php if (!empty($m['link'])): ?>
-                  <a href="<?= htmlspecialchars($m['link']) ?>" target="_blank" rel="noopener"
+                  <a href="<?= htmlspecialchars($m['link'], ENT_QUOTES, 'UTF-8') ?>" target="_blank" rel="noopener noreferrer"
                      class="btn btn-sm py-1 px-2 rounded-pill flex-shrink-0"
                      style="background:#dcfce7;color:#16a34a;font-size:.65rem;border:none;white-space:nowrap;">
                     <?php if ($plat === 'youtube'): ?><i class="bi bi-youtube text-danger me-1"></i>YouTube
@@ -1736,7 +1950,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                           data-id="<?= $m['id'] ?>" data-novo="sugestao"
                           title="Mover de volta para sugestões"
                           style="background:#fef3c7;color:#92400e;border:1.5px solid #fcd34d;font-size:.65rem;white-space:nowrap;">
-                    <i class="bi bi-arrow-left-circle me-1"></i> Desfazer
+                      <i class="bi bi-arrow-left-circle me-1"></i> Desfazer
                   </button>
                   <button type="button"
                           class="btn p-1 border-0 bg-transparent text-danger btn-excluir-musica flex-shrink-0"
@@ -1757,7 +1971,6 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   </div>
 </div>
 
-<!-- MODAL NOTAS -->
 <div class="modal fade" id="modalNotas" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
     <div class="modal-content border-0 shadow-lg rounded-4" style="background:#fffbf0;">
@@ -1776,7 +1989,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       </div>
       <div class="modal-body px-4 pb-4 pt-2">
         <div class="card border-0 shadow-sm rounded-4 mb-4" id="card-form-nota"
-             style="border: 1.5px solid #fde68a !important; background:#fff;">
+              style="border: 1.5px solid #fde68a !important; background:#fff;">
           <div class="card-body p-3 p-sm-4">
             <div class="d-flex align-items-center gap-2 mb-3">
               <i class="bi bi-plus-circle-fill text-warning fs-6"></i>
@@ -1827,7 +2040,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           </div>
           <?php else: ?>
           <div class="mb-2 d-flex align-items-center gap-2">
-            <span class="badge bg-warning text-dark rounded-pill px-3" style="font-size:.68rem;">
+            <span class="badge bg-warning text-dark rounded-pill px-3 badge-notas-cont" style="font-size:.68rem;">
               <i class="bi bi-journals me-1"></i>
               <span id="notas-badge-count"><?= $total_notas ?></span> nota<?= $total_notas !== 1 ? 's' : '' ?>
             </span>
@@ -1851,14 +2064,15 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                 <div class="card-body p-3">
                   <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
                     <h6 class="fw-bold mb-0 text-truncate" style="color:<?= $txtC ?>;font-size:.88rem;line-height:1.3;">
-                      <?= htmlspecialchars($nota['titulo']) ?>
+                      <?= htmlspecialchars($nota['titulo'], ENT_QUOTES, 'UTF-8') ?>
                     </h6>
                     <div class="d-flex gap-1 flex-shrink-0">
                       <button type="button" class="btn p-1 border-0 bg-transparent btn-editar-nota"
                               data-id="<?= $nota['id'] ?>"
-                              data-titulo="<?= htmlspecialchars($nota['titulo'], ENT_QUOTES) ?>"
-                              data-conteudo="<?= htmlspecialchars($nota['conteudo'], ENT_QUOTES) ?>"
-                              data-cor="<?= htmlspecialchars($nota['cor']) ?>" title="Editar nota">
+                              data-titulo="<?= htmlspecialchars($nota['titulo'],   ENT_QUOTES, 'UTF-8') ?>"
+                              data-conteudo="<?= htmlspecialchars($nota['conteudo'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                              data-cor="<?= htmlspecialchars($nota['cor'], ENT_QUOTES, 'UTF-8') ?>"
+                              title="Editar nota">
                         <i class="bi bi-pencil-fill" style="font-size:.78rem;color:<?= $txtC ?>;opacity:.55;"></i>
                       </button>
                       <button type="button" class="btn p-1 border-0 bg-transparent btn-excluir-nota"
@@ -1869,7 +2083,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                   </div>
                   <?php if (!empty($nota['conteudo'])): ?>
                   <p class="mb-0" style="color:<?= $txtC ?>;opacity:.82;white-space:pre-wrap;line-height:1.6;font-size:.8rem;">
-                    <?= htmlspecialchars($nota['conteudo']) ?>
+                    <?= htmlspecialchars($nota['conteudo'], ENT_QUOTES, 'UTF-8') ?>
                   </p>
                   <?php endif; ?>
                   <div class="mt-3 pt-2 border-top d-flex justify-content-between align-items-center"
@@ -1879,7 +2093,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                     </span>
                     <span class="badge rounded-pill"
                           style="font-size:.55rem;background:<?= $bgC ?>;border:1px solid <?= $brdC ?>;color:<?= $txtC ?>;opacity:.7;">
-                      <?= htmlspecialchars($nota['autor']) ?>
+                      <?= htmlspecialchars($nota['autor'], ENT_QUOTES, 'UTF-8') ?>
                     </span>
                   </div>
                 </div>
@@ -1896,8 +2110,10 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-const SELF = window.location.href;
+const SELF       = window.location.href;
+const CSRF_TOKEN  = <?= json_encode($csrf_token) ?>;
 
+/* ---- TOAST ---- */
 function toast(msg, tipo = 'verde') {
   const wrap = document.getElementById('toast-wrap');
   const el   = document.createElement('div');
@@ -1913,19 +2129,24 @@ function toast(msg, tipo = 'verde') {
   }, 2800);
 }
 
+/* ---- AJAX helper — injeta CSRF automaticamente ---- */
 async function ajax(obj) {
-  obj.is_ajax = '1';
+  obj.is_ajax    = '1';
+  obj.csrf_token = CSRF_TOKEN;
   const fd = new FormData();
   Object.entries(obj).forEach(([k, v]) => fd.append(k, v));
   const r = await fetch(SELF, { method: 'POST', body: fd });
   return r.json();
 }
 
+/* ---- BRL helpers — CORRIGIDO: remove "R$ " antes de parsear ---- */
 function brl(n) {
   return 'R$ ' + parseFloat(n).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 function parseBrl(s) {
-  return parseFloat(String(s).replace(/\./g, '').replace(',', '.')) || 0;
+  const clean = String(s).replace(/R\$\s?/g, '').replace(/\./g, '').replace(',', '.').trim();
+  const val   = parseFloat(clean);
+  return isNaN(val) ? 0 : val;
 }
 
 /* ---- MODAL DE CONFIRMAÇÃO ---- */
@@ -1944,10 +2165,6 @@ function showConfirm(titulo, msg, onConfirm, opts = {}) {
   btn.textContent = opts.btnText || 'Confirmar';
   _confirmAction  = onConfirm;
   confirmModal.show();
-  setTimeout(() => {
-    const backdrops = document.querySelectorAll('.modal-backdrop');
-    if (backdrops.length >= 2) backdrops[backdrops.length - 1].style.zIndex = '1070';
-  }, 50);
 }
 
 document.getElementById('btn-confirmar').addEventListener('click', () => {
@@ -1994,11 +2211,25 @@ document.getElementById('btn-limpar-checklist')?.addEventListener('click', () =>
   );
 });
 
+/* ---- RENOMEAR ETAPA ---- */
+const modalRenomearEl = document.getElementById('modalRenomear');
+if(modalRenomearEl) {
+    const modalRenomear = new bootstrap.Modal(modalRenomearEl);
+    document.querySelectorAll('.btn-renomear-etapa').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            document.getElementById('renomear_antiga').value = btn.dataset.nome;
+            document.getElementById('renomear_nova').value = btn.dataset.nome;
+            modalRenomear.show();
+        });
+    });
+}
+
 /* ---- TOGGLE TAREFA (AJAX) ---- */
 document.querySelectorAll('.btn-toggle-tarefa').forEach(btn => {
   btn.addEventListener('click', async () => {
     const id       = btn.dataset.id;
-    const atual    = +btn.dataset.status;
+    const mtual    = +btn.dataset.status;
     const card     = btn.closest('.tarefa-card');
     const titulo   = card.querySelector('h6');
     const hdrId    = btn.dataset.etapaHdrId;
@@ -2006,7 +2237,7 @@ document.querySelectorAll('.btn-toggle-tarefa').forEach(btn => {
     const orig     = btn.innerHTML;
     btn.innerHTML  = '<span class="spinner-border spinner-border-sm text-secondary"></span>';
     try {
-      const r = await ajax({ alternar_status: '1', id_tarefa: id, status_atual: atual });
+      const r = await ajax({ alternar_status: '1', id_tarefa: id, status_atual: mtual });
       if (!r.ok) throw new Error();
       const novo = r.novo === 1 || r.novo === '1';
       btn.innerHTML      = `<i class="bi ${novo ? 'bi-check-circle-fill' : 'bi-circle'}"></i>`;
@@ -2021,7 +2252,7 @@ document.querySelectorAll('.btn-toggle-tarefa').forEach(btn => {
         titulo.classList.toggle('text-dark',  !novo);
       }
       const hdr = document.getElementById(hdrId);
-      if (hdr) {
+      if (hdr && collapso) {
         const allTasks   = collapso.querySelectorAll('.tarefa-card').length;
         const concluidas = collapso.querySelectorAll('.tarefa-card.done').length;
         const pctE       = allTasks > 0 ? Math.round(concluidas / allTasks * 100) : 0;
@@ -2071,21 +2302,23 @@ document.querySelectorAll('.btn-del-task').forEach(btn => {
             setTimeout(() => {
               const collapso = card.closest('.collapse');
               card.remove();
-              const hdr = collapso?.previousElementSibling;
-              if (hdr) {
-                const remaining  = collapso.querySelectorAll('.tarefa-card').length;
-                const concluidas = collapso.querySelectorAll('.tarefa-card.done').length;
-                const pctE       = remaining > 0 ? Math.round(concluidas / remaining * 100) : 0;
-                const badge = hdr.querySelector('.badge');
-                if (badge) badge.innerHTML = `<span class="conc-etapa">${concluidas}</span>/${remaining}`;
-                const b = hdr.querySelector('.barra-mini-fill');
-                const p = hdr.querySelector('.pct-etapa');
-                const i = hdr.querySelector('.icone-etapa');
-                if (b) b.style.width = pctE + '%';
-                if (p) p.textContent = pctE + '%';
-                if (i) i.className   = remaining > 0 && concluidas === remaining
-                  ? 'bi bi-check-all text-success fs-5 icone-etapa'
-                  : 'bi bi-folder2-open text-info fs-5 icone-etapa';
+              if (collapso) {
+                const hdr = document.querySelector(`[data-bs-target="#${collapso.id}"]`);
+                if (hdr) {
+                  const remaining  = collapso.querySelectorAll('.tarefa-card').length;
+                  const concluidas = collapso.querySelectorAll('.tarefa-card.done').length;
+                  const pctE       = remaining > 0 ? Math.round(concluidas / remaining * 100) : 0;
+                  const badge = hdr.querySelector('.badge');
+                  if (badge) badge.innerHTML = `<span class="conc-etapa">${concluidas}</span>/${remaining}`;
+                  const b = hdr.querySelector('.barra-mini-fill');
+                  const p = hdr.querySelector('.pct-etapa');
+                  const i = hdr.querySelector('.icone-etapa');
+                  if (b) b.style.width = pctE + '%';
+                  if (p) p.textContent = pctE + '%';
+                  if (i) i.className   = remaining > 0 && concluidas === remaining
+                    ? 'bi bi-check-all text-success fs-5 icone-etapa'
+                    : 'bi bi-folder2-open text-info fs-5 icone-etapa';
+                }
               }
               const totalDone = document.querySelectorAll('.tarefa-card.done').length;
               const totalAll  = document.querySelectorAll('.tarefa-card').length;
@@ -2098,6 +2331,8 @@ document.querySelectorAll('.btn-del-task').forEach(btn => {
               if (ring) ring.textContent = pctG + '%';
             }, 310);
             toast('Tarefa removida!', 'verm');
+          } else {
+            toast(r.msg || 'Acesso Negado!', 'verm');
           }
         } catch { toast('Erro ao remover tarefa.', 'verm'); }
       }
@@ -2114,7 +2349,8 @@ document.querySelectorAll('.form-ajax-etapa').forEach(form => {
     const input = form.querySelector('input[type="text"]');
     const btn   = form.querySelector('button');
     const orig  = btn.innerHTML;
-    fd.append('is_ajax', '1');
+    fd.append('is_ajax',    '1');
+    fd.append('csrf_token', CSRF_TOKEN);
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
     try {
       const r = await (await fetch(SELF, { method: 'POST', body: fd })).json();
@@ -2140,7 +2376,8 @@ document.querySelectorAll('.form-ajax-tarefa').forEach(form => {
     const input = form.querySelector('input[type="text"]');
     const btn   = form.querySelector('button');
     const orig  = btn.innerHTML;
-    fd.append('is_ajax', '1');
+    fd.append('is_ajax',    '1');
+    fd.append('csrf_token', CSRF_TOKEN);
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
     try {
       const r = await (await fetch(SELF, { method: 'POST', body: fd })).json();
@@ -2203,8 +2440,8 @@ document.querySelectorAll('.forn-btn-salvar-adm').forEach(btn => {
         const quit = rest <= 0;
         const barra = row.querySelector('.forn-barra-fill-adm');
         if (barra) {
-          barra.style.width        = pct + '%';
           barra.className          = 'forn-barra-fill-adm ' + (quit ? 'bg-success' : pct >= 50 ? 'bg-info' : 'bg-warning');
+          barra.style.width        = pct + '%';
           barra.style.height       = '100%';
           barra.style.borderRadius = '999px';
           barra.style.transition   = 'width .4s';
@@ -2232,21 +2469,24 @@ document.querySelectorAll('.forn-btn-salvar-adm').forEach(btn => {
 });
 
 document.querySelectorAll('.forn-input-pago-adm').forEach(input => {
-  input.addEventListener('blur',  () => { const n = parseBrl(input.value); if (!isNaN(n)) input.value = n.toLocaleString('pt-BR', { minimumFractionDigits: 2 }); });
+  input.addEventListener('blur',  () => {
+    const n = parseBrl(input.value);
+    if (!isNaN(n)) input.value = n.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+  });
   input.addEventListener('focus', () => input.select());
 });
 
 /* ---- CONVIDADOS ---- */
 function deltaCntTotal(n) {
   const e = document.getElementById('cnt-total');
-  if (e) e.textContent = +e.textContent + n;
+  if (e) e.textContent = Math.max(0, +e.textContent + n);
 }
 function deltaCntStatus(conf, n) {
   const el = document.getElementById(conf ? 'cnt-conf' : 'cnt-pend');
-  if (el) el.textContent = +el.textContent + n;
+  if (el) el.textContent = Math.max(0, +el.textContent + n);
   if (conf) {
     const badge = document.getElementById('cnt-badge-conf');
-    if (badge) badge.textContent = +badge.textContent + n;
+    if (badge) badge.textContent = Math.max(0, +badge.textContent + n);
   }
 }
 
@@ -2254,12 +2494,12 @@ function bindToggleConv(btn) {
   btn.addEventListener('click', async () => {
     const row   = btn.closest('.conv-row');
     const id    = btn.dataset.id;
-    const atual = +row.dataset.conf;
+    const mtual = +row.dataset.conf;
     const badge = btn.querySelector('.badge');
     const orig  = badge.innerHTML;
     badge.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
     try {
-      const r = await ajax({ toggle_convidado: '1', convidado_id: id, status_atual: atual });
+      const r = await ajax({ toggle_convidado: '1', convidado_id: id, status_atual: mtual });
       if (r.ok) {
         const novo = r.novo === 1;
         row.dataset.conf = novo ? '1' : '0';
@@ -2322,7 +2562,9 @@ document.querySelectorAll('.conv-row').forEach(row => {
   if (x) bindExcluirConv(x);
 });
 
-/* ---- BLOCO DE NOTAS ---- */
+/* ============================================================
+   BLOCO DE NOTAS
+   ============================================================ */
 const NOTAS_CORES_BG  = { amarelo:'#fef9c3', verde:'#dcfce7', azul:'#dbeafe', rosa:'#fce7f3', cinza:'#f1f5f9' };
 const NOTAS_CORES_BRD = { amarelo:'#fde047', verde:'#86efac', azul:'#93c5fd', rosa:'#f9a8d4', cinza:'#cbd5e1' };
 const NOTAS_CORES_TXT = { amarelo:'#78350f', verde:'#14532d', azul:'#1e3a8a', rosa:'#831843', cinza:'#1e293b' };
@@ -2340,14 +2582,21 @@ function resetarFormNota() {
   document.getElementById('btn-cancelar-nota').classList.add('d-none');
   document.getElementById('btn-salvar-nota').innerHTML = '<i class="bi bi-floppy me-1"></i> Salvar Nota';
 }
+
 function atualizarContadoresNotas() {
-  const total = document.querySelectorAll('#grid-notas .nota-card-wrap').length;
-  const txt   = total + ' nota' + (total !== 1 ? 's' : '');
-  const badge  = document.getElementById('notas-count-badge');
-  const badge2 = document.getElementById('notas-badge-count');
-  if (badge)  badge.textContent = txt;
-  if (badge2) badge2.closest('.badge').innerHTML = `<i class="bi bi-journals me-1"></i>${total} nota${total !== 1 ? 's' : ''}`;
+  const total  = document.querySelectorAll('#grid-notas .nota-card-wrap').length;
+  const sufixo = total !== 1 ? 's' : '';
+  const txt    = total + ' nota' + sufixo;
+
+  const badgeSide = document.getElementById('notas-count-badge');
+  if (badgeSide) badgeSide.textContent = txt;
+
+  const contBadge = document.querySelector('.badge-notas-cont');
+  if (contBadge) {
+    contBadge.innerHTML = `<i class="bi bi-journals me-1"></i>${total} nota${sufixo}`;
+  }
 }
+
 function notaHtmlCard(r, cor) {
   const bg  = NOTAS_CORES_BG[cor]  || '#fef9c3';
   const brd = NOTAS_CORES_BRD[cor] || '#fde047';
@@ -2355,6 +2604,7 @@ function notaHtmlCard(r, cor) {
   const dt  = r.atualizado || new Date().toLocaleString('pt-BR', {
     day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'
   }).replace(',', ' às');
+
   const conteudoHtml = r.conteudo
     ? `<p class="mb-0" style="color:${txt};opacity:.82;white-space:pre-wrap;line-height:1.6;font-size:.8rem;">${r.conteudo}</p>`
     : '';
@@ -2367,8 +2617,9 @@ function notaHtmlCard(r, cor) {
             <h6 class="fw-bold mb-0 text-truncate" style="color:${txt};font-size:.88rem;line-height:1.3;">${r.titulo}</h6>
             <div class="d-flex gap-1 flex-shrink-0">
               <button type="button" class="btn p-1 border-0 bg-transparent btn-editar-nota"
-                      data-id="${r.id}" data-titulo="${r.titulo.replace(/"/g,'&quot;')}"
-                      data-conteudo="${r.conteudo.replace(/"/g,'&quot;')}"
+                      data-id="${r.id}"
+                      data-titulo="${r.titulo}"
+                      data-conteudo="${r.conteudo}"
                       data-cor="${cor}" title="Editar nota">
                 <i class="bi bi-pencil-fill" style="font-size:.78rem;color:${txt};opacity:.55;"></i>
               </button>
@@ -2411,9 +2662,8 @@ document.getElementById('btn-salvar-nota')?.addEventListener('click', async () =
         const wrap = document.getElementById('lista-notas-wrap');
         wrap.innerHTML = `
           <div class="mb-2 d-flex align-items-center gap-2">
-            <span class="badge bg-warning text-dark rounded-pill px-3" style="font-size:.68rem;">
-              <i class="bi bi-journals me-1"></i>
-              <span id="notas-badge-count">0</span> notas
+            <span class="badge bg-warning text-dark rounded-pill px-3 badge-notas-cont" style="font-size:.68rem;">
+              <i class="bi bi-journals me-1"></i>0 notas
             </span>
             <span class="text-muted" style="font-size:.68rem;">· mais recentes primeiro</span>
           </div>
@@ -2495,6 +2745,15 @@ document.getElementById('modalNotas')?.addEventListener('hidden.bs.modal', reset
    PLAYLIST — MÚSICAS COM SUGESTÃO E CONFIRMAÇÃO
    ============================================================ */
 
+function urlSegura(url) {
+  if (!url) return '';
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+    return url;
+  } catch { return ''; }
+}
+
 function detectarPlataforma(url) {
   if (!url) return null;
   if (url.includes('youtube.com') || url.includes('youtu.be')) return 'youtube';
@@ -2503,16 +2762,17 @@ function detectarPlataforma(url) {
 }
 
 function linkBtnHtml(link, accentBg, accentColor) {
-  if (!link) return '';
-  const plat = detectarPlataforma(link);
-  const safe = link.replace(/"/g, '&quot;');
+  const safe = urlSegura(link);
+  if (!safe) return '';
+  const plat = detectarPlataforma(safe);
+  const safeAttr = safe.replace(/"/g, '"');
   let icone = `<i class="bi bi-link-45deg me-1"></i>Ouvir`;
   if (plat === 'youtube') icone = `<i class="bi bi-youtube text-danger me-1"></i>YouTube`;
   if (plat === 'spotify') icone = `<i class="bi bi-spotify text-success me-1"></i>Spotify`;
-  return `<a href="${safe}" target="_blank" rel="noopener"
-              class="btn btn-sm py-1 px-2 rounded-pill flex-shrink-0"
-              style="background:${accentBg};color:${accentColor};font-size:.65rem;border:none;white-space:nowrap;"
-              title="Abrir link">${icone}</a>`;
+  return `<a href="${safeAttr}" target="_blank" rel="noopener noreferrer"
+               class="btn btn-sm py-1 px-2 rounded-pill flex-shrink-0"
+               style="background:${accentBg};color:${accentColor};font-size:.65rem;border:none;white-space:nowrap;"
+               title="Abrir link">${icone}</a>`;
 }
 
 function musicaCardHtml(m) {
@@ -2520,28 +2780,34 @@ function musicaCardHtml(m) {
   const cor  = eSug
     ? { brd:'#a78bfa', bg:'#ede9fe', txt:'#7c3aed', icone:'bi-lightbulb' }
     : { brd:'#86efac', bg:'#dcfce7', txt:'#16a34a', icone:'bi-check-circle-fill' };
+
+  const tituloEsc   = (m.titulo  || '').replace(/&/g,'&').replace(/"/g,'"').replace(/</g,'<').replace(/>/g,'>');
+  const artistaEsc  = (m.artista || '').replace(/&/g,'&').replace(/"/g,'"').replace(/</g,'<').replace(/>/g,'>');
+  const linkEsc     = (urlSegura(m.link || '')).replace(/"/g,'"');
+
   const artistaHtml = m.artista
-    ? `<div class="text-muted" style="font-size:.69rem;"><i class="bi bi-person-fill me-1" style="font-size:.6rem;"></i>${m.artista}</div>`
+    ? `<div class="text-muted musica-artista-txt" style="font-size:.69rem;"><i class="bi bi-person-fill me-1" style="font-size:.6rem;"></i>${artistaEsc}</div>`
     : '';
   const confirmarBtn = eSug
     ? `<button type="button" class="btn btn-sm py-1 px-2 rounded-pill flex-shrink-0 btn-confirmar-musica"
-               data-id="${m.id}" data-novo="confirmada"
-               style="background:#dcfce7;color:#16a34a;border:1.5px solid #86efac;font-size:.65rem;white-space:nowrap;">
+                data-id="${m.id}" data-novo="confirmada"
+                style="background:#dcfce7;color:#16a34a;border:1.5px solid #86efac;font-size:.65rem;white-space:nowrap;">
          <i class="bi bi-check-circle me-1"></i> Confirmar</button>`
     : `<button type="button" class="btn btn-sm py-1 px-2 rounded-pill flex-shrink-0 btn-confirmar-musica"
-               data-id="${m.id}" data-novo="sugestao"
-               style="background:#fef3c7;color:#92400e;border:1.5px solid #fcd34d;font-size:.65rem;white-space:nowrap;">
+                data-id="${m.id}" data-novo="sugestao"
+                style="background:#fef3c7;color:#92400e;border:1.5px solid #fcd34d;font-size:.65rem;white-space:nowrap;">
          <i class="bi bi-arrow-left-circle me-1"></i> Desfazer</button>`;
   return `
     <div class="musica-item d-flex align-items-center gap-2 p-2 bg-white rounded-3 shadow-sm"
          data-id="${m.id}" data-status="${m.status}"
+         data-artista="${artistaEsc}" data-link="${linkEsc}"
          style="border-left:3px solid ${cor.brd};">
       <div class="d-flex align-items-center justify-content-center rounded-2 flex-shrink-0"
            style="width:34px;height:34px;background:${cor.bg};">
         <i class="bi ${cor.icone}" style="color:${cor.txt};font-size:.9rem;"></i>
       </div>
       <div class="flex-fill" style="min-width:0;">
-        <div class="fw-bold text-dark text-truncate" style="font-size:.84rem;">${m.titulo}</div>
+        <div class="fw-bold text-dark text-truncate musica-titulo-txt" style="font-size:.84rem;">${tituloEsc}</div>
         ${artistaHtml}
       </div>
       ${linkBtnHtml(m.link, cor.bg, cor.txt)}
@@ -2565,7 +2831,12 @@ function atualizarContadoresMusicas() {
   if (bc) bc.textContent = conf;
 }
 
-function garantirGrupo(painel, momento, aba) {
+function cssEscape(str) {
+  if (typeof CSS !== 'undefined' && CSS.escape) return CSS.escape(str);
+  return str.replace(/[^\w-]/g, c => '\\' + c);
+}
+
+function garantizarGrupo(painel, momento, aba) {
   const wrapId = aba === 'sugestao' ? 'lista-sugestoes-grupos' : 'lista-confirmadas-grupos';
   let wrap = document.getElementById(wrapId);
   if (!wrap) {
@@ -2577,16 +2848,17 @@ function garantirGrupo(painel, momento, aba) {
   const cor  = eSug
     ? { bg:'linear-gradient(90deg,#ede9fe,#f5f3ff)', txt:'#5b21b6', badge:'#7c3aed' }
     : { bg:'linear-gradient(90deg,#dcfce7,#f0fdf4)', txt:'#14532d', badge:'#16a34a' };
-  let grupo = wrap.querySelector(`.musica-grupo[data-aba="${aba}"][data-momento="${CSS.escape(momento)}"]`);
+  const momentoAttr = momento.replace(/"/g, '"');
+  let grupo = wrap.querySelector(`.musica-grupo[data-aba="${aba}"][data-momento="${cssEscape(momento)}"]`);
   if (!grupo) {
     grupo = document.createElement('div');
     grupo.className = 'musica-grupo mb-3';
-    grupo.dataset.aba = aba;
+    grupo.dataset.aba       = aba;
     grupo.dataset.momento = momento;
     grupo.innerHTML = `
       <div class="musica-grupo-header" style="background:${cor.bg};">
         <i class="bi bi-collection-play" style="color:${cor.badge};font-size:.85rem;"></i>
-        <span class="momento-label" style="color:${cor.txt};">${momento}</span>
+        <span class="momento-label" style="color:${cor.txt};">${momentoAttr}</span>
         <span class="cnt-grp-mus" style="background:${cor.badge};">0</span>
       </div>
       <div class="musica-lista-items d-flex flex-column gap-2"></div>`;
@@ -2619,9 +2891,9 @@ function moverCard(card, novoStatus) {
   const momento = card.closest('.musica-grupo').dataset.momento;
   const m = {
     id:      card.dataset.id,
-    titulo:  card.querySelector('.text-truncate').textContent.trim(),
-    artista: card.querySelector('.bi-person-fill')?.nextSibling?.textContent?.trim() || '',
-    link:    card.querySelector('a[href]')?.href || '',
+    titulo:  card.querySelector('.musica-titulo-txt')?.textContent?.trim() || '',
+    artista: card.dataset.artista || '',
+    link:    card.dataset.link    || '',
     status:  novoStatus,
     momento,
   };
@@ -2639,7 +2911,7 @@ function moverCard(card, novoStatus) {
     document.getElementById(idVazioDestino)?.remove();
     const painelDestino = document.getElementById(novoStatus === 'confirmada' ? 'painel-confirmadas' : 'painel-sugestoes');
     const abaDestino    = novoStatus === 'confirmada' ? 'confirmada' : 'sugestao';
-    const grupo = garantirGrupo(painelDestino, momento, abaDestino);
+    const grupo = garantizarGrupo(painelDestino, momento, abaDestino);
     const listaItems = grupo.querySelector('.musica-lista-items');
     listaItems.insertAdjacentHTML('beforeend', musicaCardHtml(m));
     const cnt = grupo.querySelector('.cnt-grp-mus');
@@ -2722,7 +2994,7 @@ function bindExcluirMusica(btn) {
 function inserirMusicaSugerida(m) {
   document.getElementById('sug-vazia')?.remove();
   const painel = document.getElementById('painel-sugestoes');
-  const grupo  = garantirGrupo(painel, m.momento, 'sugestao');
+  const grupo  = garantizarGrupo(painel, m.momento, 'sugestao');
   const lista  = grupo.querySelector('.musica-lista-items');
   lista.insertAdjacentHTML('beforeend', musicaCardHtml(m));
   const cnt = grupo.querySelector('.cnt-grp-mus');
@@ -2734,7 +3006,6 @@ function inserirMusicaSugerida(m) {
   }
 }
 
-// Inicializa botões existentes
 document.querySelectorAll('.btn-confirmar-musica').forEach(btn => bindConfirmarMusica(btn));
 document.querySelectorAll('.btn-excluir-musica').forEach(btn => bindExcluirMusica(btn));
 

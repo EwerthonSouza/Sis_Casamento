@@ -18,6 +18,7 @@ $evento_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
 if (!$evento_id) {
     header("Location: painel_admin.php");
     exit;
+} // <--- A CHAVE QUE FALTAVA ESTÁ AQUI
 
 // Carrega os dados do evento
 $stmt = $pdo->prepare("SELECT e.*, c.nome, c.email FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
