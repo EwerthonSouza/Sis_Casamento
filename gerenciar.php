@@ -194,22 +194,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
-    // 2. Importar padrão (Apenas Admin)
-    if (isset($_POST['gerar_padrao'])) {
+    // 2. Importar padrão CUSTOMIZADO (Apenas Admin)
+    if (isset($_POST['gerar_padrao_customizado'])) {
         if (!$is_admin) { $_SESSION['msg_erro'] = "Acesso negado."; header("Location: gerenciar.php?id=$evento_id"); exit; }
 
-        $tipo    = trim($_POST['tipo_padrao'] ?? '');
-        $stmt    = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ?");
+        $tipo = trim($_POST['tipo_padrao'] ?? '');
+        $mapeamento_etapas = $_POST['map_etapas'] ?? []; 
+
+        $stmt = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ?");
         $stmt->execute([$tipo]);
         $modelos = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
         if (!empty($modelos)) {
             $ins = $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0)");
-            foreach ($modelos as $m) { $ins->execute([$evento_id, $m['etapa'], $m['tarefa'], $m['descricao']]); }
-            $_SESSION['msg_sucesso'] = "Cronograma importado com sucesso!";
+            $importadas = 0;
+
+            foreach ($modelos as $m) {
+                $etapa_original = $m['etapa'];
+                
+                // Só importa se a etapa estiver mapeada e não estiver vazia
+                if (isset($mapeamento_etapas[$etapa_original]) && trim($mapeamento_etapas[$etapa_original]) !== '') {
+                    $nova_etapa = trim($mapeamento_etapas[$etapa_original]);
+                    $ins->execute([$evento_id, $nova_etapa, $m['tarefa'], $m['descricao']]);
+                    $importadas++;
+                }
+            }
+
+            if ($importadas > 0) {
+                $_SESSION['msg_sucesso'] = "Cronograma customizado importado com sucesso ($importadas tarefas)!";
+            } else {
+                $_SESSION['msg_erro'] = "Nenhuma etapa válida selecionada para importação.";
+            }
         } else {
-            $_SESSION['msg_erro'] = "Nenhum modelo encontrado para o tipo: " . htmlspecialchars($tipo);
+            $_SESSION['msg_erro'] = "Nenhum modelo encontrado para o tipo especificado.";
         }
         header("Location: gerenciar.php?id=$evento_id"); exit;
+    }
+
+    // Rota AJAX para Listar Etapas Originais do Modelo
+    if (isset($_POST['listar_etapas_modelo'])) {
+        if (!$is_admin) { json_out(['ok' => false, 'msg' => 'Acesso negado.']); }
+        $tipo = trim($_POST['tipo_padrao'] ?? '');
+        
+        $stmt = $pdo->prepare("SELECT etapa FROM checklist_modelos WHERE tipo_padrao = ? GROUP BY etapa ORDER BY MIN(id) ASC");
+        $stmt->execute([$tipo]);
+        $etapas = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        
+        json_out(['ok' => true, 'etapas' => $etapas]);
     }
 
     // 3. Adicionar tarefa manual (Apenas Admin)
@@ -337,7 +368,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $cat        = trim($_POST['categoria_convidado']  ?? 'Outros');
         $acomp_qtd  = max(0, (int)($_POST['acompanhantes']       ?? 0));
         $acomp_nms  = trim($_POST['nomes_acompanhantes']  ?? '');
-        $filhos_qtd = max(0, (int)($_POST['filhos']              ?? 0));
+        $filhos_qtd = max(0, (int)($_POST['filhos']               ?? 0));
         $filhos_ids = trim($_POST['idades_filhos']        ?? '');
         if ($nome !== '') {
             $pdo->prepare("INSERT INTO convidados (evento_id, nome, telephone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)")
@@ -382,7 +413,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $local_festa = $tem_festa === 1 ? trim($_POST['local_festa'] ?? '') : null;
         $pdo->prepare("UPDATE eventos SET local_cerimonia = ?, tem_festa = ?, local_festa = ? WHERE id = ?")
             ->execute([$local_cer, $tem_festa, $local_festa, $evento_id]);
-        $_SESSION['msg_sucesso'] = "Locais atualizados!";
+        $_SESSION['msg_sucesso'] = "Locais updated!";
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
@@ -422,7 +453,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $cor      = in_array($_POST['cor_nota'] ?? '', $cores_ok, true) ? $_POST['cor_nota'] : 'amarelo';
         if ($titulo !== '') {
             if ($nota_id > 0) {
-                $pdo->prepare("UPDATE notas_evento SET titulo=?, conteudo=?, cor=?, atualizado_em=NOW() WHERE id=? AND evento_id=?")
+                $pdo->prepare("UPDATE notas_evento SET titulo=?, conteudo=?, cor=?, updated_at=NOW() WHERE id=? AND evento_id=?")
                     ->execute([$titulo, $conteudo, $cor, $nota_id, $evento_id]);
                 $ret_id = $nota_id;
             } else {
@@ -463,7 +494,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $link    = trim($_POST['link_musica']    ?? '');
         $momento = trim($_POST['momento_musica'] ?? 'Livre / Sem Momento Definido');
 
-        // Valida protocolo do link
         if ($link !== '' && !preg_match('/^https?:\/\//i', $link)) {
             $link = 'https://' . $link;
         }
@@ -614,7 +644,6 @@ if (!empty($ids)) {
         $rs4->execute($ids);
         foreach ($rs4->fetchAll() as $c) { $coments_tarefa[$c['checklist_id']][] = $c; }
     } catch (Exception $e) {
-        // Fallback caso a coluna de ordenação antiga estivesse em cache ou em uso concorrente
         try {
             $rs4 = $pdo->prepare("SELECT * FROM checklist_comentarios WHERE checklist_id IN ($ph) ORDER BY id ASC");
             $rs4->execute($ids);
@@ -642,7 +671,7 @@ $passos = []; $prog = [];
 $total_g = 0; $conc_g = 0;
 foreach ($lista_checklist as $t) {
     $e = $t['etapa'];
-    $passos[$e][] = $t; // O PHP vai manter a ordem exata vinda do banco
+    $passos[$e][] = $t; 
     if (!isset($prog[$e])) $prog[$e] = ['total' => 0, 'conc' => 0];
     $prog[$e]['total']++;
     $total_g++;
@@ -788,12 +817,11 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       border-color: #7c3aed; box-shadow: 0 0 0 3px rgba(124,58,237,.18);
     }
 
-    /* ---- AJUSTE DE SOBREPOSIÇÃO DOS MODAIS E FUNDOS CINZAS ---- */
+    /* ---- AJUSTE DE SOBREPOSIÇÃO DOS MODAIS ---- */
     .modal { z-index: 1055 !important; }
     .modal-backdrop { z-index: 1050 !important; }
     #modalConfirmar { z-index: 1075 !important; }
     .modal-backdrop:nth-of-type(2) { z-index: 1070 !important; }
-    
   </style>
 </head>
 <body>
@@ -819,16 +847,6 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 </div>
 
 <?php if ($is_admin): ?>
-<form id="form-import-com-rec" method="POST" action="?id=<?= $evento_id ?>" hidden>
-  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
-  <input type="hidden" name="gerar_padrao" value="1">
-  <input type="hidden" name="tipo_padrao" value="com_recepcao">
-</form>
-<form id="form-import-sem-rec" method="POST" action="?id=<?= $evento_id ?>" hidden>
-  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
-  <input type="hidden" name="gerar_padrao" value="1">
-  <input type="hidden" name="tipo_padrao" value="sem_recepcao">
-</form>
 <form id="form-limpar-checklist" method="POST" action="?id=<?= $evento_id ?>" hidden>
   <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
   <input type="hidden" name="excluir_todo_checklist" value="1">
@@ -894,6 +912,9 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           </div>
         </div>
         <?php endif; ?>
+        <a href="exportar_pdf.php?id=<?= $evento_id ?>" target="_blank" class="btn btn-outline-dark btn-sm rounded-3 shadow-sm fw-bold">
+          <i class="bi bi-file-earmark-pdf-fill text-danger me-1"></i> Gerar PDF
+        </a>
       </div>
     </div>
     <div class="bg-white p-3 d-flex flex-wrap justify-content-between align-items-center border-top">
@@ -939,16 +960,10 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 
         <div class="d-flex flex-wrap gap-2 align-items-center">
           <?php if ($is_admin): ?>
-          <button type="button" class="btn btn-sm btn-outline-success rounded-3 btn-import-padrao"
-                  data-form="form-import-com-rec"
-                  data-msg="Isso adicionará todas as tarefas padrão (com recepção) ao evento."
-                  data-titulo="Importar cronograma?">
+          <button type="button" class="btn btn-sm btn-outline-success rounded-3 btn-import-padrao" data-modelo-tipo="com_recepcao">
             <i class="bi bi-download me-1"></i> Com Recepção
           </button>
-          <button type="button" class="btn btn-sm btn-outline-secondary rounded-3 btn-import-padrao"
-                  data-form="form-import-sem-rec"
-                  data-msg="Isso adicionará todas as tarefas padrão (sem recepção) ao evento."
-                  data-titulo="Importar cronograma?">
+          <button type="button" class="btn btn-sm btn-outline-secondary rounded-3 btn-import-padrao" data-modelo-tipo="sem_recepcao">
             <i class="bi bi-download me-1"></i> Sem Recepção
           </button>
           <button type="button" class="btn btn-sm btn-primary rounded-3" data-bs-toggle="modal" data-bs-target="#modalManual">
@@ -965,7 +980,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       <?php if (empty($passos)): ?>
         <div class="card border-0 shadow-sm text-center py-5 text-muted" style="border-radius: var(--radius);">
           <i class="bi bi-info-circle fs-1 mb-2"></i>
-          <p class="mb-0">Checklist vazio. <?= $is_admin ? 'Use os botões acima para importar um modelo ou adicionar tarefas.' : 'O Administrador ainda não adicionou as tarefas.' ?></p>
+          <p class="mb-0">Checklist vazio. <?= $is_admin ? 'Use os botões acima para configurar e importar um modelo.' : 'O Administrador ainda não adicionou as tarefas.' ?></p>
         </div>
       <?php else: ?>
         <div class="d-flex flex-column gap-3">
@@ -1290,7 +1305,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                       <span class="fin-chip-val text-danger" id="adm-total-rest">R$ <?= number_format($total_forn_restante, 2, ',', '.') ?></span>
                     </div>
                   </div>
-                  <div class="d-flex justify-content-between mb-1" style="font-size:.6rem;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:.05em;">
+                  <div class="d-flex align-items-center justify-content-between mb-1" style="font-size:.6rem;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:.05em;">
                     <span>Progresso de Pagamentos</span>
                     <span id="adm-pct-pago"><?= $pct_pago_geral ?>%</span>
                   </div>
@@ -1365,7 +1380,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
               <div class="etapa-body bg-white p-3 rounded-3">
                 <div class="row g-2 mb-3">
                   <div class="col-12 col-sm-6">
-                    <button type="button" class="btn btn-success w-100 btn-sm fw-bold shadow-sm py-2 rounded-3 h-100"
+                    <button type="button" class="btn btn-success w-100 d-flex align-items-center justify-content-center btn-sm fw-bold shadow-sm py-2 rounded-3 h-100"
                             data-bs-toggle="modal" data-bs-target="#modalAddConvidado">
                       <i class="bi bi-person-plus-fill me-1"></i> Cadastrar Convidado
                     </button>
@@ -1460,6 +1475,42 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 </div>
 
 <?php if ($is_admin): ?>
+<div class="modal fade" id="modalImportarCustomizado" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-md">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header bg-light border-0 px-4 pt-4">
+        <h5 class="modal-title fw-bold text-dark">
+          <i class="bi bi-download text-success me-2"></i> Configurar Importação
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="POST" action="?id=<?= $evento_id ?>">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
+        <input type="hidden" name="gerar_padrao_customizado" value="1">
+        <input type="hidden" name="tipo_padrao" id="import-tipo-padrao">
+        
+        <div class="modal-body p-4">
+          <p class="text-muted small mb-3">
+            Detectamos as seguintes etapas no modelo base. Defina os meses ou nomes das etapas manualmente. 
+            <strong>Desmarque ou limpe o campo para deixar para depois.</strong>
+          </p>
+          
+          <div id="container-etapas-modelo" class="d-flex flex-column gap-3" style="max-height: 320px; overflow-y: auto; padding-right: 5px;">
+            <div class="text-center py-3 text-muted">
+              <span class="spinner-border spinner-border-sm me-2"></span> Buscando etapas estruturais...
+            </div>
+          </div>
+        </div>
+        
+        <div class="modal-footer border-0 pt-0">
+          <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Fechar</button>
+          <button type="submit" class="btn btn-success btn-sm px-4 rounded-pill fw-bold">Importar Checklist</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <div class="modal fade" id="modalManual" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content border-0 shadow-lg rounded-4">
@@ -1929,7 +1980,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                     <i class="bi bi-check-circle-fill" style="color:#16a34a;font-size:.9rem;"></i>
                   </div>
                   <div class="flex-fill" style="min-width:0;">
-                    <div class="fw-bold text-dark text-truncate musica-titulo-txt" style="font-size:.84rem;"><?= htmlspecialchars($m['titulo'], ENT_QUOTES, 'UTF-8') ?></div>
+                    <div class="fw-bold text-dark text-truncate musica-titulo-txt" style="font-size:.84rem;">${m.titulo}</div>
                     <?php if (!empty($m['artista'])): ?>
                     <div class="text-muted musica-artista-txt" style="font-size:.69rem;">
                       <i class="bi bi-person-fill me-1" style="font-size:.6rem;"></i><?= htmlspecialchars($m['artista'], ENT_QUOTES, 'UTF-8') ?>
@@ -2111,7 +2162,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 const SELF       = window.location.href;
-const CSRF_TOKEN  = <?= json_encode($csrf_token) ?>;
+const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;
 
 /* ---- TOAST ---- */
 function toast(msg, tipo = 'verde') {
@@ -2139,7 +2190,7 @@ async function ajax(obj) {
   return r.json();
 }
 
-/* ---- BRL helpers — CORRIGIDO: remove "R$ " antes de parsear ---- */
+/* ---- BRL helpers ---- */
 function brl(n) {
   return 'R$ ' + parseFloat(n).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -2188,18 +2239,72 @@ if (selectFesta) {
   });
 }
 
-/* ---- IMPORTAR PADRÃO ---- */
+/* ---- CONFIGURAR E IMPORTAR PADRÃO DINDAMICAMENTE ---- */
+<?php if ($is_admin): ?>
+const modalImportarCustom = new bootstrap.Modal(document.getElementById('modalImportarCustomizado'));
+
 document.querySelectorAll('.btn-import-padrao').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const formId = btn.dataset.form;
-    showConfirm(
-      btn.dataset.titulo || 'Importar cronograma?',
-      btn.dataset.msg    || 'As tarefas padrão serão adicionadas ao evento.',
-      () => document.getElementById(formId).submit(),
-      { icon: 'bi bi-download text-primary fs-4', iconBg: 'bg-primary bg-opacity-10', btnClass: 'btn-primary', btnText: 'Importar' }
-    );
+  btn.addEventListener('click', async () => {
+    const tipoModelo = btn.dataset.modeloTipo;
+    document.getElementById('import-tipo-padrao').value = tipoModelo;
+    
+    const container = document.getElementById('container-etapas-modelo');
+    container.innerHTML = `<div class="text-center py-3 text-muted"><span class="spinner-border spinner-border-sm me-2"></span> Buscando estrutura do modelo...</div>`;
+    
+    modalImportarCustom.show();
+    
+    try {
+      const r = await ajax({ listar_etapas_modelo: '1', tipo_padrao: tipoModelo });
+      
+      if (r.ok && r.etapas.length > 0) {
+        container.innerHTML = '';
+        
+        r.etapas.forEach((etapaOriginal, index) => {
+          const inputId = `map_etapa_${index}`;
+          const htmlRow = `
+            <div class="p-2 border rounded-3 bg-light d-flex flex-column gap-2">
+              <div class="d-flex align-items-center justify-content-between">
+                <label class="fw-bold text-secondary small mb-0 d-flex align-items-center gap-2" style="cursor:pointer;">
+                  <input type="checkbox" class="form-check-input chk-ativar-etapa" checked data-target="${inputId}">
+                  Modelo Base: <span class="text-dark font-monospace">${etapaOriginal}</span>
+                </label>
+              </div>
+              <div>
+                <input type="text" 
+                       id="${inputId}" 
+                       name="map_etapas[${etapaOriginal}]" 
+                       class="form-control form-control-sm input-nova-etapa" 
+                       placeholder="Ex: Faltam 12 meses, Faltam 6 meses..." 
+                       value="${etapaOriginal}">
+              </div>
+            </div>
+          `;
+          container.insertAdjacentHTML('beforeend', htmlRow);
+        });
+        
+        container.querySelectorAll('.chk-ativar-etapa').forEach(chk => {
+          chk.addEventListener('change', function() {
+            const inputVinculado = document.getElementById(this.dataset.target);
+            if (!this.checked) {
+              inputVinculado.dataset.oldValue = inputVinculado.value;
+              inputVinculado.value = ''; 
+              inputVinculado.disabled = true;
+            } else {
+              inputVinculado.disabled = false;
+              inputVinculado.value = inputVinculado.dataset.oldValue || inputVinculado.placeholder;
+            }
+          });
+        });
+
+      } else {
+        container.innerHTML = `<div class="text-center py-3 text-danger"><i class="bi bi-x-circle me-1"></i> Nenhum modelo estrutural encontrado.</div>`;
+      }
+    } catch (err) {
+      container.innerHTML = `<div class="text-center py-3 text-danger"><i class="bi bi-exclamation-triangle me-1"></i> Erro de comunicação.</div>`;
+    }
   });
 });
+<?php endif; ?>
 
 /* ---- LIMPAR CHECKLIST ---- */
 document.getElementById('btn-limpar-checklist')?.addEventListener('click', () => {
@@ -2923,7 +3028,7 @@ function moverCard(card, novoStatus) {
       if (btnConf) bindConfirmarMusica(btnConf);
       if (btnDel)  bindExcluirMusica(btnDel);
     }
-    atualizarContadoresMusicas();
+    atualizartadoresMusicas();
   }, 280);
 }
 
