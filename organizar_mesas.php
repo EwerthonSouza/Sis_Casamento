@@ -15,6 +15,25 @@ if (!$evento_id) {
 }
 
 /* ============================================================
+   UTILITÁRIOS DE SCHEMA DO BANCO DE DADOS
+   ============================================================ */
+
+function coluna_existe(PDO $pdo, string $tabela, string $coluna): bool {
+    $st = $pdo->prepare("
+        SELECT COUNT(*) FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?
+    ");
+    $st->execute([$tabela, $coluna]);
+    return (int)$st->fetchColumn() > 0;
+}
+
+function garantir_coluna(PDO $pdo, string $tabela, string $coluna, string $definicao): void {
+    if (!coluna_existe($pdo, $tabela, $coluna)) {
+        $pdo->exec("ALTER TABLE `$tabela` ADD COLUMN `$coluna` $definicao");
+    }
+}
+
+/* ============================================================
    AUTO-CONFIGURAÇÃO DO BANCO DE DADOS
    ============================================================ */
 try {
@@ -27,15 +46,11 @@ try {
     )");
 } catch (PDOException $e) {}
 
-$schema_checks = [
-    "SELECT mesa_id FROM convidados LIMIT 1"             => "ALTER TABLE convidados ADD COLUMN mesa_id INT NULL",
-    "SELECT nomes_acompanhantes FROM convidados LIMIT 1" => "ALTER TABLE convidados ADD COLUMN nomes_acompanhantes VARCHAR(255) NULL",
-    "SELECT idades_filhos FROM convidados LIMIT 1"       => "ALTER TABLE convidados ADD COLUMN idades_filhos VARCHAR(255) NULL",
-    "SELECT ordem FROM mesas LIMIT 1"                   => "ALTER TABLE mesas ADD COLUMN ordem INT DEFAULT 0",
-];
-foreach ($schema_checks as $check => $alter) {
-    try { $pdo->query($check); } catch (Exception $e) { try { $pdo->exec($alter); } catch (Exception $x) {} }
-}
+// Garantir colunas necessárias
+garantir_coluna($pdo, 'convidados', 'mesa_id',            'INT NULL');
+garantir_coluna($pdo, 'convidados', 'nomes_acompanhantes', 'VARCHAR(255) NULL');
+garantir_coluna($pdo, 'convidados', 'idades_filhos',       'VARCHAR(255) NULL');
+garantir_coluna($pdo, 'mesas',      'ordem',              'INT DEFAULT 0');
 
 /* ============================================================
    HELPER AJAX

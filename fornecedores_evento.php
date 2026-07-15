@@ -202,7 +202,7 @@ foreach ($lista_fornecedores as $f) {
                                         <div class="fw-bold"><?= htmlspecialchars($forn['servico']) ?></div>
                                         <small class="text-muted"><i class="bi bi-person"></i> <?= htmlspecialchars($forn['nome']) ?></small>
                                     </td>
-                                    <td><small><i class="bi bi-telephone"></i> <?= htmlspecialchars($forn['contato']) ?></small></td>
+                                    <td><small><i class="bi bi-telefone"></i> <?= htmlspecialchars($forn['contato']) ?></small></td>
                                     <td><span class="badge bg-<?= $status_color ?> rounded-pill fw-normal px-3 py-2"><?= htmlspecialchars($forn['status']) ?></span></td>
                                     <td>
                                         <span class="fw-bold">R$ <?= number_format($forn['valor'], 2, ',', '.') ?></span>

@@ -29,6 +29,25 @@ function verificar_csrf(): void {
 }
 
 /* ============================================================
+   UTILITÁRIOS DE SCHEMA DO BANCO DE DADOS
+   ============================================================ */
+
+function coluna_existe(PDO $pdo, string $tabela, string $coluna): bool {
+    $st = $pdo->prepare("
+        SELECT COUNT(*) FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?
+    ");
+    $st->execute([$tabela, $coluna]);
+    return (int)$st->fetchColumn() > 0;
+}
+
+function garantir_coluna(PDO $pdo, string $tabela, string $coluna, string $definicao): void {
+    if (!coluna_existe($pdo, $tabela, $coluna)) {
+        $pdo->exec("ALTER TABLE `$tabela` ADD COLUMN `$coluna` $definicao");
+    }
+}
+
+/* ============================================================
    AUTO-CONFIGURAÇÃO DO BANCO DE DADOS
    ============================================================ */
 
@@ -52,35 +71,20 @@ try {
 }
 
 // 2. Colunas de convidados
-try { $pdo->query("SELECT nomes_acompanhantes FROM convidados LIMIT 1"); }
-catch (Exception $e) { $pdo->exec("ALTER TABLE convidados ADD COLUMN nomes_acompanhantes VARCHAR(255) NULL"); }
-
-try { $pdo->query("SELECT idades_filhos FROM convidados LIMIT 1"); }
-catch (Exception $e) { $pdo->exec("ALTER TABLE convidados ADD COLUMN idades_filhos VARCHAR(255) NULL"); }
+garantir_coluna($pdo, 'convidados', 'telefone',            'VARCHAR(50) NULL');
+garantir_coluna($pdo, 'convidados', 'nomes_acompanhantes', 'VARCHAR(255) NULL');
+garantir_coluna($pdo, 'convidados', 'idades_filhos',       'VARCHAR(255) NULL');
 
 // 3. Coluna de controle de pagamento parcial
-try { $pdo->query("SELECT valor_pago FROM suppliers_evento LIMIT 1"); }
-catch (Exception $e) { 
-    try { $pdo->query("SELECT valor_pago FROM fornecedores_evento LIMIT 1"); }
-    catch (Exception $ex) { $pdo->exec("ALTER TABLE fornecedores_evento ADD COLUMN valor_pago DECIMAL(10,2) NOT NULL DEFAULT 0.00"); }
-}
+garantir_coluna($pdo, 'fornecedores_evento', 'valor_pago', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
 
 // 4. Tabela de músicas com status e momento
 try {
     $pdo->query("SELECT 1 FROM musicas_evento LIMIT 1");
-    
-    try { $pdo->query("SELECT status FROM musicas_evento LIMIT 1"); }
-    catch (Exception $e) { $pdo->exec("ALTER TABLE musicas_evento ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'sugestao'"); }
-    
-    try { $pdo->query("SELECT momento FROM musicas_evento LIMIT 1"); }
-    catch (Exception $e) { $pdo->exec("ALTER TABLE musicas_evento ADD COLUMN momento VARCHAR(150) NOT NULL DEFAULT 'Livre / Sem Momento Definido'"); }
-    
-    try { $pdo->query("SELECT artista FROM musicas_evento LIMIT 1"); }
-    catch (Exception $e) { $pdo->exec("ALTER TABLE musicas_evento ADD COLUMN artista VARCHAR(255) NULL"); }
-    
-    try { $pdo->query("SELECT link FROM musicas_evento LIMIT 1"); }
-    catch (Exception $e) { $pdo->exec("ALTER TABLE musicas_evento ADD COLUMN link VARCHAR(500) NULL"); }
-
+    garantir_coluna($pdo, 'musicas_evento', 'status',  "VARCHAR(20) NOT NULL DEFAULT 'sugestao'");
+    garantir_coluna($pdo, 'musicas_evento', 'momento', "VARCHAR(150) NOT NULL DEFAULT 'Livre / Sem Momento Definido'");
+    garantir_coluna($pdo, 'musicas_evento', 'artista', 'VARCHAR(255) NULL');
+    garantir_coluna($pdo, 'musicas_evento', 'link',    'VARCHAR(500) NULL');
 } catch (Exception $e) {
     $pdo->exec("
         CREATE TABLE musicas_evento (
@@ -115,17 +119,10 @@ try {
 }
 
 // 6. Validar colunas específicas em checklist_comentarios caso ela já existisse vazia ou incompleta
-try { $pdo->query("SELECT evento_id FROM checklist_comentarios LIMIT 1"); }
-catch (Exception $e) { $pdo->exec("ALTER TABLE checklist_comentarios ADD COLUMN evento_id INT NULL"); }
-
-try { $pdo->query("SELECT etapa_nome FROM checklist_comentarios LIMIT 1"); }
-catch (Exception $e) { $pdo->exec("ALTER TABLE checklist_comentarios ADD COLUMN etapa_nome VARCHAR(255) NULL"); }
-
-try { $pdo->query("SELECT checklist_id FROM checklist_comentarios LIMIT 1"); }
-catch (Exception $e) { $pdo->exec("ALTER TABLE checklist_comentarios ADD COLUMN checklist_id INT NULL"); }
-
-try { $pdo->query("SELECT criado_em FROM checklist_comentarios LIMIT 1"); }
-catch (Exception $e) { $pdo->exec("ALTER TABLE checklist_comentarios ADD COLUMN criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP"); }
+garantir_coluna($pdo, 'checklist_comentarios', 'evento_id',   'INT NULL');
+garantir_coluna($pdo, 'checklist_comentarios', 'etapa_nome',  'VARCHAR(255) NULL');
+garantir_coluna($pdo, 'checklist_comentarios', 'checklist_id', 'INT NULL');
+garantir_coluna($pdo, 'checklist_comentarios', 'criado_em',   'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
 
 
 /* ============================================================
@@ -366,14 +363,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nome       = trim($_POST['nome_convidado']       ?? '');
         $fone       = trim($_POST['telefone_convidado']   ?? '');
         $cat        = trim($_POST['categoria_convidado']  ?? 'Outros');
-        $acomp_qtd  = max(0, (int)($_POST['acompanhantes']       ?? 0));
+        $acomp_qtd  = max(0, (int)($_POST['acompanhantes']      ?? 0));
         $acomp_nms  = trim($_POST['nomes_acompanhantes']  ?? '');
-        $filhos_qtd = max(0, (int)($_POST['filhos']               ?? 0));
+        $filhos_qtd = max(0, (int)($_POST['filhos']             ?? 0));
         $filhos_ids = trim($_POST['idades_filhos']        ?? '');
         if ($nome !== '') {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telephone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)")
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)")
                 ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids]);
+
+            if ($ajax) {
+                // mesma normalização usada na listagem (agrupamento por categoria)
+                $cat_fmt = $cat === '' ? 'Outros' : mb_convert_case($cat, MB_CASE_TITLE, 'UTF-8');
+                json_out([
+                    'ok'                  => true,
+                    'id'                  => (int)$pdo->lastInsertId(),
+                    'nome'                => $nome,
+                    'telefone'            => $fone,
+                    'categoria'           => $cat_fmt,
+                    'acompanhantes'       => $acomp_qtd,
+                    'nomes_acompanhantes' => $acomp_nms,
+                    'filhos'              => $filhos_qtd,
+                    'idades_filhos'       => $filhos_ids,
+                ]);
+            }
             $_SESSION['msg_sucesso'] = "Convidado adicionado!";
+        } else {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o nome do convidado.']);
         }
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
@@ -453,7 +468,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $cor      = in_array($_POST['cor_nota'] ?? '', $cores_ok, true) ? $_POST['cor_nota'] : 'amarelo';
         if ($titulo !== '') {
             if ($nota_id > 0) {
-                $pdo->prepare("UPDATE notas_evento SET titulo=?, conteudo=?, cor=?, updated_at=NOW() WHERE id=? AND evento_id=?")
+                $pdo->prepare("UPDATE notas_evento SET titulo=?, conteudo=?, cor=? WHERE id=? AND evento_id=?")
                     ->execute([$titulo, $conteudo, $cor, $nota_id, $evento_id]);
                 $ret_id = $nota_id;
             } else {
@@ -912,9 +927,9 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           </div>
         </div>
         <?php endif; ?>
-        <a href="exportar_pdf.php?id=<?= $evento_id ?>" target="_blank" class="btn btn-outline-dark btn-sm rounded-3 shadow-sm fw-bold">
+        <button type="button" class="btn btn-outline-dark btn-sm rounded-3 shadow-sm fw-bold" data-bs-toggle="modal" data-bs-target="#modalOpcoesPDF">
           <i class="bi bi-file-earmark-pdf-fill text-danger me-1"></i> Gerar PDF
-        </a>
+        </button>
       </div>
     </div>
     <div class="bg-white p-3 d-flex flex-wrap justify-content-between align-items-center border-top">
@@ -1410,7 +1425,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                 </div>
                 <div id="lista-convidados" class="scroll-lista-grande">
                   <?php if (empty($lista_conv)): ?>
-                    <p class="text-center text-muted small py-4 mb-0">Nenhum convidado cadastrado.</p>
+                    <p id="conv-vazio" class="text-center text-muted small py-4 mb-0">Nenhum convidado cadastrado.</p>
                   <?php else: ?>
                     <?php foreach ($conv_grupos as $grp => $convidadosDoGrupo): ?>
                     <div class="grupo-sec" data-grupo="<?= htmlspecialchars($grp, ENT_QUOTES, 'UTF-8') ?>">
@@ -1660,7 +1675,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         <h5 class="modal-title fw-bold"><i class="bi bi-person-plus text-success me-2"></i> Cadastrar Convidado</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
-      <form method="POST" action="?id=<?= $evento_id ?>">
+      <form id="form-add-convidado" method="POST" action="?id=<?= $evento_id ?>">
         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
         <input type="hidden" name="adicionar_convidado_admin" value="1">
         <div class="modal-body p-4">
@@ -2155,6 +2170,54 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           <?php endif; ?>
         </div>
       </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="modalOpcoesPDF" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header bg-light border-0 px-4 pt-4">
+        <h5 class="modal-title fw-bold text-dark">
+          <i class="bi bi-printer-fill text-primary me-2"></i> O que deseja imprimir?
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form action="exportar_pdf.php" method="GET" target="_blank">
+        <input type="hidden" name="id" value="<?= $evento_id ?>">
+        
+        <div class="modal-body p-4">
+          <div class="form-check mb-2">
+            <input class="form-check-input chk-pdf" type="checkbox" name="secoes[]" value="info" id="pdfInfo" checked>
+            <label class="form-check-label fw-bold small text-secondary" for="pdfInfo">Informações do Evento</label>
+          </div>
+          <div class="form-check mb-2">
+            <input class="form-check-input chk-pdf" type="checkbox" name="secoes[]" value="convidados" id="pdfConv" checked>
+            <label class="form-check-label fw-bold small text-secondary" for="pdfConv">Lista de Convidados</label>
+          </div>
+          <div class="form-check mb-2">
+            <input class="form-check-input chk-pdf" type="checkbox" name="secoes[]" value="financeiro" id="pdfFin" checked>
+            <label class="form-check-label fw-bold small text-secondary" for="pdfFin">Resumo Financeiro</label>
+          </div>
+          <div class="form-check mb-2">
+            <input class="form-check-input chk-pdf" type="checkbox" name="secoes[]" value="tarefas" id="pdfTarefas" checked>
+            <label class="form-check-label fw-bold small text-secondary" for="pdfTarefas">Cronograma de Tarefas</label>
+          </div>
+          <div class="form-check mb-3">
+            <input class="form-check-input chk-pdf" type="checkbox" name="secoes[]" value="musicas" id="pdfMusicas" checked>
+            <label class="form-check-label fw-bold small text-secondary" for="pdfMusicas">Playlist / Músicas (Som)</label>
+          </div>
+
+          <div class="border-top pt-2 d-flex justify-content-between" style="font-size: 0.75rem;">
+            <span style="cursor:pointer;" class="text-primary fw-bold" id="pdfMarcarTodos">Marcar Todos</span>
+            <span style="cursor:pointer;" class="text-muted fw-bold" id="pdfDesmarcarTodos">Limpar</span>
+          </div>
+        </div>
+        <div class="modal-footer border-0 pt-0">
+          <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Fechar</button>
+          <button type="submit" class="btn btn-primary btn-sm px-4 rounded-pill fw-bold">Gerar Relatório</button>
+        </div>
+      </form>
     </div>
   </div>
 </div>
@@ -2667,6 +2730,129 @@ document.querySelectorAll('.conv-row').forEach(row => {
   if (x) bindExcluirConv(x);
 });
 
+/* ---- CADASTRO DE CONVIDADO (AJAX) ---- */
+function escHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+function convRowHtml(c) {
+  const nome = escHtml(c.nome);
+  let detalhes = '';
+  if (c.telefone || c.acompanhantes > 0 || c.filhos > 0) {
+    detalhes = '<div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.4;">';
+    if (c.telefone) {
+      detalhes += `<div><i class="bi bi-whatsapp me-1 text-success"></i>${escHtml(c.telefone)}</div>`;
+    }
+    if (c.acompanhantes > 0) {
+      detalhes += `<div><i class="bi bi-person-plus me-1"></i>Acomp (${c.acompanhantes}): ` +
+        (c.nomes_acompanhantes ? escHtml(c.nomes_acompanhantes)
+                               : '<span class="fst-italic text-black-50">Nomes não informados</span>') + '</div>';
+    }
+    if (c.filhos > 0) {
+      detalhes += `<div><i class="bi bi-emoji-smile me-1"></i>Filhos (${c.filhos}): ` +
+        (c.idades_filhos ? escHtml(c.idades_filhos)
+                         : '<span class="fst-italic text-black-50">Idades não informadas</span>') + '</div>';
+    }
+    detalhes += '</div>';
+  }
+  return `
+    <div class="conv-row pend p-2 mb-2 bg-light shadow-sm"
+         data-id="${c.id}" data-conf="0" data-nome="${escHtml(String(c.nome).toLowerCase())}">
+      <div class="d-flex justify-content-between align-items-start mb-1">
+        <h6 class="mb-0 small fw-bold text-dark text-truncate pe-2" title="${nome}">${nome}</h6>
+        <div class="d-flex align-items-center gap-1 flex-shrink-0">
+          <button type="button" class="btn p-0 border-0 bg-transparent btn-toggle-conv" data-id="${c.id}">
+            <span class="badge bg-warning text-dark rounded-pill" style="font-size:.6rem;">
+              <i class="bi bi-hourglass-split me-1"></i> Pendente
+            </span>
+          </button>
+          <button type="button" class="btn p-0 border-0 bg-transparent text-danger btn-excluir-conv"
+                  data-id="${c.id}" title="Remover">
+            <i class="bi bi-trash fs-6"></i>
+          </button>
+        </div>
+      </div>
+      ${detalhes}
+    </div>`;
+}
+
+function garantirGrupoConv(categoria) {
+  const lista = document.getElementById('lista-convidados');
+  const grupos = [...lista.querySelectorAll('.grupo-sec')];
+  const existente = grupos.find(g => g.dataset.grupo === categoria);
+  if (existente) return existente;
+
+  const grupo = document.createElement('div');
+  grupo.className = 'grupo-sec';
+  grupo.dataset.grupo = categoria;
+  grupo.innerHTML = `
+    <div class="badge bg-secondary text-white w-100 text-start px-3 py-2 rounded-2 mb-1 mt-2 sec-badge">
+      <i class="bi bi-tag-fill me-1"></i>
+      ${escHtml(categoria)} (<span class="cnt-grp">0</span>)
+    </div>`;
+  // mantém a ordem alfabética dos grupos (mesmo comportamento do ksort no PHP)
+  const proximo = grupos.find(g => g.dataset.grupo.localeCompare(categoria, 'pt-BR') > 0);
+  lista.insertBefore(grupo, proximo || null);
+  return grupo;
+}
+
+function inserirConvidado(c) {
+  document.getElementById('conv-vazio')?.remove();
+  const grupo = garantirGrupoConv(c.categoria);
+
+  // insere respeitando a ordem alfabética por nome dentro do grupo
+  const alvo = [...grupo.querySelectorAll('.conv-row')]
+    .find(r => (r.dataset.nome || '').localeCompare(String(c.nome).toLowerCase(), 'pt-BR') > 0);
+  if (alvo) alvo.insertAdjacentHTML('beforebegin', convRowHtml(c));
+  else      grupo.insertAdjacentHTML('beforeend',  convRowHtml(c));
+
+  const novo = grupo.querySelector(`.conv-row[data-id="${c.id}"]`);
+  if (novo) {
+    const t = novo.querySelector('.btn-toggle-conv');
+    const x = novo.querySelector('.btn-excluir-conv');
+    if (t) bindToggleConv(t);
+    if (x) bindExcluirConv(x);
+  }
+
+  const cntG = grupo.querySelector('.cnt-grp');
+  if (cntG) cntG.textContent = grupo.querySelectorAll('.conv-row').length;
+
+  deltaCntTotal(1);
+  deltaCntStatus(false, 1);   // entra sempre como pendente
+
+  const dl = document.getElementById('lista-categorias');
+  if (dl && ![...dl.options].some(o => o.value === c.categoria)) {
+    dl.insertAdjacentHTML('beforeend', `<option value="${escHtml(c.categoria)}">`);
+  }
+}
+
+document.getElementById('form-add-convidado')?.addEventListener('submit', async e => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const btn  = form.querySelector('button[type="submit"]');
+  const orig = btn.innerHTML;
+  const fd   = new FormData(form);
+  fd.append('is_ajax', '1');
+
+  btn.disabled  = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  try {
+    const r = await (await fetch(SELF, { method: 'POST', body: fd })).json();
+    if (r.ok) {
+      inserirConvidado(r);
+      bootstrap.Modal.getInstance(document.getElementById('modalAddConvidado'))?.hide();
+      form.reset();
+      toast('Convidado adicionado! 🎉', 'verde');
+    } else {
+      toast(r.msg || 'Erro ao cadastrar convidado.', 'verm');
+    }
+  } catch { toast('Erro de conexão. Tente novamente.', 'verm'); }
+  btn.disabled  = false;
+  btn.innerHTML = orig;
+});
+
 /* ============================================================
    BLOCO DE NOTAS
    ============================================================ */
@@ -2870,7 +3056,7 @@ function linkBtnHtml(link, accentBg, accentColor) {
   const safe = urlSegura(link);
   if (!safe) return '';
   const plat = detectarPlataforma(safe);
-  const safeAttr = safe.replace(/"/g, '"');
+  const safeAttr = safe.replace(/"/g, '&quot;');
   let icone = `<i class="bi bi-link-45deg me-1"></i>Ouvir`;
   if (plat === 'youtube') icone = `<i class="bi bi-youtube text-danger me-1"></i>YouTube`;
   if (plat === 'spotify') icone = `<i class="bi bi-spotify text-success me-1"></i>Spotify`;
@@ -2886,9 +3072,9 @@ function musicaCardHtml(m) {
     ? { brd:'#a78bfa', bg:'#ede9fe', txt:'#7c3aed', icone:'bi-lightbulb' }
     : { brd:'#86efac', bg:'#dcfce7', txt:'#16a34a', icone:'bi-check-circle-fill' };
 
-  const tituloEsc   = (m.titulo  || '').replace(/&/g,'&').replace(/"/g,'"').replace(/</g,'<').replace(/>/g,'>');
-  const artistaEsc  = (m.artista || '').replace(/&/g,'&').replace(/"/g,'"').replace(/</g,'<').replace(/>/g,'>');
-  const linkEsc     = (urlSegura(m.link || '')).replace(/"/g,'"');
+  const tituloEsc   = (m.titulo  || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const artistaEsc  = (m.artista || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const linkEsc     = (urlSegura(m.link || '')).replace(/"/g,'&quot;');
 
   const artistaHtml = m.artista
     ? `<div class="text-muted musica-artista-txt" style="font-size:.69rem;"><i class="bi bi-person-fill me-1" style="font-size:.6rem;"></i>${artistaEsc}</div>`
@@ -2953,7 +3139,7 @@ function garantizarGrupo(painel, momento, aba) {
   const cor  = eSug
     ? { bg:'linear-gradient(90deg,#ede9fe,#f5f3ff)', txt:'#5b21b6', badge:'#7c3aed' }
     : { bg:'linear-gradient(90deg,#dcfce7,#f0fdf4)', txt:'#14532d', badge:'#16a34a' };
-  const momentoAttr = momento.replace(/"/g, '"');
+  const momentoAttr = momento.replace(/"/g, '&quot;');
   let grupo = wrap.querySelector(`.musica-grupo[data-aba="${aba}"][data-momento="${cssEscape(momento)}"]`);
   if (!grupo) {
     grupo = document.createElement('div');
@@ -3028,7 +3214,7 @@ function moverCard(card, novoStatus) {
       if (btnConf) bindConfirmarMusica(btnConf);
       if (btnDel)  bindExcluirMusica(btnDel);
     }
-    atualizartadoresMusicas();
+    atualizarContadoresMusicas();
   }, 280);
 }
 
@@ -3147,6 +3333,14 @@ document.getElementById('btn-add-musica')?.addEventListener('click', async () =>
 
 document.getElementById('musica-titulo')?.addEventListener('keydown', e => {
   if (e.key === 'Enter') { e.preventDefault(); document.getElementById('btn-add-musica').click(); }
+});
+
+// ========== MODAL DE OPÇÕES PDF ==========
+document.getElementById('pdfMarcarTodos')?.addEventListener('click', () => {
+  document.querySelectorAll('.chk-pdf').forEach(chk => chk.checked = true);
+});
+document.getElementById('pdfDesmarcarTodos')?.addEventListener('click', () => {
+  document.querySelectorAll('.chk-pdf').forEach(chk => chk.checked = false);
 });
 
 // Alternância de abas
