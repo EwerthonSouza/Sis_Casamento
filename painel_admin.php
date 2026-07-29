@@ -35,6 +35,8 @@ function validar_csrf(): void {
 
 $data_hoje = date('Y-m-d');
 
+require_once 'notificacoes.inc.php';
+
 // ============================================================
 // MIGRAÇÃO AUTOMÁTICA DA TABELA (executa uma vez se necessário)
 // Garante que a tabela suporte múltiplas anotações por dia com horário
@@ -393,6 +395,11 @@ $meses_pt = [
 $msg_erro_session    = $_SESSION['msg_erro'] ?? "";
 $msg_sucesso_session = $_SESSION['msg_sucesso'] ?? "";
 unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
+
+// Notificações globais (atividade dos noivos em todos os casamentos)
+$notificacoes = buscar_notificacoes($pdo, null, 15);
+$ultima_vista = ultima_visualizacao_notificacoes($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
+$nao_lidas    = contar_nao_lidas($notificacoes, $ultima_vista);
 ?>
 <!DOCTYPE html>
 <html lang="pt-br">
@@ -524,12 +531,45 @@ unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
                 <i class="bi bi-person-circle"></i> Logado como: 
                 <strong><?= $is_admin ? 'Assessoria Geral' : 'Assistente' ?></strong>
             </span>
+            <div class="dropdown" id="dropdown-notificacoes">
+                <button class="btn btn-sm btn-outline-light rounded-circle position-relative me-1" type="button" data-bs-toggle="dropdown" aria-expanded="false" style="width:38px;height:38px;">
+                    <i class="bi bi-bell-fill"></i>
+                    <?php if ($nao_lidas > 0): ?>
+                        <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" style="font-size:.6rem;">
+                            <?= $nao_lidas > 9 ? '9+' : $nao_lidas ?>
+                        </span>
+                    <?php endif; ?>
+                </button>
+                <div class="dropdown-menu dropdown-menu-end shadow-lg border-0 p-0" style="width:360px;max-height:440px;overflow-y:auto;">
+                    <div class="px-3 py-2 border-bottom bg-light fw-bold small text-uppercase text-muted">
+                        <i class="bi bi-bell me-1"></i> Atividade dos casais
+                    </div>
+                    <?php if (empty($notificacoes)): ?>
+                        <div class="text-center text-muted p-4 small">
+                            <i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.
+                        </div>
+                    <?php else: foreach ($notificacoes as $n): ?>
+                        <a href="gerenciar.php?id=<?= (int)$n['evento_id'] ?>" class="d-flex align-items-start gap-2 px-3 py-2 border-bottom text-decoration-none">
+                            <i class="bi <?= htmlspecialchars($n['icone'], ENT_QUOTES, 'UTF-8') ?> mt-1"></i>
+                            <div class="flex-fill" style="min-width:0;">
+                                <div class="small fw-bold text-dark"><?= htmlspecialchars($n['evento_nome'], ENT_QUOTES, 'UTF-8') ?></div>
+                                <div class="small text-body"><?= htmlspecialchars($n['texto'], ENT_QUOTES, 'UTF-8') ?></div>
+                                <div class="text-muted" style="font-size:.7rem;"><?= tempo_relativo($n['quando']) ?></div>
+                            </div>
+                        </a>
+                    <?php endforeach; endif; ?>
+                </div>
+            </div>
+
             <?php if ($is_admin): ?>
             <a href="gerenciar_equipe.php" class="btn btn-sm btn-warning fw-bold text-dark border-0 me-2 shadow-sm">
                 <i class="bi bi-people-fill"></i> <span class="d-none d-sm-inline">Equipe</span>
             </a>
             <?php endif; ?>
 
+            <a href="referencias.php" class="btn btn-sm btn-light fw-bold text-dark border-0">
+                <i class="bi bi-geo-alt-fill text-secondary"></i> <span class="d-none d-sm-inline">Referências</span>
+            </a>
             <a href="modelos_checklist.php" class="btn btn-sm btn-light fw-bold text-dark border-0">
                 <i class="bi bi-gear-fill text-secondary"></i> <span class="d-none d-sm-inline">Checklists</span>
             </a>
@@ -1012,6 +1052,13 @@ document.addEventListener('DOMContentLoaded', function () {
     // Inicializa Toasts do Bootstrap
     const toastElList = document.querySelectorAll('.toast');
     [...toastElList].map(toastEl => new bootstrap.Toast(toastEl));
+
+    // Sino de notificações: marca como lida ao abrir
+    document.getElementById('dropdown-notificacoes')?.addEventListener('shown.bs.dropdown', function () {
+        const badge = this.querySelector('.badge');
+        if (badge) badge.remove();
+        fetch('notificacoes_marcar_lidas.php', { method: 'POST' }).catch(() => {});
+    });
 
     // Inicializa Tooltips do Bootstrap
     function initTooltips() {

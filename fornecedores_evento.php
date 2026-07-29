@@ -3,22 +3,28 @@ session_start();
 require_once 'conexao.php';
 
 // ============================================================
-// TRAVA DE SEGURANÇA: Admin e Assistente acessam esta página
+// TRAVA DE SEGURANÇA: Admin, Assistente e Noivos acessam esta página
 // ============================================================
-if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente'])) {
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'noivos'])) {
     header("Location: index.php");
     exit;
 }
 
 // Variável para esconder botões de pagamento do assistente (se necessário)
-$is_admin = ($_SESSION['usuario_tipo'] === 'admin');
+$is_admin  = ($_SESSION['usuario_tipo'] === 'admin');
+$eh_noivos = ($_SESSION['usuario_tipo'] === 'noivos');
 
-// Recebe o ID do evento da URL
-$evento_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
-if (!$evento_id) {
-    header("Location: painel_admin.php");
-    exit;
-} // <--- A CHAVE QUE FALTAVA ESTÁ AQUI
+// Recebe o ID do evento: noivos só podem ver o próprio evento (ignora manipulação da URL)
+if ($eh_noivos) {
+    $evento_id = (int)($_SESSION['evento_id'] ?? 0);
+    if (!$evento_id) { header("Location: index.php"); exit; }
+} else {
+    $evento_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
+    if (!$evento_id) {
+        header("Location: painel_admin.php");
+        exit;
+    }
+}
 
 // Carrega os dados do evento
 $stmt = $pdo->prepare("SELECT e.*, c.nome, c.email FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
@@ -120,7 +126,7 @@ foreach ($lista_fornecedores as $f) {
     
     <div class="bg-white p-4 rounded shadow-sm mb-4 d-flex justify-content-between align-items-center">
         <div>
-            <a href="gerenciar.php?id=<?= $evento_id ?>" class="btn btn-sm btn-outline-secondary mb-3">
+            <a href="<?= $eh_noivos ? 'noivos.php' : 'gerenciar.php?id=' . $evento_id ?>" class="btn btn-sm btn-outline-secondary mb-3">
                 <i class="bi bi-arrow-left"></i> Voltar ao Cronograma
             </a>
             <h2 class="mb-0">Fornecedores</h2>

@@ -19,6 +19,12 @@ $link_confirmacao_url    = $link_confirmacao_base . '/confirmar.php?evento=' . $
 try { $pdo->query("SELECT data_prazo FROM checklist LIMIT 1"); }
 catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN data_prazo DATE NULL"); }
 
+// Colunas de rastreio de conclusão (quem/quando) — usadas pelo sino de notificações do admin
+try { $pdo->query("SELECT concluido_em FROM checklist LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN concluido_em DATETIME NULL"); }
+try { $pdo->query("SELECT concluido_por FROM checklist LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN concluido_por VARCHAR(20) NULL"); }
+
 /* ============================================================
    HELPER: Resposta JSON para AJAX
    ============================================================ */
@@ -64,8 +70,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $id    = (int)$_POST['check_id'];
         $atual = (int)$_POST['status_atual'];
         $novo  = $atual === 1 ? 0 : 1;
-        $pdo->prepare("UPDATE checklist SET checado = ?, status = ? WHERE id = ? AND evento_id = ?")
-            ->execute([$novo, $novo ? 'concluido' : 'pendente', $id, $evento_id]);
+        $pdo->prepare("UPDATE checklist SET checado = ?, status = ?, concluido_em = " . ($novo ? "NOW()" : "NULL") . ", concluido_por = ? WHERE id = ? AND evento_id = ?")
+            ->execute([$novo, $novo ? 'concluido' : 'pendente', $novo ? 'Noivos' : null, $id, $evento_id]);
         if ($ajax) json_out(['ok' => true, 'novo' => $novo]);
         exit;
     }
@@ -952,6 +958,24 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
           </div>
         </a>
 
+        <a href="fornecedores_evento.php" class="btn-musicas-sidebar" style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border-color: #fcd34d;">
+          <div class="d-flex justify-content-between align-items-center p-3">
+            <div class="d-flex align-items-center gap-3">
+              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0"
+                   style="width:44px;height:44px;">
+                <i class="bi bi-briefcase-fill fs-4" style="color:#b45309;"></i>
+              </div>
+              <div class="text-start">
+                <h6 class="mb-0 fw-bold text-dark">Fornecedores &amp; Orçamentos</h6>
+                <small class="text-dark" style="font-size:.78rem;opacity:.6;">Contratar profissionais e ver valores</small>
+              </div>
+            </div>
+            <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:#b45309; border:none; color:#fff;">
+              Abrir <i class="bi bi-arrow-right ms-1"></i>
+            </span>
+          </div>
+        </a>
+
         <button type="button" class="btn-musicas-sidebar mt-0 mb-0" style="background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); border-color: #fca5a5;"
                 data-bs-toggle="modal" data-bs-target="#modalLinkConfirmacao">
           <div class="d-flex justify-content-between align-items-center p-3">
@@ -1180,7 +1204,8 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                       <?= $grp ?> (<span class="cnt-grp"><?= count($conv_grupos[$grp]) ?></span>)
                     </div>
                     <?php foreach ($conv_grupos[$grp] as $con):
-                      $cConf = (bool)$con['confirmado']; ?>
+                      $cConf   = (bool)$con['confirmado'];
+                      $recusou = (!$cConf && ($con['resposta_rsvp'] ?? '') === 'recusado'); ?>
                     <div class="conv-row <?= $cConf ? 'conf' : 'pend' ?> p-2 mb-2 bg-light shadow-sm"
                          data-id="<?= $con['id'] ?>"
                          data-conf="<?= (int)$cConf ?>"
@@ -1191,10 +1216,12 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                         </h6>
                         <div class="d-flex align-items-center gap-1 flex-shrink-0">
                           <button type="button" class="btn p-0 border-0 bg-transparent btn-toggle-conv" data-id="<?= $con['id'] ?>">
-                            <span class="badge <?= $cConf ? 'bg-success' : 'bg-warning text-dark' ?> rounded-pill" style="font-size:.6rem;">
+                            <span class="badge <?= $cConf ? 'bg-success' : ($recusou ? 'bg-danger' : 'bg-warning text-dark') ?> rounded-pill" style="font-size:.6rem;">
                               <?= $cConf
                                 ? '<i class="bi bi-check-circle-fill me-1"></i> Confirmado'
-                                : '<i class="bi bi-hourglass-split me-1"></i> Pendente' ?>
+                                : ($recusou
+                                    ? '<i class="bi bi-x-circle-fill me-1"></i> Recusou'
+                                    : '<i class="bi bi-hourglass-split me-1"></i> Pendente') ?>
                             </span>
                           </button>
                           <button type="button" class="btn p-0 border-0 bg-transparent text-danger btn-excluir-conv" data-id="<?= $con['id'] ?>" title="Remover">

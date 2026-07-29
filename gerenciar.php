@@ -55,6 +55,14 @@ try {
 try { $pdo->query("SELECT data_prazo FROM checklist LIMIT 1"); }
 catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN data_prazo DATE NULL"); }
 
+// 1c. Colunas de rastreio de conclusão (quem/quando) — usadas pelo sino de notificações
+try { $pdo->query("SELECT concluido_em FROM checklist LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN concluido_em DATETIME NULL"); }
+try { $pdo->query("SELECT concluido_por FROM checklist LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN concluido_por VARCHAR(20) NULL"); }
+
+require_once 'notificacoes.inc.php';
+
 // 2. Colunas de convidados
 try { $pdo->query("SELECT nomes_acompanhantes FROM convidados LIMIT 1"); }
 catch (Exception $e) { $pdo->exec("ALTER TABLE convidados ADD COLUMN nomes_acompanhantes VARCHAR(255) NULL"); }
@@ -281,8 +289,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $atual = $_POST['status_atual']      ?? '0';
         $novo  = ($atual == 1 || $atual === 'concluido') ? 0 : 1;
         if ($id > 0) {
-            $pdo->prepare("UPDATE checklist SET status = ?, checado = ? WHERE id = ? AND evento_id = ?")
-                ->execute([$novo ? 'concluido' : 'pendente', $novo, $id, $evento_id]);
+            $pdo->prepare("UPDATE checklist SET status = ?, checado = ?, concluido_em = " . ($novo ? "NOW()" : "NULL") . ", concluido_por = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$novo ? 'concluido' : 'pendente', $novo, $novo ? 'Assessoria' : null, $id, $evento_id]);
         }
         if ($ajax) json_out(['ok' => true, 'novo' => $novo]);
         header("Location: gerenciar.php?id=$evento_id"); exit;
@@ -707,6 +715,11 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 $msg_sucesso = $_SESSION['msg_sucesso'] ?? '';
 $msg_erro    = $_SESSION['msg_erro']    ?? '';
 unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
+
+// Notificações (atividade dos noivos neste evento)
+$notificacoes    = buscar_notificacoes($pdo, $evento_id, 15);
+$ultima_vista    = ultima_visualizacao_notificacoes($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
+$nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
 ?>
 <!DOCTYPE html>
 <html lang="pt-br">
@@ -973,6 +986,34 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         </div>
       </div>
       <div class="d-flex align-items-center gap-3">
+        <div class="dropdown" id="dropdown-notificacoes">
+          <button class="btn btn-sm btn-outline-light rounded-circle position-relative" type="button" data-bs-toggle="dropdown" aria-expanded="false" style="width:40px;height:40px;">
+            <i class="bi bi-bell-fill"></i>
+            <?php if ($nao_lidas > 0): ?>
+              <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" style="font-size:.62rem;">
+                <?= $nao_lidas > 9 ? '9+' : $nao_lidas ?>
+              </span>
+            <?php endif; ?>
+          </button>
+          <div class="dropdown-menu dropdown-menu-end shadow-lg border-0 p-0" style="width:340px;max-height:420px;overflow-y:auto;">
+            <div class="px-3 py-2 border-bottom bg-light fw-bold small text-uppercase text-muted">
+              <i class="bi bi-bell me-1"></i> Notificações do casal
+            </div>
+            <?php if (empty($notificacoes)): ?>
+              <div class="text-center text-muted p-4 small">
+                <i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.
+              </div>
+            <?php else: foreach ($notificacoes as $n): ?>
+              <div class="d-flex align-items-start gap-2 px-3 py-2 border-bottom">
+                <i class="bi <?= htmlspecialchars($n['icone'], ENT_QUOTES, 'UTF-8') ?> mt-1"></i>
+                <div class="flex-fill" style="min-width:0;">
+                  <div class="small text-dark"><?= htmlspecialchars($n['texto'], ENT_QUOTES, 'UTF-8') ?></div>
+                  <div class="text-muted" style="font-size:.7rem;"><?= tempo_relativo($n['quando']) ?></div>
+                </div>
+              </div>
+            <?php endforeach; endif; ?>
+          </div>
+        </div>
         <?php if ($total_g > 0):
           $r_  = 28;
           $circ = 2 * M_PI * $r_;
@@ -1540,7 +1581,8 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                         <?= htmlspecialchars($grp, ENT_QUOTES, 'UTF-8') ?> (<span class="cnt-grp"><?= count($convidadosDoGrupo) ?></span>)
                       </div>
                       <?php foreach ($convidadosDoGrupo as $con):
-                        $cConf = (bool)$con['confirmado']; ?>
+                        $cConf   = (bool)$con['confirmado'];
+                        $recusou = (!$cConf && ($con['resposta_rsvp'] ?? '') === 'recusado'); ?>
                       <div class="conv-row <?= $cConf ? 'conf' : 'pend' ?> p-2 mb-2 bg-light shadow-sm"
                            data-id="<?= $con['id'] ?>"
                            data-conf="<?= (int)$cConf ?>"
@@ -1551,8 +1593,8 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                           </h6>
                           <div class="d-flex align-items-center gap-1 flex-shrink-0">
                             <button type="button" class="btn p-0 border-0 bg-transparent btn-toggle-conv" data-id="<?= $con['id'] ?>">
-                              <span class="badge <?= $cConf ? 'bg-success' : 'bg-warning text-dark' ?> rounded-pill" style="font-size:.6rem;">
-                                <?= $cConf ? '<i class="bi bi-check-circle-fill me-1"></i> Confirmado' : '<i class="bi bi-hourglass-split me-1"></i> Pendente' ?>
+                              <span class="badge <?= $cConf ? 'bg-success' : ($recusou ? 'bg-danger' : 'bg-warning text-dark') ?> rounded-pill" style="font-size:.6rem;">
+                                <?= $cConf ? '<i class="bi bi-check-circle-fill me-1"></i> Confirmado' : ($recusou ? '<i class="bi bi-x-circle-fill me-1"></i> Recusou' : '<i class="bi bi-hourglass-split me-1"></i> Pendente') ?>
                               </span>
                             </button>
                             <button type="button" class="btn p-0 border-0 bg-transparent text-danger btn-excluir-conv" data-id="<?= $con['id'] ?>" title="Remover">
@@ -2256,6 +2298,13 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 <script>
 const SELF       = window.location.href;
 const CSRF_TOKEN  = <?= json_encode($csrf_token) ?>;
+
+/* ---- SINO DE NOTIFICAÇÕES ---- */
+document.getElementById('dropdown-notificacoes')?.addEventListener('shown.bs.dropdown', function () {
+  const badge = this.querySelector('.badge');
+  if (badge) badge.remove();
+  fetch('notificacoes_marcar_lidas.php', { method: 'POST' }).catch(() => {});
+});
 
 /* ---- BUSCA + FILTRO DO CHECKLIST ---- */
 (function () {
