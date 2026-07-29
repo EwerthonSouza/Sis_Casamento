@@ -1,7 +1,7 @@
 <?php
 session_start();
 
-if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'noivos'])) {
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'noivos'])) {
     header("Location: index.php");
     exit;
 }
@@ -169,6 +169,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
     }
 
+    // 7b. Adicionar Convidado (novo, vai direto pra fila de espera)
+    if (isset($_POST['adicionar_convidado'])) {
+        $nome       = trim($_POST['nome_convidado']      ?? '');
+        $fone       = trim($_POST['telefone_convidado']  ?? '');
+        $cat        = trim($_POST['categoria_convidado'] ?? 'Outros');
+        $acomp_qtd  = max(0, (int)($_POST['acompanhantes']      ?? 0));
+        $acomp_nms  = trim($_POST['nomes_acompanhantes'] ?? '');
+        $filhos_qtd = max(0, (int)($_POST['filhos']             ?? 0));
+        $filhos_ids = trim($_POST['idades_filhos']       ?? '');
+        if ($nome !== '') {
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)")
+                ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids]);
+            $_SESSION['msg_sucesso'] = "Convidado <strong>" . htmlspecialchars($nome) . "</strong> adicionado à fila!";
+        } else {
+            $_SESSION['msg_erro'] = "Informe o nome do convidado.";
+        }
+        if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
+    }
+
     // 8. Alternar Confirmação (Marcar/Desmarcar Presença)
     if (isset($_POST['alternar_confirmacao'])) {
         $cid = (int)$_POST['convidado_id'];
@@ -223,6 +242,9 @@ foreach ($lista_mesas as $m) $total_cap += (int)$m['capacidade'];
 
 $total_conv   = count($todos);
 $total_livres = $total_cap - $total_alocados;
+
+$categorias_existentes = array_values(array_unique(array_filter(array_map(fn($c) => trim($c['categoria']), $todos))));
+sort($categorias_existentes);
 
 $msg_ok  = $_SESSION['msg_sucesso'] ?? '';
 $msg_err = $_SESSION['msg_erro'] ?? '';
@@ -368,6 +390,9 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         </button>
         <button class="btn btn-sm btn-success rounded-pill fw-semibold shadow-sm px-3" data-bs-toggle="modal" data-bs-target="#modalAdd">
           <i class="bi bi-plus-lg me-1"></i> Nova Mesa
+        </button>
+        <button class="btn btn-sm btn-info rounded-pill text-dark fw-semibold shadow-sm px-3" data-bs-toggle="modal" data-bs-target="#modalAddConvidado">
+          <i class="bi bi-person-plus-fill me-1"></i> Adicionar Convidado
         </button>
       </div>
     </div>
@@ -670,6 +695,69 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   </div>
 </div>
 
+<!-- Modal: Adicionar Convidado -->
+<div class="modal fade" id="modalAddConvidado" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header border-0 pb-0">
+        <h6 class="modal-title fw-bold"><i class="bi bi-person-plus-fill text-info me-2"></i>Adicionar Convidado</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="POST" class="form-ajax">
+        <input type="hidden" name="adicionar_convidado" value="1">
+        <div class="modal-body py-3">
+          <div class="mb-3">
+            <label class="form-label small fw-semibold text-secondary">Nome do Convidado / Família (Titular)</label>
+            <input type="text" name="nome_convidado" class="form-control rounded-3" required>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold text-secondary">Categoria / Grupo</label>
+              <input type="text" name="categoria_convidado" class="form-control rounded-3" list="lista-categorias-mesas" placeholder="Ex: Padrinhos..." required>
+              <datalist id="lista-categorias-mesas">
+                <?php if (!empty($categorias_existentes)): foreach ($categorias_existentes as $catEx): ?>
+                  <option value="<?= htmlspecialchars($catEx, ENT_QUOTES, 'UTF-8') ?>">
+                <?php endforeach; else: ?>
+                  <option value="Família"><option value="Amigos"><option value="Trabalho">
+                <?php endif; ?>
+              </datalist>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
+              <input type="text" name="telefone_convidado" class="form-control rounded-3" placeholder="(00) 00000-0000">
+            </div>
+          </div>
+          <hr class="my-3 text-secondary opacity-25">
+          <div class="row g-3 mb-3">
+            <div class="col-4">
+              <label class="form-label small fw-semibold text-secondary">Acompanhantes</label>
+              <input type="number" min="0" name="acompanhantes" class="form-control rounded-3" value="0">
+            </div>
+            <div class="col-8">
+              <label class="form-label small fw-semibold text-secondary">Nomes (separados por vírgula)</label>
+              <input type="text" name="nomes_acompanhantes" class="form-control rounded-3" placeholder="Ex: Maria, João...">
+            </div>
+          </div>
+          <div class="row g-3">
+            <div class="col-4">
+              <label class="form-label small fw-semibold text-secondary">Filhos</label>
+              <input type="number" min="0" name="filhos" class="form-control rounded-3" value="0">
+            </div>
+            <div class="col-8">
+              <label class="form-label small fw-semibold text-secondary">Idades (separadas por vírgula)</label>
+              <input type="text" name="idades_filhos" class="form-control rounded-3" placeholder="Ex: 5 anos, 12 anos...">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer border-0 pt-0">
+          <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
+          <button type="submit" class="btn btn-info btn-sm px-4 rounded-pill fw-semibold">Adicionar à Fila</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: Add Mesa -->
 <div class="modal fade" id="modalAdd" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered modal-sm">
@@ -926,7 +1014,7 @@ document.addEventListener('DOMContentLoaded', function () {
   document.addEventListener('submit', function(e) {
     const form = e.target;
     // Note a adição do 'alternar_confirmacao'
-    const isAction = form.querySelector('[name="adicionar_mesa"], [name="editar_mesa"], [name="criar_multiplas_mesas"], [name="excluir_mesa"], [name="esvaziar_mesa"], [name="remover_da_mesa"], [name="adicionar_convidado_mesa"], [name="alternar_confirmacao"]');
+    const isAction = form.querySelector('[name="adicionar_mesa"], [name="editar_mesa"], [name="criar_multiplas_mesas"], [name="excluir_mesa"], [name="esvaziar_mesa"], [name="remover_da_mesa"], [name="adicionar_convidado_mesa"], [name="adicionar_convidado"], [name="alternar_confirmacao"]');
 
     if (isAction) {
       e.preventDefault();
