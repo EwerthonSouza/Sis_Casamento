@@ -41,6 +41,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!empty($nome) && !empty($servico)) {
             $pdo->prepare("INSERT INTO fornecedores_evento (evento_id, nome, servico, contato, status, valor) VALUES (?, ?, ?, ?, ?, ?)")->execute([$evento_id, $nome, $servico, $contato, $status, $valor]);
             $_SESSION['msg_sucesso'] = "Fornecedor adicionado com sucesso!";
+        } else {
+            $_SESSION['msg_erro'] = "Preencha o nome e o serviço do fornecedor.";
         }
         header("Location: fornecedores_evento.php?id=" . $evento_id); exit;
     }
@@ -54,8 +56,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $status = trim($_POST['status_fornecedor_edit']);
         $valor = !empty($_POST['valor_fornecedor_edit']) ? (float)$_POST['valor_fornecedor_edit'] : 0.00;
 
-        $pdo->prepare("UPDATE fornecedores_evento SET nome = ?, servico = ?, contato = ?, status = ?, valor = ? WHERE id = ? AND evento_id = ?")->execute([$nome, $servico, $contato, $status, $valor, $id_forn, $evento_id]);
-        $_SESSION['msg_sucesso'] = "Fornecedor atualizado com sucesso!";
+        if (!empty($nome) && !empty($servico)) {
+            $pdo->prepare("UPDATE fornecedores_evento SET nome = ?, servico = ?, contato = ?, status = ?, valor = ? WHERE id = ? AND evento_id = ?")->execute([$nome, $servico, $contato, $status, $valor, $id_forn, $evento_id]);
+            $_SESSION['msg_sucesso'] = "Fornecedor atualizado com sucesso!";
+        } else {
+            $_SESSION['msg_erro'] = "Preencha o nome e o serviço do fornecedor.";
+        }
         header("Location: fornecedores_evento.php?id=" . $evento_id); exit;
     }
 
@@ -162,8 +168,8 @@ foreach ($lista_fornecedores as $f) {
         </div>
     </div>
 
-    <?php if (!empty($msg_erro)): ?><div class="alert alert-danger shadow-sm alert-dismissible"><button class="btn-close" data-bs-dismiss="alert"></button><?= $msg_erro ?></div><?php endif; ?>
-    <?php if (!empty($msg_sucesso)): ?><div class="alert alert-success shadow-sm alert-dismissible"><button class="btn-close" data-bs-dismiss="alert"></button><?= $msg_sucesso ?></div><?php endif; ?>
+    <?php if (!empty($msg_erro)): ?><div class="alert alert-danger shadow-sm alert-dismissible"><button class="btn-close" data-bs-dismiss="alert"></button><?= htmlspecialchars($msg_erro) ?></div><?php endif; ?>
+    <?php if (!empty($msg_sucesso)): ?><div class="alert alert-success shadow-sm alert-dismissible"><button class="btn-close" data-bs-dismiss="alert"></button><?= htmlspecialchars($msg_sucesso) ?></div><?php endif; ?>
 
     <div class="card shadow-sm border-0">
         <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">

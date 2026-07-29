@@ -289,7 +289,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } catch (Exception $e) {
                     $pdo->rollBack();
                     error_log("[CADASTRAR EVENTO] " . $e->getMessage());
-                    $_SESSION['msg_erro'] = "Erro interno ao cadastrar: " . $e->getMessage();
+                    $_SESSION['msg_erro'] = "Erro interno ao cadastrar o casamento. Tente novamente.";
                 }
             }
         } else {
@@ -637,6 +637,7 @@ unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
                                                 <div class="d-flex justify-content-center gap-1">
                                                     <button type="button" class="btn btn-sm btn-light border fw-bold text-warning btn-abrir-modal-senha" data-cliente-id="<?= (int)$cas['cliente_id'] ?>" data-bs-toggle="modal" data-bs-target="#modalResetSenha" title="Resetar Senha"><i class="bi bi-key"></i></button>
                                                     <a href="gerenciar.php?id=<?= (int)$cas['evento_id'] ?>" class="btn btn-sm btn-primary shadow-sm" title="Gerenciar"><i class="bi bi-gear-fill"></i></a>
+                                                    <a href="relatorio_pdf.php?id=<?= (int)$cas['evento_id'] ?>&secoes=todos" target="_blank" class="btn btn-sm btn-outline-danger shadow-sm" title="Exportar PDF"><i class="bi bi-file-earmark-pdf-fill"></i></a>
                                                     <form method="POST" class="d-inline" onsubmit="return confirm('Tem certeza que deseja excluir o evento de <?= htmlspecialchars($cas['nome_noivos']) ?>? Todos os dados serão perdidos!');">
                                                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                                                         <input type="hidden" name="evento_id" value="<?= (int)$cas['evento_id'] ?>">
@@ -682,6 +683,7 @@ unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
                                             <td class="text-center">
                                                 <div class="d-flex justify-content-center gap-1">
                                                     <a href="gerenciar.php?id=<?= (int)$cas['evento_id'] ?>" class="btn btn-sm btn-outline-secondary" title="Ver Arquivo"><i class="bi bi-folder2-open"></i></a>
+                                                    <a href="relatorio_pdf.php?id=<?= (int)$cas['evento_id'] ?>&secoes=todos" target="_blank" class="btn btn-sm btn-outline-danger" title="Exportar PDF"><i class="bi bi-file-earmark-pdf-fill"></i></a>
                                                     <form method="POST" class="d-inline" onsubmit="return confirm('Excluir histórico de <?= htmlspecialchars($cas['nome_noivos']) ?>?');">
                                                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                                                         <input type="hidden" name="evento_id" value="<?= (int)$cas['evento_id'] ?>">

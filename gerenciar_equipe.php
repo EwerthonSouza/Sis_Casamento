@@ -98,10 +98,10 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER 
 <div class="container my-5">
     
     <?php if ($msg_sucesso): ?>
-        <div class="alert alert-success fw-bold shadow-sm"><i class="bi bi-check-circle-fill me-2"></i><?= $msg_sucesso ?></div>
+        <div class="alert alert-success fw-bold shadow-sm"><i class="bi bi-check-circle-fill me-2"></i><?= htmlspecialchars($msg_sucesso) ?></div>
     <?php endif; ?>
     <?php if ($msg_erro): ?>
-        <div class="alert alert-danger fw-bold shadow-sm"><i class="bi bi-exclamation-triangle-fill me-2"></i><?= $msg_erro ?></div>
+        <div class="alert alert-danger fw-bold shadow-sm"><i class="bi bi-exclamation-triangle-fill me-2"></i><?= htmlspecialchars($msg_erro) ?></div>
     <?php endif; ?>
 
     <div class="card border-0 shadow-sm rounded-4">

@@ -36,8 +36,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->execute([
                         $evento_id,
                         $nomes[$i],
-                        $faixas[$i],
-                        $telefones[$i]
+                        $faixas[$i] ?? 'Adulto',
+                        $telefones[$i] ?? ''
                     ]);
                 }
             }
@@ -46,7 +46,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $sucesso = true;
         } catch (Exception $e) {
             $pdo->rollBack();
-            $erro = "Erro ao processar sua confirmação: " . $e->getMessage();
+            error_log("confirmar.php: erro ao salvar confirmação (evento {$evento_id}): " . $e->getMessage());
+            $erro = "Erro ao processar sua confirmação. Por favor, tente novamente.";
         }
     }
 }
@@ -84,7 +85,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <?php else: ?>
                         
                         <?php if (isset($erro)): ?>
-                            <div class="alert alert-danger"><?= $erro ?></div>
+                            <div class="alert alert-danger"><?= htmlspecialchars($erro) ?></div>
                         <?php endif; ?>
 
                         <p class="text-center text-muted mb-4">Por favor, preencha abaixo o seu nome e de todos os membros da sua família que irão ao evento.</p>

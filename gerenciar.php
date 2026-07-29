@@ -51,6 +51,10 @@ try {
     ");
 }
 
+// 1b. Coluna de prazo por tarefa do checklist
+try { $pdo->query("SELECT data_prazo FROM checklist LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN data_prazo DATE NULL"); }
+
 // 2. Colunas de convidados
 try { $pdo->query("SELECT nomes_acompanhantes FROM convidados LIMIT 1"); }
 catch (Exception $e) { $pdo->exec("ALTER TABLE convidados ADD COLUMN nomes_acompanhantes VARCHAR(255) NULL"); }
@@ -148,6 +152,17 @@ function json_out(array $data): void {
     exit;
 }
 
+/* Retorna [classe_css, texto] do badge de prazo de uma tarefa */
+function badge_prazo(?string $data_prazo, bool $done): array {
+    if (empty($data_prazo)) return ['sem', 'Sem prazo'];
+    if ($done) return ['futuro', date('d/m/Y', strtotime($data_prazo))];
+    $dias = (int)floor((strtotime($data_prazo) - strtotime(date('Y-m-d'))) / 86400);
+    $txt  = date('d/m/Y', strtotime($data_prazo));
+    if ($dias < 0)  return ['atrasada', $txt . ' (atrasada)'];
+    if ($dias <= 3) return ['proximo', $txt];
+    return ['futuro', $txt];
+}
+
 /* ============================================================
    MOMENTOS DA CELEBRAÇÃO
    ============================================================ */
@@ -183,7 +198,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $servico = trim($_POST['servico_fornecedor'] ?? '');
         $contato = trim($_POST['contato_fornecedor'] ?? '');
         $status  = trim($_POST['status_fornecedor']  ?? 'Orçamento');
-        $valor   = !empty($_POST['valor_fornecedor'])
+        $valor   = ($is_admin && !empty($_POST['valor_fornecedor']))
                     ? (float)str_replace(['.', ','], ['', '.'], $_POST['valor_fornecedor'])
                     : 0.00;
         if ($nome !== '' && $servico !== '') {
@@ -216,12 +231,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['adicionar_manual'])) {
         if (!$is_admin) { $_SESSION['msg_erro'] = "Acesso negado."; header("Location: gerenciar.php?id=$evento_id"); exit; }
 
-        $etapa     = trim($_POST['etapa']       ?? '');
-        $tarefa    = trim($_POST['tarefa']      ?? '');
-        $descricao = trim($_POST['descricao'] ?? '');
+        $etapa      = trim($_POST['etapa']       ?? '');
+        $tarefa     = trim($_POST['tarefa']      ?? '');
+        $descricao  = trim($_POST['descricao'] ?? '');
+        $data_prazo = trim($_POST['data_prazo'] ?? '');
+        $data_prazo = preg_match('/^\d{4}-\d{2}-\d{2}$/', $data_prazo) ? $data_prazo : null;
         if ($etapa !== '' && $tarefa !== '') {
-            $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0)")
-                ->execute([$evento_id, $etapa, $tarefa, $descricao]);
+            $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado, data_prazo) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0, ?)")
+                ->execute([$evento_id, $etapa, $tarefa, $descricao, $data_prazo]);
             $_SESSION['msg_sucesso'] = "Tarefa adicionada!";
         }
         header("Location: gerenciar.php?id=$evento_id"); exit;
@@ -244,13 +261,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['editar_tarefa'])) {
         if (!$is_admin) { $_SESSION['msg_erro'] = "Acesso negado."; header("Location: gerenciar.php?id=$evento_id"); exit; }
 
-        $id        = (int)($_POST['id_tarefa']      ?? 0);
-        $etapa     = trim($_POST['etapa_edit']     ?? '');
-        $tarefa    = trim($_POST['tarefa_edit']    ?? '');
-        $descricao = trim($_POST['descricao_edit'] ?? '');
+        $id         = (int)($_POST['id_tarefa']      ?? 0);
+        $etapa      = trim($_POST['etapa_edit']     ?? '');
+        $tarefa     = trim($_POST['tarefa_edit']    ?? '');
+        $descricao  = trim($_POST['descricao_edit'] ?? '');
+        $data_prazo = trim($_POST['data_prazo_edit'] ?? '');
+        $data_prazo = preg_match('/^\d{4}-\d{2}-\d{2}$/', $data_prazo) ? $data_prazo : null;
         if ($id > 0 && $etapa !== '' && $tarefa !== '') {
-            $pdo->prepare("UPDATE checklist SET etapa = ?, tarefa = ?, descricao = ? WHERE id = ? AND evento_id = ?")
-                ->execute([$etapa, $tarefa, $descricao, $id, $evento_id]);
+            $pdo->prepare("UPDATE checklist SET etapa = ?, tarefa = ?, descricao = ?, data_prazo = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$etapa, $tarefa, $descricao, $data_prazo, $id, $evento_id]);
             $_SESSION['msg_sucesso'] = "Tarefa atualizada!";
         }
         header("Location: gerenciar.php?id=$evento_id"); exit;
@@ -340,7 +359,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $filhos_qtd = max(0, (int)($_POST['filhos']              ?? 0));
         $filhos_ids = trim($_POST['idades_filhos']        ?? '');
         if ($nome !== '') {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telephone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)")
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)")
                 ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids]);
             $_SESSION['msg_sucesso'] = "Convidado adicionado!";
         }
@@ -386,8 +405,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
-    // 14. Atualizar valor pago de um fornecedor (AJAX)
+    // 14. Atualizar valor pago de um fornecedor (AJAX) (Apenas Admin)
     if (isset($_POST['atualizar_valor_pago'])) {
+        if (!$is_admin) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Acesso negado.']);
+            header("Location: gerenciar.php?id=$evento_id"); exit;
+        }
         $forn_id    = (int)($_POST['fornecedor_id'] ?? 0);
         $valor_pago = (float)($_POST['valor_pago']  ?? 0);
         if ($forn_id > 0) {
@@ -651,6 +674,29 @@ foreach ($lista_checklist as $t) {
 }
 $pct_g = $total_g > 0 ? round($conc_g / $total_g * 100) : 0;
 
+// Etapa a abrir automaticamente: a primeira que ainda tem tarefas pendentes
+$etapa_auto_abrir = null;
+foreach ($prog as $e => $p) {
+    if ($p['conc'] < $p['total']) { $etapa_auto_abrir = $e; break; }
+}
+
+// Próximas tarefas (pendentes, ordenadas por prazo — sem prazo por último) e contagem de atrasadas
+$hoje_str = date('Y-m-d');
+$proximas_tarefas = [];
+$total_atrasadas = 0;
+foreach ($lista_checklist as $t) {
+    $done = ($t['status'] === 'concluido' || $t['checado'] == 1);
+    if ($done) continue;
+    if (!empty($t['data_prazo']) && $t['data_prazo'] < $hoje_str) { $total_atrasadas++; }
+    $proximas_tarefas[] = $t;
+}
+usort($proximas_tarefas, function ($a, $b) {
+    $da = $a['data_prazo'] ?: '9999-12-31';
+    $db = $b['data_prazo'] ?: '9999-12-31';
+    return $da <=> $db;
+});
+$proximas_tarefas = array_slice($proximas_tarefas, 0, 5);
+
 // Dias para o evento
 $hoje = (new DateTime())->setTime(0, 0, 0);
 $dev  = (new DateTime($evento['data_evento']))->setTime(0, 0, 0);
@@ -793,7 +839,29 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     .modal-backdrop { z-index: 1050 !important; }
     #modalConfirmar { z-index: 1075 !important; }
     .modal-backdrop:nth-of-type(2) { z-index: 1070 !important; }
-    
+
+    /* ---- CHECKLIST — REDESIGN ---- */
+    .selo-etapa {
+      width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-size: .8rem; color: #fff;
+      background: rgba(255,255,255,.15); border: 1.5px solid rgba(255,255,255,.35);
+    }
+    .selo-etapa.feita { background: #22c55e; border-color: #22c55e; }
+    .badge-prazo { font-size: .64rem; font-weight: 700; padding: .22em .6em; border-radius: 999px; white-space: nowrap; }
+    .badge-prazo.sem     { background: #f1f5f9; color: #94a3b8; }
+    .badge-prazo.futuro  { background: #dbeafe; color: #1d4ed8; }
+    .badge-prazo.proximo { background: #fef3c7; color: #b45309; }
+    .badge-prazo.atrasada{ background: #fee2e2; color: #dc2626; }
+    .checklist-toolbar { background: #fff; border-radius: 12px; padding: .75rem 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.06); margin-bottom: 1rem; }
+    .checklist-toolbar .sw { position: relative; flex: 1 1 220px; min-width: 180px; }
+    .checklist-toolbar .sw .bi-search { position: absolute; left: .7rem; top: 50%; transform: translateY(-50%); color: #94a3b8; font-size: .78rem; }
+    .checklist-toolbar .sw input { padding-left: 2rem; font-size: .82rem; }
+    .card-proximas { border-radius: var(--radius); border: 1.5px solid #fecaca !important; background: #fff5f5; margin-bottom: 1rem; }
+    .card-proximas .item-proxima { display: flex; align-items: center; gap: .6rem; padding: .4rem 0; border-bottom: 1px dashed #fecdd3; font-size: .82rem; }
+    .card-proximas .item-proxima:last-child { border-bottom: none; }
+    .tarefa-row-hidden { display: none !important; }
+    .etapa-hidden { display: none !important; }
   </style>
 </head>
 <body>
@@ -843,6 +911,36 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         <a href="painel_admin.php" class="btn btn-sm btn-outline-light mb-3 rounded-3">
           <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
         </a>
+
+        <div class="dropdown d-inline-block mb-3 ms-2">
+          <button class="btn btn-sm btn-danger rounded-3 dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+            <i class="bi bi-file-earmark-pdf-fill me-1"></i> Exportar PDF
+          </button>
+          <ul class="dropdown-menu">
+            <li><a class="dropdown-item fw-bold" href="relatorio_pdf.php?id=<?= $evento_id ?>&secoes=todos" target="_blank">
+              <i class="bi bi-file-earmark-text me-1"></i> Relatório Completo
+            </a></li>
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item" href="relatorio_pdf.php?id=<?= $evento_id ?>&secoes=checklist" target="_blank">
+              <i class="bi bi-list-check me-1"></i> Somente Checklist
+            </a></li>
+            <li><a class="dropdown-item" href="relatorio_pdf.php?id=<?= $evento_id ?>&secoes=convidados" target="_blank">
+              <i class="bi bi-people me-1"></i> Somente Convidados
+            </a></li>
+            <?php if ($is_admin): ?>
+            <li><a class="dropdown-item" href="relatorio_pdf.php?id=<?= $evento_id ?>&secoes=fornecedores" target="_blank">
+              <i class="bi bi-cash-stack me-1"></i> Somente Financeiro
+            </a></li>
+            <?php endif; ?>
+            <li><a class="dropdown-item" href="relatorio_pdf.php?id=<?= $evento_id ?>&secoes=notas" target="_blank">
+              <i class="bi bi-journal-text me-1"></i> Somente Notas
+            </a></li>
+            <li><a class="dropdown-item" href="relatorio_pdf.php?id=<?= $evento_id ?>&secoes=musicas" target="_blank">
+              <i class="bi bi-music-note-beamed me-1"></i> Somente Playlist
+            </a></li>
+          </ul>
+        </div>
+
         <h2 class="fw-bold mb-1 text-white" style="letter-spacing:-.5px;">
           <i class="bi bi-rings text-warning me-2"></i>
           Casamento de <?= htmlspecialchars($evento['nome'], ENT_QUOTES, 'UTF-8') ?>
@@ -930,6 +1028,9 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           <?php if ($total_g > 0): ?>
           <div class="text-muted small mt-1">
             <span id="label-conc-g"><?= $conc_g ?></span> de <?= $total_g ?> tarefas concluídas
+            <?php if ($total_atrasadas > 0): ?>
+              <span class="badge-prazo atrasada ms-1"><i class="bi bi-exclamation-triangle-fill"></i> <?= $total_atrasadas ?> atrasada<?= $total_atrasadas > 1 ? 's' : '' ?></span>
+            <?php endif; ?>
             <div class="barra mt-1" style="max-width:140px;">
               <div class="barra-fill" id="barra-g" style="width:<?= $pct_g ?>%;"></div>
             </div>
@@ -968,7 +1069,35 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           <p class="mb-0">Checklist vazio. <?= $is_admin ? 'Use os botões acima para importar um modelo ou adicionar tarefas.' : 'O Administrador ainda não adicionou as tarefas.' ?></p>
         </div>
       <?php else: ?>
-        <div class="d-flex flex-column gap-3">
+
+        <?php if (!empty($proximas_tarefas)): ?>
+        <div class="card border-0 shadow-sm card-proximas p-3">
+          <div class="fw-bold text-danger mb-2" style="font-size:.78rem;text-transform:uppercase;letter-spacing:.03em;">
+            <i class="bi bi-alarm-fill me-1"></i> Próximas Tarefas
+          </div>
+          <?php foreach ($proximas_tarefas as $pt): [$pcls, $ptxt] = badge_prazo($pt['data_prazo'] ?? null, false); ?>
+            <div class="item-proxima">
+              <span class="badge-prazo <?= $pcls ?>"><?= htmlspecialchars($ptxt) ?></span>
+              <span class="text-dark text-truncate"><?= htmlspecialchars($pt['tarefa'], ENT_QUOTES, 'UTF-8') ?></span>
+              <span class="text-muted ms-auto" style="font-size:.7rem;"><?= htmlspecialchars($pt['etapa']) ?></span>
+            </div>
+          <?php endforeach; ?>
+        </div>
+        <?php endif; ?>
+
+        <div class="checklist-toolbar d-flex flex-wrap gap-2 align-items-center">
+          <div class="sw">
+            <i class="bi bi-search"></i>
+            <input type="text" id="buscaChecklist" class="form-control form-control-sm rounded-pill" placeholder="Buscar tarefa...">
+          </div>
+          <div class="d-flex gap-1">
+            <button class="btn btn-primary btn-sm rounded-pill filtro-check active" data-f="todos" style="font-size:.72rem;">Todas</button>
+            <button class="btn btn-outline-warning btn-sm rounded-pill filtro-check" data-f="pendente" style="font-size:.72rem;">Pendentes</button>
+            <button class="btn btn-outline-success btn-sm rounded-pill filtro-check" data-f="concluido" style="font-size:.72rem;">Concluídas</button>
+          </div>
+        </div>
+
+        <div class="d-flex flex-column gap-3" id="lista-etapas-checklist">
           <?php $idx = 0; foreach ($passos as $etapa => $tarefas): $idx++;
             $totE  = $prog[$etapa]['total'];
             $concE = $prog[$etapa]['conc'];
@@ -976,20 +1105,21 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
             $ok    = ($totE > 0 && $concE === $totE);
             $label = is_numeric($etapa) ? 'PASSO ' . str_pad($etapa, 2, '0', STR_PAD_LEFT) : $etapa;
             $cid   = 'etapa_' . $idx;
+            $auto_abrir = ($etapa === $etapa_auto_abrir);
           ?>
-          <div class="card border-0 shadow-sm overflow-hidden" style="border-radius:12px;">
+          <div class="card border-0 shadow-sm overflow-hidden etapa-wrap" style="border-radius:12px;">
             <div class="etapa-hdr"
                  data-bs-toggle="collapse"
                  data-bs-target="#<?= $cid ?>"
-                 aria-expanded="false"
+                 aria-expanded="<?= $auto_abrir ? 'true' : 'false' ?>"
                  id="hdr-<?= $cid ?>">
               <div class="d-flex align-items-center gap-2">
-                <i class="bi <?= $ok ? 'bi-check-all text-success' : 'bi-folder2-open text-info' ?> fs-5 icone-etapa"></i>
+                <span class="selo-etapa <?= $ok ? 'feita' : '' ?> icone-etapa"><?= $ok ? '<i class="bi bi-check-lg"></i>' : $idx ?></span>
                 <span class="fw-bold" style="font-size:.88rem;"><?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?></span>
-                
+
                 <?php if ($is_admin): ?>
-                    <button type="button" class="btn btn-sm btn-link text-white p-0 ms-2 btn-renomear-etapa" 
-                            data-nome="<?= htmlspecialchars($etapa, ENT_QUOTES, 'UTF-8') ?>" 
+                    <button type="button" class="btn btn-sm btn-link text-white p-0 ms-2 btn-renomear-etapa"
+                            data-nome="<?= htmlspecialchars($etapa, ENT_QUOTES, 'UTF-8') ?>"
                             style="opacity: 0.7;" title="Renomear etapa">
                         <i class="bi bi-pencil"></i>
                     </button>
@@ -1009,7 +1139,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
               </div>
             </div>
 
-            <div id="<?= $cid ?>" class="collapse">
+            <div id="<?= $cid ?>" class="collapse<?= $auto_abrir ? ' show' : '' ?>">
               <div class="etapa-body p-3 bg-white">
                 <div class="p-3 mb-3 bg-light rounded-3 border small">
                   <div class="fw-bold text-muted mb-2" style="font-size:.72rem;text-transform:uppercase;">
@@ -1038,7 +1168,10 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                   $done = ($t['status'] === 'concluido' || $t['checado'] == 1);
                   $snum = $done ? 1 : 0;
                 ?>
-                <div class="tarefa-card card border-0 bg-white mb-2 shadow-sm <?= $done ? 'done' : 'pend' ?>">
+                <?php [$badge_cls, $badge_txt] = badge_prazo($t['data_prazo'] ?? null, $done); ?>
+                <div class="tarefa-card card border-0 bg-white mb-2 shadow-sm <?= $done ? 'done' : 'pend' ?>"
+                     data-tarefa-nome="<?= strtolower(htmlspecialchars($t['tarefa'], ENT_QUOTES, 'UTF-8')) ?>"
+                     data-tarefa-status="<?= $done ? 'concluido' : 'pendente' ?>">
                   <div class="card-body p-3">
                     <div class="d-flex align-items-start gap-3">
                       <button type="button"
@@ -1052,9 +1185,12 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                       <div class="w-100">
                         <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
                           <div>
-                            <h6 class="fw-bold mb-1 <?= $done ? 'text-muted text-decoration-line-through' : 'text-dark' ?>" style="line-height:1.4;">
-                              <?= htmlspecialchars($t['tarefa'], ENT_QUOTES, 'UTF-8') ?>
-                            </h6>
+                            <div class="d-flex align-items-center gap-2 flex-wrap mb-1">
+                              <h6 class="fw-bold mb-0 <?= $done ? 'text-muted text-decoration-line-through' : 'text-dark' ?>" style="line-height:1.4;">
+                                <?= htmlspecialchars($t['tarefa'], ENT_QUOTES, 'UTF-8') ?>
+                              </h6>
+                              <span class="badge-prazo <?= $badge_cls ?>"><i class="bi bi-calendar-event me-1"></i><?= htmlspecialchars($badge_txt) ?></span>
+                            </div>
                             <?php if (!empty($t['descricao'])): ?>
                             <button class="btn btn-sm btn-outline-secondary py-0 px-2 rounded-pill"
                                     data-bs-toggle="modal"
@@ -1479,6 +1615,10 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
             <label class="form-label small fw-bold text-secondary">Nome da Tarefa</label>
             <input type="text" name="tarefa" class="form-control" required>
           </div>
+          <div class="mb-3">
+            <label class="form-label small fw-bold text-secondary">Prazo (opcional)</label>
+            <input type="date" name="data_prazo" class="form-control">
+          </div>
           <div class="mb-1">
             <label class="form-label small fw-bold text-secondary">Descrição (opcional)</label>
             <textarea name="descricao" class="form-control" rows="3" placeholder="Detalhes, instruções…"></textarea>
@@ -1714,6 +1854,10 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
             <div class="mb-3">
               <label class="form-label small fw-bold text-secondary">Tarefa</label>
               <input type="text" name="tarefa_edit" class="form-control" value="<?= htmlspecialchars($t['tarefa'], ENT_QUOTES, 'UTF-8') ?>" required>
+            </div>
+            <div class="mb-3">
+              <label class="form-label small fw-bold text-secondary">Prazo (opcional)</label>
+              <input type="date" name="data_prazo_edit" class="form-control" value="<?= htmlspecialchars($t['data_prazo'] ?? '', ENT_QUOTES, 'UTF-8') ?>">
             </div>
             <div class="mb-1">
               <label class="form-label small fw-bold text-secondary">Descrição</label>
@@ -2112,6 +2256,50 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 <script>
 const SELF       = window.location.href;
 const CSRF_TOKEN  = <?= json_encode($csrf_token) ?>;
+
+/* ---- BUSCA + FILTRO DO CHECKLIST ---- */
+(function () {
+  const busca = document.getElementById('buscaChecklist');
+  if (!busca) return;
+  let filtroAtivo = 'todos';
+
+  function aplicarFiltroChecklist() {
+    const termo = busca.value.trim().toLowerCase();
+    document.querySelectorAll('#lista-etapas-checklist .etapa-wrap').forEach(etapaEl => {
+      let algumVisivel = false;
+      etapaEl.querySelectorAll('.tarefa-card').forEach(card => {
+        const nome   = card.dataset.tarefaNome || '';
+        const status = card.dataset.tarefaStatus || '';
+        const matchNome   = !termo || nome.includes(termo);
+        const matchStatus = filtroAtivo === 'todos' || status === filtroAtivo;
+        const visivel = matchNome && matchStatus;
+        card.classList.toggle('tarefa-row-hidden', !visivel);
+        if (visivel) algumVisivel = true;
+      });
+      etapaEl.classList.toggle('etapa-hidden', !algumVisivel);
+      if (algumVisivel && (termo || filtroAtivo !== 'todos')) {
+        const collapseEl = etapaEl.querySelector('.collapse');
+        if (collapseEl && !collapseEl.classList.contains('show')) {
+          new bootstrap.Collapse(collapseEl, { toggle: false }).show();
+        }
+      }
+    });
+  }
+
+  busca.addEventListener('input', aplicarFiltroChecklist);
+  document.querySelectorAll('.filtro-check').forEach(btn => {
+    btn.addEventListener('click', function () {
+      filtroAtivo = this.dataset.f;
+      document.querySelectorAll('.filtro-check').forEach(b => {
+        b.classList.remove('active', 'btn-primary', 'btn-warning', 'btn-success');
+        b.classList.add(b.dataset.f === 'pendente' ? 'btn-outline-warning' : b.dataset.f === 'concluido' ? 'btn-outline-success' : 'btn-outline-primary');
+      });
+      this.classList.remove('btn-outline-warning', 'btn-outline-success', 'btn-outline-primary');
+      this.classList.add('active', this.dataset.f === 'pendente' ? 'btn-warning' : this.dataset.f === 'concluido' ? 'btn-success' : 'btn-primary');
+      aplicarFiltroChecklist();
+    });
+  });
+})();
 
 /* ---- TOAST ---- */
 function toast(msg, tipo = 'verde') {
@@ -2765,7 +2953,7 @@ function linkBtnHtml(link, accentBg, accentColor) {
   const safe = urlSegura(link);
   if (!safe) return '';
   const plat = detectarPlataforma(safe);
-  const safeAttr = safe.replace(/"/g, '"');
+  const safeAttr = safe.replace(/"/g, '&quot;');
   let icone = `<i class="bi bi-link-45deg me-1"></i>Ouvir`;
   if (plat === 'youtube') icone = `<i class="bi bi-youtube text-danger me-1"></i>YouTube`;
   if (plat === 'spotify') icone = `<i class="bi bi-spotify text-success me-1"></i>Spotify`;
@@ -2781,9 +2969,9 @@ function musicaCardHtml(m) {
     ? { brd:'#a78bfa', bg:'#ede9fe', txt:'#7c3aed', icone:'bi-lightbulb' }
     : { brd:'#86efac', bg:'#dcfce7', txt:'#16a34a', icone:'bi-check-circle-fill' };
 
-  const tituloEsc   = (m.titulo  || '').replace(/&/g,'&').replace(/"/g,'"').replace(/</g,'<').replace(/>/g,'>');
-  const artistaEsc  = (m.artista || '').replace(/&/g,'&').replace(/"/g,'"').replace(/</g,'<').replace(/>/g,'>');
-  const linkEsc     = (urlSegura(m.link || '')).replace(/"/g,'"');
+  const tituloEsc   = (m.titulo  || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const artistaEsc  = (m.artista || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const linkEsc     = (urlSegura(m.link || '')).replace(/"/g,'&quot;');
 
   const artistaHtml = m.artista
     ? `<div class="text-muted musica-artista-txt" style="font-size:.69rem;"><i class="bi bi-person-fill me-1" style="font-size:.6rem;"></i>${artistaEsc}</div>`
@@ -2848,7 +3036,7 @@ function garantizarGrupo(painel, momento, aba) {
   const cor  = eSug
     ? { bg:'linear-gradient(90deg,#ede9fe,#f5f3ff)', txt:'#5b21b6', badge:'#7c3aed' }
     : { bg:'linear-gradient(90deg,#dcfce7,#f0fdf4)', txt:'#14532d', badge:'#16a34a' };
-  const momentoAttr = momento.replace(/"/g, '"');
+  const momentoAttr = momento.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   let grupo = wrap.querySelector(`.musica-grupo[data-aba="${aba}"][data-momento="${cssEscape(momento)}"]`);
   if (!grupo) {
     grupo = document.createElement('div');

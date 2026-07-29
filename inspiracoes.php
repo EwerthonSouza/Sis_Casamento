@@ -14,7 +14,8 @@ if (!isset($_GET['id']) || empty($_GET['id'])) {
 }
 
 $evento_id = (int)$_GET['id'];
-$usuario_atual = $_GET['usuario'] ?? 'Assessoria'; 
+$usuario_atual = $_GET['usuario'] ?? 'Assessoria';
+$usuario_atual = in_array($usuario_atual, ['Assessoria', 'Noivos'], true) ? $usuario_atual : 'Assessoria';
 
 // Buscar dados do casamento
 $stmt = $pdo->prepare("SELECT e.*, c.nome FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
@@ -47,7 +48,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['favoritar_foto'])) {
 // 2. PROCESSAR UPLOAD DA FOTO COM CATEGORIA NOVA (POST)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload_foto'])) {
     $titulo = trim($_POST['titulo']);
-    $categoria = !empty($_POST['nova_categoria']) ? trim($_POST['nova_categoria']) : $_POST['categoria'];
+    $categoria = !empty($_POST['nova_categoria']) ? trim($_POST['nova_categoria']) : ($_POST['categoria'] ?? '');
     
     if (isset($_FILES['foto_arquivo']) && $_FILES['foto_arquivo']['error'] === UPLOAD_ERR_OK) {
         $fileTmpPath = $_FILES['foto_arquivo']['tmp_name'];

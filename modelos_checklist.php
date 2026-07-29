@@ -97,6 +97,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['aba_ativa'] = $original['tipo_padrao'];
                 $_SESSION['etapa_aberta'] = $original['etapa'];
             }
+        } else {
+            $_SESSION['mensagem'] = "Tarefa original não encontrada para duplicar.";
+            $_SESSION['tipo_msg'] = "danger";
         }
         header("Location: " . $_SERVER['PHP_SELF']);
         exit;

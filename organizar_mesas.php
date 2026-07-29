@@ -1,17 +1,24 @@
 <?php
 session_start();
 
-if (!isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'admin') {
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'noivos'])) {
     header("Location: index.php");
     exit;
 }
+$eh_noivos = ($_SESSION['usuario_tipo'] === 'noivos');
 
 require_once 'conexao.php';
 
-$evento_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
-if (!$evento_id) {
-    header("Location: painel_admin.php");
-    exit;
+if ($eh_noivos) {
+    // Noivos só podem organizar mesas do próprio evento (ignora manipulação da URL)
+    $evento_id = (int)($_SESSION['evento_id'] ?? 0);
+    if (!$evento_id) { header("Location: index.php"); exit; }
+} else {
+    $evento_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
+    if (!$evento_id) {
+        header("Location: painel_admin.php");
+        exit;
+    }
 }
 
 /* ============================================================
@@ -55,8 +62,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // AJAX: Mover convidado (Drag & Drop)
     if (isset($_POST['mover_convidado_ajax'])) {
-        $cid = (int)$_POST['convidado_id'];
-        $mid = (int)$_POST['nova_mesa_id'] ?: null;
+        $cid = (int)($_POST['convidado_id'] ?? 0);
+        $mid = (int)($_POST['nova_mesa_id'] ?? 0) ?: null;
         $pdo->prepare("UPDATE convidados SET mesa_id = ? WHERE id = ? AND evento_id = ?")
             ->execute([$mid, $cid, $evento_id]);
         
@@ -65,7 +72,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // AJAX: Reordenar mesas
     if (isset($_POST['reordenar_mesas_ajax'])) {
-        $ordem = json_decode($_POST['ordem_mesas'], true);
+        $ordem = json_decode($_POST['ordem_mesas'] ?? '', true);
         if (is_array($ordem)) {
             $st = $pdo->prepare("UPDATE mesas SET ordem = ? WHERE id = ? AND evento_id = ?");
             foreach ($ordem as $i => $id) $st->execute([$i, (int)$id, $evento_id]);
@@ -83,6 +90,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->prepare("INSERT INTO mesas (evento_id, nome, capacidade, ordem) VALUES (?, ?, ?, ?)")
                 ->execute([$evento_id, $nome, $cap, (int)$st->fetchColumn() + 1]);
             $_SESSION['msg_sucesso'] = "Mesa <strong>" . htmlspecialchars($nome) . "</strong> criada com sucesso!";
+        } else {
+            $_SESSION['msg_erro'] = "Informe um nome e uma capacidade válida (maior que zero) para a mesa.";
         }
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
     }
@@ -96,6 +105,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->prepare("UPDATE mesas SET nome = ?, capacidade = ? WHERE id = ? AND evento_id = ?")
                 ->execute([$nome, $cap, $mid, $evento_id]);
             $_SESSION['msg_sucesso'] = "Mesa <strong>" . htmlspecialchars($nome) . "</strong> atualizada!";
+        } else {
+            $_SESSION['msg_erro'] = "Informe um nome e uma capacidade válida (maior que zero) para a mesa.";
         }
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
     }
@@ -114,6 +125,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             for ($i = 0; $i < $qtd; $i++)
                 $ins->execute([$evento_id, $pfx . ' ' . str_pad($ini + $i, 2, '0', STR_PAD_LEFT), $cap, ++$maxO]);
             $_SESSION['msg_sucesso'] = "<strong>$qtd mesa(s)</strong> criada(s) com sucesso!";
+        } else {
+            $_SESSION['msg_erro'] = "Preencha o prefixo, a quantidade e a capacidade corretamente.";
         }
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
     }
@@ -335,7 +348,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   <div class="hdr p-4 mb-4 no-print">
     <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
       <div>
-        <a href="gerenciar.php?id=<?= $evento_id ?>" class="btn btn-sm btn-outline-light rounded-pill mb-3 opacity-75">
+        <a href="<?= $eh_noivos ? 'noivos.php' : 'gerenciar.php?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-pill mb-3 opacity-75">
           <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
         </a>
         <h4 class="fw-bold text-white mb-1">

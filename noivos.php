@@ -10,6 +10,15 @@ require_once 'conexao.php';
 
 $evento_id = (int)$_SESSION['evento_id'];
 
+// Link público de confirmação de presença para compartilhar com os convidados
+$link_confirmacao_scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://';
+$link_confirmacao_base   = $link_confirmacao_scheme . $_SERVER['HTTP_HOST'] . rtrim(dirname($_SERVER['PHP_SELF']), '/');
+$link_confirmacao_url    = $link_confirmacao_base . '/confirmar.php?evento=' . $evento_id;
+
+// Garante que a coluna de prazo do checklist existe (mesma migração de gerenciar.php)
+try { $pdo->query("SELECT data_prazo FROM checklist LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN data_prazo DATE NULL"); }
+
 /* ============================================================
    HELPER: Resposta JSON para AJAX
    ============================================================ */
@@ -17,6 +26,17 @@ function json_out(array $data): void {
     header('Content-Type: application/json');
     echo json_encode($data);
     exit;
+}
+
+/* Retorna [classe_css, texto] do badge de prazo de uma tarefa */
+function badge_prazo(?string $data_prazo, bool $done): array {
+    if (empty($data_prazo)) return ['sem', 'Sem prazo'];
+    if ($done) return ['futuro', date('d/m/Y', strtotime($data_prazo))];
+    $dias = (int)floor((strtotime($data_prazo) - strtotime(date('Y-m-d'))) / 86400);
+    $txt  = date('d/m/Y', strtotime($data_prazo));
+    if ($dias < 0)  return ['atrasada', $txt . ' (atrasada)'];
+    if ($dias <= 3) return ['proximo', $txt];
+    return ['futuro', $txt];
 }
 
 /* ============================================================
@@ -68,8 +88,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $etapa = trim($_POST['etapa_nome'] ?? '');
         $texto = trim($_POST['novo_comentario_etapa'] ?? '');
         if ($etapa !== '' && $texto !== '') {
-            $pdo->prepare("INSERT INTO checklist_comentarios (etapa_nome, autor, comentario) VALUES (?, 'Noivos', ?)")
-                ->execute([$etapa, $texto]);
+            $pdo->prepare("INSERT INTO checklist_comentarios (evento_id, etapa_nome, autor, comentario) VALUES (?, ?, 'Noivos', ?)")
+                ->execute([$evento_id, $etapa, $texto]);
             if ($ajax) json_out(['ok' => true, 'autor' => 'Noivos', 'texto' => htmlspecialchars($texto)]);
         }
         if (!$ajax) { header("Location: noivos.php"); exit; }
@@ -152,6 +172,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $momento = trim($_POST['momento_musica'] ?? '');
         $titulo  = trim($_POST['titulo_musica'] ?? '');
         $link    = trim($_POST['link_musica'] ?? '');
+        if ($link !== '' && !preg_match('#^https?://#i', $link)) {
+            $link = '';
+        }
 
         if ($momento !== '' && $titulo !== '') {
             $pdo->prepare("INSERT INTO musicas_evento (evento_id, momento, titulo, link, status) VALUES (?, ?, ?, ?, 0)")
@@ -207,12 +230,12 @@ $rs3 = $pdo->prepare("
     SELECT cc.*, ch.tarefa
     FROM checklist_comentarios cc
     LEFT JOIN checklist ch ON cc.checklist_id = ch.id
-    WHERE (ch.evento_id = ? OR cc.etapa_nome IS NOT NULL)
+    WHERE (ch.evento_id = ? OR cc.evento_id = ?)
       AND cc.autor = 'Assessoria'
     ORDER BY cc.data_cadastro DESC
     LIMIT 5
 ");
-$rs3->execute([$evento_id]);
+$rs3->execute([$evento_id, $evento_id]);
 $notificacoes = $rs3->fetchAll();
 
 // Fornecedores
@@ -255,7 +278,8 @@ if (!empty($ids)) {
 }
 
 // FIX N+1 – precarrega comentários de todas as etapas
-$rs6 = $pdo->query("SELECT * FROM checklist_comentarios WHERE etapa_nome IS NOT NULL ORDER BY data_cadastro ASC");
+$rs6 = $pdo->prepare("SELECT * FROM checklist_comentarios WHERE evento_id = ? AND etapa_nome IS NOT NULL ORDER BY data_cadastro ASC");
+$rs6->execute([$evento_id]);
 $coments_etapa = [];
 foreach ($rs6->fetchAll() as $c) { $coments_etapa[$c['etapa_nome']][] = $c; }
 
@@ -272,6 +296,29 @@ foreach ($lista_checklist as $t) {
     if ($done) { $prog[$e]['conc']++; $conc_g++; }
 }
 $pct_g = $total_g > 0 ? round($conc_g / $total_g * 100) : 0;
+
+// Etapa a abrir automaticamente: a primeira que ainda tem tarefas pendentes
+$etapa_auto_abrir = null;
+foreach ($prog as $e => $p) {
+    if ($p['conc'] < $p['total']) { $etapa_auto_abrir = $e; break; }
+}
+
+// Próximas tarefas (pendentes, ordenadas por prazo — sem prazo por último) e contagem de atrasadas
+$hoje_str = date('Y-m-d');
+$proximas_tarefas = [];
+$total_atrasadas = 0;
+foreach ($lista_checklist as $t) {
+    $done = ($t['status'] === 'concluido' || $t['checado'] == 1);
+    if ($done) continue;
+    if (!empty($t['data_prazo']) && $t['data_prazo'] < $hoje_str) { $total_atrasadas++; }
+    $proximas_tarefas[] = $t;
+}
+usort($proximas_tarefas, function ($a, $b) {
+    $da = $a['data_prazo'] ?: '9999-12-31';
+    $db = $b['data_prazo'] ?: '9999-12-31';
+    return $da <=> $db;
+});
+$proximas_tarefas = array_slice($proximas_tarefas, 0, 5);
 
 // Dias para o evento
 $hoje = (new DateTime())->setTime(0, 0, 0);
@@ -479,6 +526,29 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       from { opacity: 0; transform: scale(.94) translateY(8px); }
       to   { opacity: 1; transform: scale(1)   translateY(0); }
     }
+
+    /* ---- CHECKLIST — REDESIGN ---- */
+    .selo-etapa {
+      width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-size: .8rem; color: #fff;
+      background: rgba(255,255,255,.15); border: 1.5px solid rgba(255,255,255,.35);
+    }
+    .selo-etapa.feita { background: var(--verde); border-color: var(--verde); }
+    .badge-prazo { font-size: .64rem; font-weight: 700; padding: .22em .6em; border-radius: 999px; white-space: nowrap; }
+    .badge-prazo.sem     { background: #f1f5f9; color: #94a3b8; }
+    .badge-prazo.futuro  { background: #dbeafe; color: #1d4ed8; }
+    .badge-prazo.proximo { background: #fef3c7; color: #b45309; }
+    .badge-prazo.atrasada{ background: #fee2e2; color: #dc2626; }
+    .checklist-toolbar { background: #fff; border-radius: 12px; padding: .75rem 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.06); margin-bottom: 1rem; }
+    .checklist-toolbar .sw { position: relative; flex: 1 1 220px; min-width: 180px; }
+    .checklist-toolbar .sw .bi-search { position: absolute; left: .7rem; top: 50%; transform: translateY(-50%); color: #94a3b8; font-size: .78rem; }
+    .checklist-toolbar .sw input { padding-left: 2rem; font-size: .82rem; }
+    .card-proximas { border-radius: var(--radius); border: 1.5px solid #fecaca !important; background: #fff5f5; margin-bottom: 1rem; }
+    .card-proximas .item-proxima { display: flex; align-items: center; gap: .6rem; padding: .4rem 0; border-bottom: 1px dashed #fecdd3; font-size: .82rem; }
+    .card-proximas .item-proxima:last-child { border-bottom: none; }
+    .tarefa-row-hidden { display: none !important; }
+    .etapa-hidden { display: none !important; }
   </style>
 </head>
 <body>
@@ -499,6 +569,32 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       <div class="d-flex justify-content-center gap-2 mt-3">
         <button class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
         <button id="btnConfExcluir" class="btn btn-danger btn-sm px-4 rounded-pill fw-bold">Apagar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="modalLinkConfirmacao" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header border-0 bg-light">
+        <h5 class="modal-title fw-bold"><i class="bi bi-envelope-check-fill text-danger me-2"></i> Confirmação de Presença</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body p-4">
+        <p class="text-muted small mb-3">Envie este link para seus convidados. Eles poderão confirmar a presença de toda a família diretamente por ele — sem precisar de login.</p>
+        <div class="input-group mb-2">
+          <input type="text" id="input-link-confirmacao" class="form-control" value="<?= htmlspecialchars($link_confirmacao_url) ?>" readonly>
+          <button class="btn btn-danger fw-bold" type="button" id="btn-copiar-link">
+            <i class="bi bi-clipboard-fill me-1"></i> Copiar
+          </button>
+        </div>
+        <a href="<?= htmlspecialchars($link_confirmacao_url) ?>" target="_blank" class="small text-decoration-none">
+          <i class="bi bi-box-arrow-up-right me-1"></i> Abrir o link em uma nova aba
+        </a>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary btn-sm px-4 rounded-pill fw-bold" data-bs-dismiss="modal">Fechar</button>
       </div>
     </div>
   </div>
@@ -613,7 +709,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
         $id_busca = ($tipo === 'etapa') ? $n['etapa_nome'] : $n['checklist_id'];
     ?>
     <div class="notificacao-box p-3 mb-2 bg-white rounded-3 border shadow-sm"
-         onclick="abrirConversa('<?= $tipo ?>', '<?= addslashes($id_busca) ?>', '<?= htmlspecialchars(!empty($n['etapa_nome']) ? 'Etapa: ' . $n['etapa_nome'] : 'Tarefa: ' . $n['tarefa']) ?>')"
+         onclick="abrirConversa('<?= htmlspecialchars($tipo) ?>', '<?= htmlspecialchars(addslashes($id_busca), ENT_QUOTES) ?>', '<?= htmlspecialchars(addslashes(!empty($n['etapa_nome']) ? 'Etapa: ' . $n['etapa_nome'] : 'Tarefa: ' . $n['tarefa']), ENT_QUOTES) ?>')"
          style="cursor:pointer; border-left: 4px solid var(--azul);">
       <div class="d-flex justify-content-between">
         <strong class="text-primary small">
@@ -641,6 +737,9 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
           <?php if ($total_g > 0): ?>
           <div class="text-muted small mt-1">
             <span id="label-conc-g"><?= $conc_g ?></span> de <?= $total_g ?> tarefas concluídas
+            <?php if ($total_atrasadas > 0): ?>
+              <span class="badge-prazo atrasada ms-1"><i class="bi bi-exclamation-triangle-fill"></i> <?= $total_atrasadas ?> atrasada<?= $total_atrasadas > 1 ? 's' : '' ?></span>
+            <?php endif; ?>
             <div class="barra mx-auto mt-2" style="max-width:200px;">
               <div class="barra-fill" id="barra-g" style="width:<?= $pct_g ?>%;"></div>
             </div>
@@ -654,7 +753,35 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               <p class="mt-3 mb-0">A assessoria ainda está montando o cronograma.<br>Em breve aparecerá aqui!</p>
             </div>
           <?php else: ?>
-            <div class="d-flex flex-column gap-3">
+
+            <?php if (!empty($proximas_tarefas)): ?>
+            <div class="card border-0 shadow-sm card-proximas p-3">
+              <div class="fw-bold text-danger mb-2" style="font-size:.78rem;text-transform:uppercase;letter-spacing:.03em;">
+                <i class="bi bi-alarm-fill me-1"></i> Próximas Tarefas
+              </div>
+              <?php foreach ($proximas_tarefas as $pt): [$pcls, $ptxt] = badge_prazo($pt['data_prazo'] ?? null, false); ?>
+                <div class="item-proxima">
+                  <span class="badge-prazo <?= $pcls ?>"><?= htmlspecialchars($ptxt) ?></span>
+                  <span class="text-dark text-truncate"><?= htmlspecialchars($pt['tarefa']) ?></span>
+                  <span class="text-muted ms-auto" style="font-size:.7rem;"><?= htmlspecialchars($pt['etapa']) ?></span>
+                </div>
+              <?php endforeach; ?>
+            </div>
+            <?php endif; ?>
+
+            <div class="checklist-toolbar d-flex flex-wrap gap-2 align-items-center">
+              <div class="sw">
+                <i class="bi bi-search"></i>
+                <input type="text" id="buscaChecklist" class="form-control form-control-sm rounded-pill" placeholder="Buscar tarefa...">
+              </div>
+              <div class="d-flex gap-1">
+                <button class="btn btn-primary btn-sm rounded-pill filtro-check active" data-f="todos" style="font-size:.72rem;">Todas</button>
+                <button class="btn btn-outline-warning btn-sm rounded-pill filtro-check" data-f="pendente" style="font-size:.72rem;">Pendentes</button>
+                <button class="btn btn-outline-success btn-sm rounded-pill filtro-check" data-f="concluido" style="font-size:.72rem;">Concluídas</button>
+              </div>
+            </div>
+
+            <div class="d-flex flex-column gap-3" id="lista-etapas-checklist">
               <?php $idx = 0; foreach ($passos as $etapa => $tarefas): $idx++;
                 $totE  = $prog[$etapa]['total'];
                 $concE = $prog[$etapa]['conc'];
@@ -662,15 +789,16 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                 $ok    = ($totE > 0 && $concE === $totE);
                 $label = is_numeric($etapa) ? 'PASSO ' . str_pad($etapa, 2, '0', STR_PAD_LEFT) : $etapa;
                 $cid   = 'etapa_' . $idx;
+                $auto_abrir = ($etapa === $etapa_auto_abrir);
               ?>
-              <div class="card border-0 shadow-sm overflow-hidden" style="border-radius:12px;">
+              <div class="card border-0 shadow-sm overflow-hidden etapa-wrap" style="border-radius:12px;">
                 <div class="etapa-hdr"
                      data-bs-toggle="collapse"
                      data-bs-target="#<?= $cid ?>"
-                     aria-expanded="false"
+                     aria-expanded="<?= $auto_abrir ? 'true' : 'false' ?>"
                      id="hdr-<?= $cid ?>">
                   <div class="d-flex align-items-center gap-2">
-                    <i class="bi <?= $ok ? 'bi-check-all text-success' : 'bi-folder2-open text-info' ?> fs-5 icone-etapa"></i>
+                    <span class="selo-etapa <?= $ok ? 'feita' : '' ?> icone-etapa"><?= $ok ? '<i class="bi bi-check-lg"></i>' : $idx ?></span>
                     <span class="fw-bold" style="font-size:.88rem;"><?= htmlspecialchars($label) ?></span>
                   </div>
                   <div class="d-flex align-items-center gap-3">
@@ -686,7 +814,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                     <i class="bi bi-chevron-down text-white-50 small"></i>
                   </div>
                 </div>
-                <div id="<?= $cid ?>" class="collapse">
+                <div id="<?= $cid ?>" class="collapse<?= $auto_abrir ? ' show' : '' ?>">
                   <div class="etapa-body p-3 bg-white">
                     <div class="p-3 mb-3 bg-light rounded-3 border small">
                       <div class="fw-bold text-muted mb-2" style="font-size:.72rem;text-transform:uppercase;">
@@ -713,7 +841,10 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                       $done = ($t['status'] === 'concluido' || $t['checado'] == 1);
                       $snum = $done ? 1 : 0;
                     ?>
-                    <div class="tarefa-card card border-0 bg-white mb-2 shadow-sm <?= $done ? 'done' : 'pend' ?>">
+                    <?php [$badge_cls, $badge_txt] = badge_prazo($t['data_prazo'] ?? null, $done); ?>
+                    <div class="tarefa-card card border-0 bg-white mb-2 shadow-sm <?= $done ? 'done' : 'pend' ?>"
+                         data-tarefa-nome="<?= strtolower(htmlspecialchars($t['tarefa'])) ?>"
+                         data-tarefa-status="<?= $done ? 'concluido' : 'pendente' ?>">
                       <div class="card-body p-3">
                         <div class="d-flex align-items-start gap-3">
                           <button type="button"
@@ -727,9 +858,12 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                           </button>
                           <div class="w-100">
                             <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
-                              <h6 class="fw-bold mb-0 <?= $done ? 'text-muted text-decoration-line-through' : 'text-dark' ?>" style="line-height:1.4;">
-                                <?= htmlspecialchars($t['tarefa']) ?>
-                              </h6>
+                              <div class="d-flex align-items-center gap-2 flex-wrap">
+                                <h6 class="fw-bold mb-0 <?= $done ? 'text-muted text-decoration-line-through' : 'text-dark' ?>" style="line-height:1.4;">
+                                  <?= htmlspecialchars($t['tarefa']) ?>
+                                </h6>
+                                <span class="badge-prazo <?= $badge_cls ?>"><i class="bi bi-calendar-event me-1"></i><?= htmlspecialchars($badge_txt) ?></span>
+                              </div>
                               <?php if (!empty($t['descricao'])): ?>
                               <button class="btn btn-sm btn-outline-secondary py-0 px-2 rounded-pill flex-shrink-0"
                                       data-bs-toggle="modal"
@@ -796,6 +930,43 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
             </div>
             <span class="btn btn-primary btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:#4f46e5; border:none;">
               Abrir <i class="bi bi-arrow-right ms-1"></i>
+            </span>
+          </div>
+        </button>
+
+        <a href="organizar_mesas.php" class="btn-musicas-sidebar" style="background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%); border-color: #86efac;">
+          <div class="d-flex justify-content-between align-items-center p-3">
+            <div class="d-flex align-items-center gap-3">
+              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0"
+                   style="width:44px;height:44px;">
+                <i class="bi bi-grid-3x3-gap-fill fs-4" style="color:#16a34a;"></i>
+              </div>
+              <div class="text-start">
+                <h6 class="mb-0 fw-bold text-dark">Organizar Mesas</h6>
+                <small class="text-dark" style="font-size:.78rem;opacity:.6;">Arraste os convidados para as mesas</small>
+              </div>
+            </div>
+            <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:#16a34a; border:none; color:#fff;">
+              Abrir <i class="bi bi-arrow-right ms-1"></i>
+            </span>
+          </div>
+        </a>
+
+        <button type="button" class="btn-musicas-sidebar mt-0 mb-0" style="background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); border-color: #fca5a5;"
+                data-bs-toggle="modal" data-bs-target="#modalLinkConfirmacao">
+          <div class="d-flex justify-content-between align-items-center p-3">
+            <div class="d-flex align-items-center gap-3">
+              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0"
+                   style="width:44px;height:44px;">
+                <i class="bi bi-envelope-check-fill fs-4" style="color:#dc2626;"></i>
+              </div>
+              <div class="text-start">
+                <h6 class="mb-0 fw-bold text-dark">Confirmação de Presença</h6>
+                <small class="text-dark" style="font-size:.78rem;opacity:.6;">Link para enviar aos convidados</small>
+              </div>
+            </div>
+            <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:#dc2626; border:none; color:#fff;">
+              Ver link <i class="bi bi-arrow-right ms-1"></i>
             </span>
           </div>
         </button>
@@ -1166,8 +1337,8 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                              <?php endif; ?>
                            </div>
                            <h6 class="mb-0 fw-bold <?= $mOk ? 'text-success' : 'text-dark' ?>" style="font-size:.9rem;"><?= htmlspecialchars($m['titulo']) ?></h6>
-                           <?php if (!empty($m['link'])): ?>
-                             <a href="<?= htmlspecialchars($m['link']) ?>" target="_blank" class="small text-decoration-none mt-1 d-inline-block">
+                           <?php if (!empty($m['link']) && preg_match('#^https?://#i', $m['link'])): ?>
+                             <a href="<?= htmlspecialchars($m['link']) ?>" target="_blank" rel="noopener noreferrer" class="small text-decoration-none mt-1 d-inline-block">
                                <i class="bi bi-link-45deg"></i> Ouvir Referência
                              </a>
                            <?php endif; ?>
@@ -1194,6 +1365,67 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
    HELPERS
    ============================================================ */
 const SELF = window.location.href;
+
+/* ---- COPIAR LINK DE CONFIRMAÇÃO ---- */
+document.getElementById('btn-copiar-link')?.addEventListener('click', async function () {
+  const input = document.getElementById('input-link-confirmacao');
+  const btn   = this;
+  const orig  = btn.innerHTML;
+  try {
+    await navigator.clipboard.writeText(input.value);
+  } catch {
+    input.removeAttribute('readonly');
+    input.select();
+    document.execCommand('copy');
+    input.setAttribute('readonly', 'readonly');
+  }
+  btn.innerHTML = '<i class="bi bi-check-lg me-1"></i> Copiado!';
+  setTimeout(() => { btn.innerHTML = orig; }, 1800);
+});
+
+/* ---- BUSCA + FILTRO DO CHECKLIST ---- */
+(function () {
+  const busca = document.getElementById('buscaChecklist');
+  if (!busca) return;
+  let filtroAtivo = 'todos';
+
+  function aplicarFiltroChecklist() {
+    const termo = busca.value.trim().toLowerCase();
+    document.querySelectorAll('#lista-etapas-checklist .etapa-wrap').forEach(etapaEl => {
+      let algumVisivel = false;
+      etapaEl.querySelectorAll('.tarefa-card').forEach(card => {
+        const nome   = card.dataset.tarefaNome || '';
+        const status = card.dataset.tarefaStatus || '';
+        const matchNome   = !termo || nome.includes(termo);
+        const matchStatus = filtroAtivo === 'todos' || status === filtroAtivo;
+        const visivel = matchNome && matchStatus;
+        card.classList.toggle('tarefa-row-hidden', !visivel);
+        if (visivel) algumVisivel = true;
+      });
+      etapaEl.classList.toggle('etapa-hidden', !algumVisivel);
+      if (algumVisivel && (termo || filtroAtivo !== 'todos')) {
+        const collapseEl = etapaEl.querySelector('.collapse');
+        if (collapseEl && !collapseEl.classList.contains('show')) {
+          new bootstrap.Collapse(collapseEl, { toggle: false }).show();
+        }
+      }
+    });
+  }
+
+  busca.addEventListener('input', aplicarFiltroChecklist);
+  document.querySelectorAll('.filtro-check').forEach(btn => {
+    btn.addEventListener('click', function () {
+      filtroAtivo = this.dataset.f;
+      document.querySelectorAll('.filtro-check').forEach(b => {
+        b.classList.remove('active', 'btn-primary', 'btn-warning', 'btn-success');
+        b.classList.add(b.dataset.f === 'pendente' ? 'btn-outline-warning' : b.dataset.f === 'concluido' ? 'btn-outline-success' : 'btn-outline-primary');
+      });
+      this.classList.remove('btn-outline-warning', 'btn-outline-success', 'btn-outline-primary');
+      this.classList.add('active', this.dataset.f === 'pendente' ? 'btn-warning' : this.dataset.f === 'concluido' ? 'btn-success' : 'btn-primary');
+      aplicarFiltroChecklist();
+    });
+  });
+})();
 
 function toast(msg, tipo = 'verde') {
   const wrap = document.getElementById('toast-wrap');
