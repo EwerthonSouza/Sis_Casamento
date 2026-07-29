@@ -493,6 +493,18 @@ $nao_lidas    = contar_nao_lidas($notificacoes, $ultima_vista);
             text-align: center;
             padding: 18px 0 10px;
         }
+
+        /* ---- SINO DE NOTIFICAÇÕES: evita o dropdown estourar a tela em celular ---- */
+        @media (max-width: 480px) {
+            #dropdown-notificacoes .dropdown-menu.show {
+                position: fixed !important;
+                inset: auto 0.75rem auto 0.75rem !important;
+                top: 4.5rem !important;
+                transform: none !important;
+                width: auto !important;
+                max-width: none !important;
+            }
+        }
     </style>
 </head>
 <body class="bg-light">
