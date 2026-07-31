@@ -340,7 +340,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
   <title>Nosso Casamento ♡</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css">
+  <link rel="stylesheet" href="css/estilo.css?v=3">
   <style>
     :root {
       --radius: 16px;
@@ -349,7 +349,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       --azul:   #3b82f6;
       --verm:   #ef4444;
     }
-    body { font-family: 'Inter', system-ui, sans-serif; background: #f1f5f9; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-app); }
 
     /* TOAST */
     #toast-wrap {
@@ -371,12 +371,6 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       to   { opacity: 1; transform: translateX(0); }
     }
 
-    /* HEADER */
-    .header-topo {
-      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-      border-radius: var(--radius) var(--radius) 0 0;
-    }
-
     /* PROGRESS RING */
     .ring-wrap { position: relative; width: 72px; height: 72px; flex-shrink: 0; }
     .ring-wrap svg { transform: rotate(-90deg); }
@@ -395,15 +389,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     .barra-pago-wrap { height: 8px; background: #e2e8f0; border-radius: 999px; overflow: hidden; position: relative; }
     .barra-pago-fill { height: 100%; border-radius: 999px; transition: width .5s ease; }
 
-    /* ACCORDION ETAPA */
-    .etapa-hdr {
-      background: #1e293b; color: #fff;
-      padding: .85rem 1.1rem; border-radius: 12px;
-      cursor: pointer; transition: background .2s;
-      display: flex; justify-content: space-between; align-items: center;
-      user-select: none;
-    }
-    .etapa-hdr:hover { background: #253147; }
+    /* ACCORDION ETAPA (cores herdadas de css/estilo.css) */
     .etapa-hdr[aria-expanded="true"] { border-radius: 12px 12px 0 0; }
     .etapa-body { border-radius: 0 0 12px 12px; }
 
@@ -512,8 +498,8 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 
     /* ---- TRILHA SONORA ---- */
     .btn-musicas-sidebar {
-      background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%);
-      border: 1.5px solid #a5b4fc;
+      background: linear-gradient(135deg, var(--color-primary-light) 0%, #e8d2bd 100%);
+      border: 1.5px solid #d9b997;
       border-radius: var(--radius);
       transition: box-shadow .2s, transform .15s;
       will-change: transform;
@@ -522,7 +508,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       text-align: left;
     }
     .btn-musicas-sidebar:hover {
-      box-shadow: 0 6px 18px rgba(165,180,252,.4);
+      box-shadow: 0 6px 18px rgba(169,116,79,.35);
       transform: translateY(-1px);
     }
     #grid-musicas .musica-card-wrap {
@@ -924,7 +910,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
             <div class="d-flex align-items-center gap-3">
               <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0"
                    style="width:44px;height:44px;">
-                <i class="bi bi-music-note-list fs-4" style="color:#4f46e5;"></i>
+                <i class="bi bi-music-note-list fs-4" style="color:var(--color-primary-dark);"></i>
               </div>
               <div class="text-start">
                 <h6 class="mb-0 fw-bold text-dark">Nossa Trilha Sonora</h6>
@@ -934,7 +920,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                 </small>
               </div>
             </div>
-            <span class="btn btn-primary btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:#4f46e5; border:none;">
+            <span class="btn btn-primary btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:var(--color-primary-dark); border:none;">
               Abrir <i class="bi bi-arrow-right ms-1"></i>
             </span>
           </div>
@@ -1289,7 +1275,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       <div class="modal-header border-0 px-4 pt-4 pb-2" style="background:transparent;">
         <div class="d-flex align-items-center gap-3">
           <div class="rounded-3 d-flex align-items-center justify-content-center shadow-sm"
-               style="width:42px;height:42px;background:#e0e7ff;border:1.5px solid #a5b4fc;">
+               style="width:42px;height:42px;background:var(--color-primary-light);border:1.5px solid #d9b997;">
             <i class="bi bi-music-note-beamed text-primary fs-5"></i>
           </div>
           <div>

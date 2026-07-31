@@ -258,11 +258,11 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   <title>Organizar Mesas — <?= htmlspecialchars($evento['nome']) ?></title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css">
+  <link rel="stylesheet" href="css/estilo.css?v=3">
 
   <style>
     :root { --radius: 12px; }
-    body  { background: #f1f5f9; }
+    body  { background: var(--bg-app); }
 
     #overlay {
       position: fixed; top: 1.5rem; right: 1.5rem;
@@ -274,7 +274,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     #overlay.show { display: flex; }
     #overlay .spinner-border { width: 1.1rem; height: 1.1rem; border-width: 2px; }
 
-    .hdr { background: linear-gradient(135deg, #0f172a 0%, #1a3a5c 100%); border-radius: var(--radius); }
+    .hdr { background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); border-radius: var(--radius); }
     .stat { background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12); border-radius: 10px; padding: .8rem 1rem; text-align: center; color: #fff; }
     .stat .val { font-size: 1.75rem; font-weight: 700; line-height: 1; }
     .stat .lbl { font-size: .65rem; opacity: .6; text-transform: uppercase; letter-spacing: .05em; margin-top: .3rem; }
@@ -332,7 +332,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       #col-fila { display: none !important; }
       .mesa-card { break-inside: avoid; page-break-inside: avoid; }
       .scroll-m  { max-height: none !important; overflow: visible !important; }
-      .hdr { background: #1e293b !important; -webkit-print-color-adjust: exact; }
+      .hdr { background: #8b5e3c !important; -webkit-print-color-adjust: exact; }
     }
   </style>
 </head>

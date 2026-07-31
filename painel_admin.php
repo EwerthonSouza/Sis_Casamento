@@ -409,7 +409,7 @@ $nao_lidas    = contar_nao_lidas($notificacoes, $ultima_vista);
     <title>Painel da Assessoria</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=2">
+    <link rel="stylesheet" href="css/estilo.css?v=3">
     <style>
         .nav-tabs .nav-link { color: #6c757d; font-weight: 500; }
         .nav-tabs .nav-link.active { color: #0d6efd; font-weight: bold; border-bottom: 3px solid #0d6efd; background-color: transparent;}
@@ -596,7 +596,7 @@ $nao_lidas    = contar_nao_lidas($notificacoes, $ultima_vista);
 
     <div class="card border-0 shadow-sm rounded-4 mb-4 overflow-hidden">
         <div class="card-body p-0">
-            <div class="p-4 d-flex justify-content-between align-items-center flex-wrap gap-3" style="background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%); color: white;">
+            <div class="p-4 d-flex justify-content-between align-items-center flex-wrap gap-3" style="background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); color: white;">
                 <div>
                     <h2 class="fw-bold mb-1" style="letter-spacing: -0.5px;">
                         <i class="bi bi-calendar-heart text-danger me-2"></i> Painel da Assessoria

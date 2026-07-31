@@ -128,6 +128,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+<link rel="stylesheet" href="css/estilo.css?v=3">
 
 <style>
 
@@ -139,9 +140,9 @@ body{
     background:
     linear-gradient(
         135deg,
-        #7a1308 0%,
-        #aa2710 50%,
-        #d63f21 100%
+        #6f4a2f 0%,
+        #8b5e3c 50%,
+        #a9744f 100%
     );
     overflow:hidden;
 }
@@ -200,7 +201,7 @@ body{
 
 .logo-circle i{
     font-size:4rem;
-    color:#aa2710;
+    color:var(--color-primary-dark);
 }
 
 .login-title{
@@ -232,7 +233,7 @@ body{
 }
 
 .btn-login{
-    background:#aa2710;
+    background:var(--color-primary-dark);
     border:none;
     border-radius:12px;
     padding:12px;
@@ -241,7 +242,7 @@ body{
 }
 
 .btn-login:hover{
-    background:#891a08;
+    background:#6f4a2f;
     transform:translateY(-2px);
 }
 

@@ -159,6 +159,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <title>Confirmação de Presença<?= !empty($evento['nome_cliente']) ? ' — ' . htmlspecialchars($evento['nome_cliente'], ENT_QUOTES, 'UTF-8') : '' ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+    <link rel="stylesheet" href="css/estilo.css?v=3">
     <script>
         // Decide qual "view" mostrar antes da página pintar, evitando flash de conteúdo errado.
         (function () {
@@ -172,9 +173,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </script>
     <style>
         :root {
-            --vinho-1: #7a1308;
-            --vinho-2: #aa2710;
-            --vinho-3: #d63f21;
+            --vinho-1: #6f4a2f;
+            --vinho-2: #8b5e3c;
+            --vinho-3: #a9744f;
         }
         body {
             min-height: 100vh;

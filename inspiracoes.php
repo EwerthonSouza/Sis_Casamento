@@ -92,7 +92,7 @@ $fotos = $stmt_fotos->fetchAll();
     <title>Mural de Inspirações - <?= htmlspecialchars($evento['nome']) ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css">
+    <link rel="stylesheet" href="css/estilo.css?v=3">
     <style>
         /* Estilização Premium para os Cards de Foto */
         .foto-card {

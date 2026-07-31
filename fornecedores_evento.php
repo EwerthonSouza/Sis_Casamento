@@ -119,7 +119,7 @@ foreach ($lista_fornecedores as $f) {
     <title>Fornecedores do Evento</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css"> 
+    <link rel="stylesheet" href="css/estilo.css?v=3"> 
 </head>
 <body class="bg-light">
 <div class="container my-5">

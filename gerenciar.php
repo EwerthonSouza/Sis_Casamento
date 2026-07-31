@@ -729,7 +729,7 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
   <title>Gerenciar Evento</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css">
+  <link rel="stylesheet" href="css/estilo.css?v=3">
   <style>
     /* ---- PAGAMENTO FORNECEDOR ---- */
     .forn-pago-row {
@@ -819,12 +819,12 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
 
     /* ---- PLAYLIST / MÚSICAS ---- */
     .btn-musicas-sidebar {
-      background: linear-gradient(135deg, #ede9fe 0%, #ddd6fe 100%);
-      border: 1.5px solid #a78bfa; border-radius: var(--radius);
+      background: linear-gradient(135deg, var(--color-primary-light) 0%, #e8d2bd 100%);
+      border: 1.5px solid #d9b997; border-radius: var(--radius);
       transition: box-shadow .2s, transform .15s;
       display: block; width: 100%; text-align: left; cursor: pointer;
     }
-    .btn-musicas-sidebar:hover { box-shadow: 0 6px 18px rgba(124,58,237,.22); transform: translateY(-1px); }
+    .btn-musicas-sidebar:hover { box-shadow: 0 6px 18px rgba(169,116,79,.3); transform: translateY(-1px); }
     .musica-item {
       transition: box-shadow .15s, transform .15s;
       animation: notaEntra .3s ease both;
@@ -1322,14 +1322,14 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
           <div class="card-body d-flex justify-content-between align-items-center p-3">
             <div class="d-flex align-items-center gap-3">
               <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm" style="width:44px;height:44px;">
-                <i class="bi bi-stars fs-4" style="color:#6366f1;"></i>
+                <i class="bi bi-stars fs-4" style="color:var(--color-primary);"></i>
               </div>
               <div>
                 <h6 class="mb-0 fw-bold text-white">Mural de Inspirações</h6>
                 <small class="text-white-50" style="font-size:.78rem;">Referências, paletas e ideias</small>
               </div>
             </div>
-            <a href="inspiracoes.php?id=<?= $evento_id ?>" class="btn btn-light btn-sm fw-bold rounded-pill px-3 shadow-sm" style="color:#4f46e5;">
+            <a href="inspiracoes.php?id=<?= $evento_id ?>" class="btn btn-light btn-sm fw-bold rounded-pill px-3 shadow-sm" style="color:var(--color-primary-dark);">
               Acessar <i class="bi bi-arrow-right ms-1"></i>
             </a>
           </div>
@@ -1359,7 +1359,7 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
           <div class="d-flex justify-content-between align-items-center p-3">
             <div class="d-flex align-items-center gap-3">
               <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0" style="width:44px;height:44px;">
-                <i class="bi bi-music-note-beamed fs-4" style="color:#7c3aed;"></i>
+                <i class="bi bi-music-note-beamed fs-4" style="color:var(--color-primary-dark);"></i>
               </div>
               <div>
                 <h6 class="mb-0 fw-bold text-dark">Playlist do Evento</h6>
@@ -1370,7 +1370,7 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
               </div>
             </div>
             <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm"
-                  style="background:#7c3aed;color:#fff;pointer-events:none;border:none;">
+                  style="background:var(--color-primary-dark);color:#fff;pointer-events:none;border:none;">
               Abrir <i class="bi bi-arrow-right ms-1"></i>
             </span>
           </div>

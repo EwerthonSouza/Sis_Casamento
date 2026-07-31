@@ -126,10 +126,11 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     <title>Referências de Fornecedores</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="css/estilo.css?v=3">
     <style>
         .card-ref { transition: box-shadow .2s, transform .2s; }
         .card-ref:hover { box-shadow: 0 8px 20px rgba(0,0,0,.08); transform: translateY(-2px); }
-        .categoria-titulo { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; font-weight: 800; color: #7a1308; border-bottom: 2px solid #7a1308; padding-bottom: 6px; margin: 24px 0 14px; }
+        .categoria-titulo { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; font-weight: 800; color: var(--color-primary-dark); border-bottom: 2px solid var(--color-primary-dark); padding-bottom: 6px; margin: 24px 0 14px; }
         .categoria-titulo:first-of-type { margin-top: 0; }
         .link-social { font-size: .78rem; word-break: break-all; }
     </style>
