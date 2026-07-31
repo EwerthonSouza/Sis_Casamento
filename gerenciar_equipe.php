@@ -55,6 +55,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adicionar_usuario']))
 }
 
 // ============================================================
+// ALTERAR SENHA
+// ============================================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['alterar_senha'])) {
+    $id_usuario = (int)($_POST['id_usuario'] ?? 0);
+    $nova_senha = trim($_POST['nova_senha'] ?? '');
+
+    if ($id_usuario > 0 && strlen($nova_senha) >= 6) {
+        $senha_hash = password_hash($nova_senha, PASSWORD_BCRYPT);
+        $stmt = $pdo->prepare("UPDATE usuarios SET senha = ? WHERE id = ?");
+        $stmt->execute([$senha_hash, $id_usuario]);
+        $msg_sucesso = "Senha atualizada com sucesso!";
+    } else {
+        $msg_erro = "A senha precisa ter pelo menos 6 caracteres.";
+    }
+}
+
+// ============================================================
 // EXCLUIR USUÁRIO
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['excluir_usuario'])) {
@@ -135,7 +152,11 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER 
                                     <span class="badge bg-primary bg-opacity-10 text-primary border border-primary px-3 py-2 rounded-pill">Assistente</span>
                                 <?php endif; ?>
                             </td>
-                            <td class="text-center pe-4">
+                            <td class="text-center pe-4 d-flex gap-2 justify-content-center">
+                                <button type="button" class="btn btn-sm btn-outline-secondary" title="Alterar Senha"
+                                        data-bs-toggle="modal" data-bs-target="#modalSenha<?= $user['id'] ?>">
+                                    <i class="bi bi-key-fill"></i>
+                                </button>
                                 <form method="POST" onsubmit="return confirm('Tem certeza que deseja excluir o acesso de <?= htmlspecialchars($user['nome']) ?>?');">
                                     <input type="hidden" name="excluir_usuario" value="1">
                                     <input type="hidden" name="id_usuario" value="<?= $user['id'] ?>">
@@ -156,6 +177,31 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER 
         </div>
     </div>
 </div>
+
+<?php foreach ($lista_usuarios as $user): ?>
+<div class="modal fade" id="modalSenha<?= $user['id'] ?>" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg rounded-4">
+            <div class="modal-header bg-dark text-white border-0 rounded-top-4">
+                <h5 class="modal-title fw-bold"><i class="bi bi-key-fill text-warning me-2"></i>Alterar Senha de <?= htmlspecialchars($user['nome']) ?></h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <input type="hidden" name="alterar_senha" value="1">
+                <input type="hidden" name="id_usuario" value="<?= $user['id'] ?>">
+                <div class="modal-body p-4">
+                    <label class="form-label fw-bold text-secondary small">Nova Senha</label>
+                    <input type="password" name="nova_senha" class="form-control bg-light" required minlength="6" autocomplete="new-password">
+                </div>
+                <div class="modal-footer border-0 pt-0">
+                    <button type="button" class="btn btn-light rounded-pill px-4" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-success fw-bold rounded-pill px-4 shadow-sm">Salvar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+<?php endforeach; ?>
 
 <div class="modal fade" id="modalAdicionar" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
