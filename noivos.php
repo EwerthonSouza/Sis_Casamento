@@ -638,7 +638,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
         </div>
         <?php endif; ?>
         <div class="d-flex flex-column gap-2">
-          <a href="inspiracoes.php?id=<?= $evento_id ?>&usuario=Noivos" class="btn btn-outline-light btn-sm rounded-3">
+          <a href="inspiracoes.php?id=<?= $evento_id ?>" class="btn btn-outline-light btn-sm rounded-3">
             <i class="bi bi-stars text-warning"></i> Inspirações
           </a>
           <a href="index.php" class="btn btn-sm btn-danger rounded-3" style="background:#ef4444;border:none;">

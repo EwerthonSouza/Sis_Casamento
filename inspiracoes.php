@@ -14,8 +14,6 @@ if (!isset($_GET['id']) || empty($_GET['id'])) {
 }
 
 $evento_id = (int)$_GET['id'];
-$usuario_atual = $_GET['usuario'] ?? 'Assessoria';
-$usuario_atual = in_array($usuario_atual, ['Assessoria', 'Noivos'], true) ? $usuario_atual : 'Assessoria';
 
 // Buscar dados do casamento
 $stmt = $pdo->prepare("SELECT e.*, c.nome FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
@@ -41,7 +39,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['favoritar_foto'])) {
     $stmt = $pdo->prepare("UPDATE inspiracoes_fotos SET selecionada = ? WHERE id = ? AND evento_id = ?");
     $stmt->execute([$novo_status, $foto_id, $evento_id]);
     
-    header("Location: inspiracoes.php?id=" . $evento_id . "&usuario=" . $usuario_atual . "&cat=" . ($_GET['cat'] ?? 'Todos'));
+    header("Location: inspiracoes.php?id=" . $evento_id . "&cat=" . ($_GET['cat'] ?? 'Todos'));
     exit;
 }
 
@@ -64,7 +62,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload_foto'])) {
             }
         }
     }
-    header("Location: inspiracoes.php?id=" . $evento_id . "&usuario=" . $usuario_atual);
+    header("Location: inspiracoes.php?id=" . $evento_id);
     exit;
 }
 
@@ -139,12 +137,6 @@ $fotos = $stmt_fotos->fetchAll();
             </a>
             <h4 class="mb-0 text-dark fw-bold">Mural: <span class="text-primary"><?= htmlspecialchars($evento['nome']) ?></span></h4>
         </div>
-        
-        <div class="bg-light p-2 rounded-3 border d-flex align-items-center gap-2">
-            <small class="text-muted fw-bold mb-0"><i class="bi bi-eye-fill"></i> Visão:</small>
-            <a href="inspiracoes.php?id=<?= $evento_id ?>&usuario=Assessoria" class="btn btn-sm <?= $usuario_atual == 'Assessoria' ? 'btn-dark fw-bold' : 'btn-outline-dark' ?> py-1 px-3" style="font-size:0.8rem;">Assessoria</a>
-            <a href="inspiracoes.php?id=<?= $evento_id ?>&usuario=Noivos" class="btn btn-sm <?= $usuario_atual == 'Noivos' ? 'btn-danger fw-bold' : 'btn-outline-danger' ?> py-1 px-3" style="font-size:0.8rem;">Noivos ❤️</a>
-        </div>
     </div>
 
     <div class="row g-4 align-items-start">
@@ -202,17 +194,17 @@ $fotos = $stmt_fotos->fetchAll();
             <div class="card shadow-sm border-0 rounded-4 p-4 mb-4">
                 
                 <div class="d-flex flex-wrap gap-2 mb-4 justify-content-center border-bottom pb-4">
-                    <a href="inspiracoes.php?id=<?= $evento_id ?>&usuario=<?= $usuario_atual ?>&cat=Todos" class="btn btn-sm <?= $categoria_filtrada == 'Todos' ? 'btn-primary shadow-sm fw-bold' : 'btn-light border text-muted' ?> px-4 rounded-pill transition-all">
+                    <a href="inspiracoes.php?id=<?= $evento_id ?>&cat=Todos" class="btn btn-sm <?= $categoria_filtrada == 'Todos' ? 'btn-primary shadow-sm fw-bold' : 'btn-light border text-muted' ?> px-4 rounded-pill transition-all">
                         <i class="bi bi-grid-fill me-1"></i> Tudo
                     </a>
                     
                     <?php foreach($todas_categorias as $c): ?>
-                        <a href="inspiracoes.php?id=<?= $evento_id ?>&usuario=<?= $usuario_atual ?>&cat=<?= urlencode($c) ?>" class="btn btn-sm <?= $categoria_filtrada == $c ? 'btn-primary shadow-sm fw-bold' : 'btn-light border text-muted' ?> px-4 rounded-pill transition-all">
+                        <a href="inspiracoes.php?id=<?= $evento_id ?>&cat=<?= urlencode($c) ?>" class="btn btn-sm <?= $categoria_filtrada == $c ? 'btn-primary shadow-sm fw-bold' : 'btn-light border text-muted' ?> px-4 rounded-pill transition-all">
                             <?= htmlspecialchars($c) ?>
                         </a>
                     <?php endforeach; ?>
                     
-                    <a href="inspiracoes.php?id=<?= $evento_id ?>&usuario=<?= $usuario_atual ?>&cat=Escolhidos" class="btn btn-sm <?= $categoria_filtrada == 'Escolhidos' ? 'btn-danger shadow-sm fw-bold text-white' : 'btn-outline-danger' ?> px-4 rounded-pill ms-lg-auto mt-2 mt-sm-0 transition-all">
+                    <a href="inspiracoes.php?id=<?= $evento_id ?>&cat=Escolhidos" class="btn btn-sm <?= $categoria_filtrada == 'Escolhidos' ? 'btn-danger shadow-sm fw-bold text-white' : 'btn-outline-danger' ?> px-4 rounded-pill ms-lg-auto mt-2 mt-sm-0 transition-all">
                         <i class="bi bi-heart-fill me-1"></i> Escolhidos
                     </a>
                 </div>

@@ -26,6 +26,44 @@ const FAIXAS_ETARIAS = [
     'Adulto (11+ anos)',
 ];
 
+/**
+ * Tenta achar, neste evento, uma "vaga" ainda sem resposta (resposta_rsvp IS NULL) que
+ * corresponda a uma resposta sem id do navegador (link aberto de novo em outro aparelho,
+ * cache limpo, ou nome já cadastrado manualmente pela assessoria). Só considera convidados
+ * que ainda NÃO responderam, pra nunca sobrescrever quem já confirmou/recusou por engano —
+ * se dois convidados diferentes tiverem o mesmo nome, casar por nome poderia juntar as duas
+ * pessoas; restringindo às vagas pendentes, o pior caso vira um registro duplicado (visível
+ * e fácil de mesclar pela assessoria), nunca a perda silenciosa da resposta de outra pessoa.
+ * Se houver mais de uma vaga pendente com o mesmo nome, exige telefone batendo com
+ * exatamente uma delas pra desambiguar; sem isso, retorna null (cria um registro novo).
+ */
+function buscarConvidadoPorNome(PDO $pdo, int $evento_id, string $nome, string $telefone, array $idsExcluir): ?int {
+    if (empty($idsExcluir)) {
+        $stmt = $pdo->prepare("SELECT id, telefone FROM convidados WHERE evento_id = ? AND resposta_rsvp IS NULL AND LOWER(TRIM(nome)) = LOWER(TRIM(?))");
+        $stmt->execute([$evento_id, $nome]);
+    } else {
+        $ph = implode(',', array_fill(0, count($idsExcluir), '?'));
+        $stmt = $pdo->prepare("SELECT id, telefone FROM convidados WHERE evento_id = ? AND resposta_rsvp IS NULL AND LOWER(TRIM(nome)) = LOWER(TRIM(?)) AND id NOT IN ($ph)");
+        $stmt->execute(array_merge([$evento_id, $nome], $idsExcluir));
+    }
+    $candidatos = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    if (count($candidatos) === 1) {
+        return (int)$candidatos[0]['id'];
+    }
+
+    if (count($candidatos) > 1 && $telefone !== '') {
+        $comTelefoneIgual = array_values(array_filter($candidatos, function ($c) use ($telefone) {
+            return trim((string)$c['telefone']) !== '' && trim((string)$c['telefone']) === $telefone;
+        }));
+        if (count($comTelefoneIgual) === 1) {
+            return (int)$comTelefoneIgual[0]['id'];
+        }
+    }
+
+    return null;
+}
+
 $stmt = $pdo->prepare("SELECT e.*, c.nome AS nome_cliente FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
 $stmt->execute([$evento_id]);
 $evento = $stmt->fetch();
@@ -82,6 +120,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
 
+                // Sem id do navegador: tenta casar por nome (só quando único no evento, ou
+                // desambiguado por telefone) antes de criar um registro novo.
+                if (!$atualizou) {
+                    $idExistente = buscarConvidadoPorNome($pdo, $evento_id, $nome, $tel, $ids_mantidos);
+                    if ($idExistente !== null) {
+                        $pdo->prepare("UPDATE convidados SET nome = ?, faixa_etaria = ?, telefone = ?, confirmado = 1, resposta_rsvp = 'confirmado', mensagem_rsvp = NULL, data_confirmacao = NOW() WHERE id = ? AND evento_id = ?")
+                            ->execute([$nome, $faixa, $tel, $idExistente, $evento_id]);
+                        $ids_mantidos[]   = $idExistente;
+                        $resposta_dados[] = ['id' => $idExistente, 'nome' => $nome, 'faixa_etaria' => $faixa, 'telefone' => $tel];
+                        $atualizou = true;
+                    }
+                }
+
                 if (!$atualizou) {
                     $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, telefone, confirmado, resposta_rsvp, data_confirmacao) VALUES (?, ?, ?, ?, 1, 'confirmado', NOW())")
                         ->execute([$evento_id, $nome, $faixa, $tel]);
@@ -112,6 +163,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->prepare("UPDATE convidados SET nome = ?, confirmado = 0, resposta_rsvp = 'recusado', mensagem_rsvp = ?, data_confirmacao = NOW() WHERE id = ? AND evento_id = ?")
                         ->execute([$nome, $msg !== '' ? $msg : null, $idAnt, $evento_id]);
                     $ids_mantidos[] = $idAnt;
+                }
+            }
+
+            // Mesmo reforço do fluxo de confirmação: sem id do navegador, tenta casar
+            // por nome (só quando único no evento) antes de criar um registro novo.
+            if (empty($ids_mantidos)) {
+                $idExistente = buscarConvidadoPorNome($pdo, $evento_id, $nome, '', []);
+                if ($idExistente !== null) {
+                    $pdo->prepare("UPDATE convidados SET nome = ?, confirmado = 0, resposta_rsvp = 'recusado', mensagem_rsvp = ?, data_confirmacao = NOW() WHERE id = ? AND evento_id = ?")
+                        ->execute([$nome, $msg !== '' ? $msg : null, $idExistente, $evento_id]);
+                    $ids_mantidos[] = $idExistente;
                 }
             }
 
