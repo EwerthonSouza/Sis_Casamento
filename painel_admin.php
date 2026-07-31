@@ -406,10 +406,10 @@ $nao_lidas    = contar_nao_lidas($notificacoes, $ultima_vista);
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Painel da Assessoria</title>
+    <title>Painel da Assessoria - Enlace</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=3">
+    <link rel="stylesheet" href="css/estilo.css?v=7">
     <style>
         .nav-tabs .nav-link { color: #6c757d; font-weight: 500; }
         .nav-tabs .nav-link.active { color: #0d6efd; font-weight: bold; border-bottom: 3px solid #0d6efd; background-color: transparent;}
@@ -535,8 +535,8 @@ $nao_lidas    = contar_nao_lidas($notificacoes, $ultima_vista);
 
 <nav class="navbar navbar-expand-lg navbar-dark bg-dark shadow-sm">
     <div class="container">
-        <span class="navbar-brand fw-bold text-primary">
-            <i class="bi bi-calendar-heart-fill text-danger"></i> Cerimonial Assessoria
+        <span class="navbar-brand">
+            <img src="img/logo-enlace-horizontal.svg" alt="Enlace" style="height:34px;">
         </span>
         <div class="d-flex align-items-center gap-2">
             <span class="text-white small me-2 d-none d-md-block">
@@ -664,7 +664,7 @@ $nao_lidas    = contar_nao_lidas($notificacoes, $ultima_vista);
                                         <?php foreach ($casamentos_futuros as $cas): ?>
                                         <tr>
                                             <td>
-                                                <span class="text-dark fw-bold fs-6">Casamento de <?= htmlspecialchars($cas['nome_noivos']) ?></span><br>
+                                                <span class="text-dark fw-bold fs-6"><?= htmlspecialchars($cas['nome_noivos']) ?></span><br>
                                                 <div class="text-muted mt-1" style="font-size: 0.8rem;">
                                                     <i class="bi bi-envelope"></i> <?= htmlspecialchars($cas['email_noivos']) ?><br>
                                                     <?php if (!empty($cas['telefone_noivos'])): ?>
@@ -722,7 +722,7 @@ $nao_lidas    = contar_nao_lidas($notificacoes, $ultima_vista);
                                         <?php foreach ($casamentos_realizados as $cas): ?>
                                         <tr>
                                             <td>
-                                                <span class="text-dark fw-bold">Casamento de <?= htmlspecialchars($cas['nome_noivos']) ?></span><br>
+                                                <span class="text-dark fw-bold"><?= htmlspecialchars($cas['nome_noivos']) ?></span><br>
                                                 <div class="text-muted mt-1" style="font-size: 0.8rem;">
                                                     <i class="bi bi-envelope"></i> <?= htmlspecialchars($cas['email_noivos']) ?>
                                                 </div>

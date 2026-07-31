@@ -1,8 +1,8 @@
 <?php
 session_start();
 
-// 1. LEÃO DE CHÁCARA INTELIGENTE (Aceita Admin e Noivos)
-if (!isset($_SESSION['usuario_tipo']) || ($_SESSION['usuario_tipo'] !== 'admin' && $_SESSION['usuario_tipo'] !== 'noivos')) {
+// 1. LEÃO DE CHÁCARA INTELIGENTE (Aceita Admin, Assistente e Noivos)
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'noivos'], true)) {
     header("Location: index.php");
     exit;
 }
@@ -87,10 +87,10 @@ $fotos = $stmt_fotos->fetchAll();
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mural de Inspirações - <?= htmlspecialchars($evento['nome']) ?></title>
+    <title>Mural de Inspirações - <?= htmlspecialchars($evento['nome']) ?> - Enlace</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=3">
+    <link rel="stylesheet" href="css/estilo.css?v=7">
     <style>
         /* Estilização Premium para os Cards de Foto */
         .foto-card {
@@ -127,14 +127,24 @@ $fotos = $stmt_fotos->fetchAll();
 </head>
 <body class="bg-light">
 
+<?php $link_voltar = ($_SESSION['usuario_tipo'] === 'noivos') ? "noivos.php" : "gerenciar.php?id=" . $evento_id; ?>
+<nav class="navbar navbar-dark bg-dark shadow-sm">
+  <div class="container">
+    <span class="navbar-brand mb-0">
+      <img src="img/logo-enlace-horizontal.svg" alt="Enlace" style="height:32px;">
+    </span>
+    <div class="d-flex align-items-center gap-2">
+      <a href="<?= $link_voltar ?>" class="btn btn-sm btn-outline-light rounded-3">
+        <i class="bi bi-arrow-left me-1"></i> Voltar
+      </a>
+    </div>
+  </div>
+</nav>
+
 <div class="container my-5">
-    
+
     <div class="bg-white p-4 rounded-4 shadow-sm mb-4 d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-3 border-top border-4 border-primary">
         <div class="d-flex align-items-center">
-            <?php $link_voltar = ($_SESSION['usuario_tipo'] === 'noivos') ? "noivos.php" : "gerenciar.php?id=" . $evento_id; ?>
-            <a href="<?= $link_voltar ?>" class="btn btn-outline-secondary btn-sm shadow-sm fw-bold me-3">
-                <i class="bi bi-arrow-left"></i> Voltar
-            </a>
             <h4 class="mb-0 text-dark fw-bold">Mural: <span class="text-primary"><?= htmlspecialchars($evento['nome']) ?></span></h4>
         </div>
     </div>

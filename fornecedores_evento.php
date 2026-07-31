@@ -116,19 +116,28 @@ foreach ($lista_fornecedores as $f) {
 <html lang="pt-br">
 <head>
     <meta charset="UTF-8">
-    <title>Fornecedores do Evento</title>
+    <title>Fornecedores do Evento - Enlace</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=3"> 
+    <link rel="stylesheet" href="css/estilo.css?v=7"> 
 </head>
 <body class="bg-light">
+<nav class="navbar navbar-dark bg-dark shadow-sm">
+  <div class="container">
+    <span class="navbar-brand mb-0">
+      <img src="img/logo-enlace-horizontal.svg" alt="Enlace" style="height:32px;">
+    </span>
+    <div class="d-flex align-items-center gap-2">
+      <a href="<?= $eh_noivos ? 'noivos.php' : 'gerenciar.php?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-3">
+        <i class="bi bi-arrow-left me-1"></i> Voltar ao Cronograma
+      </a>
+    </div>
+  </div>
+</nav>
 <div class="container my-5">
-    
+
     <div class="bg-white p-4 rounded shadow-sm mb-4 d-flex justify-content-between align-items-center">
         <div>
-            <a href="<?= $eh_noivos ? 'noivos.php' : 'gerenciar.php?id=' . $evento_id ?>" class="btn btn-sm btn-outline-secondary mb-3">
-                <i class="bi bi-arrow-left"></i> Voltar ao Cronograma
-            </a>
             <h2 class="mb-0">Fornecedores</h2>
             <small class="text-muted">Cliente: <?= htmlspecialchars($evento['nome']) ?></small>
         </div>

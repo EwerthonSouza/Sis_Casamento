@@ -255,10 +255,10 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Organizar Mesas — <?= htmlspecialchars($evento['nome']) ?></title>
+  <title>Organizar Mesas — <?= htmlspecialchars($evento['nome']) ?> - Enlace</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css?v=3">
+  <link rel="stylesheet" href="css/estilo.css?v=7">
 
   <style>
     :root { --radius: 12px; }
@@ -338,6 +338,19 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 </head>
 <body>
 
+<nav class="navbar navbar-dark bg-dark shadow-sm no-print">
+  <div class="container-fluid px-3 px-lg-4">
+    <span class="navbar-brand mb-0">
+      <img src="img/logo-enlace-horizontal.svg" alt="Enlace" style="height:32px;">
+    </span>
+    <div class="d-flex align-items-center gap-2">
+      <a href="<?= $eh_noivos ? 'noivos.php' : 'gerenciar.php?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-3">
+        <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
+      </a>
+    </div>
+  </div>
+</nav>
+
 <div id="overlay" class="no-print">
   <div class="spinner-border text-primary" role="status"></div>
   <span class="small fw-semibold" id="overlay-msg">Salvando...</span>
@@ -370,9 +383,6 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   <div class="hdr p-4 mb-4 no-print">
     <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
       <div>
-        <a href="<?= $eh_noivos ? 'noivos.php' : 'gerenciar.php?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-pill mb-3 opacity-75">
-          <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
-        </a>
         <h4 class="fw-bold text-white mb-1">
           <i class="bi bi-grid-3x3-gap-fill text-info me-2"></i> Organização de Mesas
         </h4>

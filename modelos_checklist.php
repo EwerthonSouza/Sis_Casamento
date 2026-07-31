@@ -140,10 +140,10 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Modelos de Checklist</title>
+    <title>Modelos de Checklist - Enlace</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=3">
+    <link rel="stylesheet" href="css/estilo.css?v=7">
     <style>
         .tarefa-row { transition: background-color .15s; }
         .tarefa-row:hover { background-color: #f8f9fa; }
@@ -156,15 +156,24 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
     </style>
 </head>
 <body class="bg-light">
+<nav class="navbar navbar-dark bg-dark shadow-sm">
+  <div class="container">
+    <span class="navbar-brand mb-0">
+      <img src="img/logo-enlace-horizontal.svg" alt="Enlace" style="height:32px;">
+    </span>
+    <div class="d-flex align-items-center gap-2">
+      <a href="painel_admin.php" class="btn btn-sm btn-outline-light rounded-3">
+        <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
+      </a>
+    </div>
+  </div>
+</nav>
 
 <div class="container my-5">
 
     <!-- Cabeçalho -->
     <div class="bg-white p-4 rounded shadow-sm mb-4 d-flex align-items-start justify-content-between flex-wrap gap-2">
         <div>
-            <a href="painel_admin.php" class="btn btn-sm btn-outline-secondary mb-2">
-                <i class="bi bi-arrow-left"></i> Voltar ao Painel
-            </a>
             <h2 class="mb-0"><i class="bi bi-list-check text-primary"></i> Gerenciar Modelos de Checklist</h2>
             <p class="text-muted mb-0 mt-1">Crie e edite as tarefas padrão que poderão ser importadas para os eventos.</p>
         </div>

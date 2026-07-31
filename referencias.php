@@ -123,10 +123,10 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Referências de Fornecedores</title>
+    <title>Referências de Fornecedores - Enlace</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=3">
+    <link rel="stylesheet" href="css/estilo.css?v=7">
     <style>
         .card-ref { transition: box-shadow .2s, transform .2s; }
         .card-ref:hover { box-shadow: 0 8px 20px rgba(0,0,0,.08); transform: translateY(-2px); }
@@ -139,16 +139,20 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 
 <nav class="navbar navbar-dark bg-dark shadow-sm">
     <div class="container">
-        <span class="navbar-brand fw-bold">
-            <i class="bi bi-geo-alt-fill text-warning"></i> Referências de Fornecedores
+        <span class="navbar-brand mb-0">
+            <img src="img/logo-enlace-horizontal.svg" alt="Enlace" style="height:32px;">
         </span>
-        <a href="painel_admin.php" class="btn btn-sm btn-outline-light">
-            <i class="bi bi-arrow-left"></i> Voltar ao Painel
-        </a>
+        <div class="d-flex align-items-center gap-2">
+            <a href="painel_admin.php" class="btn btn-sm btn-outline-light rounded-3">
+                <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
+            </a>
+        </div>
     </div>
 </nav>
 
 <div class="container my-5">
+
+    <h4 class="fw-bold mb-4"><i class="bi bi-geo-alt-fill text-primary me-2"></i>Referências de Fornecedores</h4>
 
     <?php if ($msg_sucesso): ?>
         <div class="alert alert-success shadow-sm alert-dismissible fade show"><button class="btn-close" data-bs-dismiss="alert"></button><i class="bi bi-check-circle-fill me-2"></i><?= htmlspecialchars($msg_sucesso) ?></div>

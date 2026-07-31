@@ -95,26 +95,30 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gerenciar Equipe</title>
+    <title>Gerenciar Equipe - Enlace</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=3">
+    <link rel="stylesheet" href="css/estilo.css?v=7">
 </head>
 <body class="bg-light">
 
 <nav class="navbar navbar-dark bg-dark shadow-sm">
     <div class="container">
-        <span class="navbar-brand fw-bold text-primary">
-            <i class="bi bi-people-fill text-warning"></i> Gestão de Equipe
+        <span class="navbar-brand mb-0">
+            <img src="img/logo-enlace-horizontal.svg" alt="Enlace" style="height:32px;">
         </span>
-        <a href="painel_admin.php" class="btn btn-sm btn-outline-light">
-            <i class="bi bi-arrow-left"></i> Voltar ao Painel
-        </a>
+        <div class="d-flex align-items-center gap-2">
+            <a href="painel_admin.php" class="btn btn-sm btn-outline-light rounded-3">
+                <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
+            </a>
+        </div>
     </div>
 </nav>
 
 <div class="container my-5">
-    
+
+    <h4 class="fw-bold mb-4"><i class="bi bi-people-fill text-primary me-2"></i>Gestão de Equipe</h4>
+
     <?php if ($msg_sucesso): ?>
         <div class="alert alert-success fw-bold shadow-sm"><i class="bi bi-check-circle-fill me-2"></i><?= htmlspecialchars($msg_sucesso) ?></div>
     <?php endif; ?>

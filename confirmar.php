@@ -218,10 +218,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Confirmação de Presença<?= !empty($evento['nome_cliente']) ? ' — ' . htmlspecialchars($evento['nome_cliente'], ENT_QUOTES, 'UTF-8') : '' ?></title>
+    <title>Confirmação de Presença<?= !empty($evento['nome_cliente']) ? ' — ' . htmlspecialchars($evento['nome_cliente'], ENT_QUOTES, 'UTF-8') : '' ?> - Enlace</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-    <link rel="stylesheet" href="css/estilo.css?v=3">
+    <link rel="stylesheet" href="css/estilo.css?v=7">
     <script>
         // Decide qual "view" mostrar antes da página pintar, evitando flash de conteúdo errado.
         (function () {
@@ -243,8 +243,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             min-height: 100vh;
             background: linear-gradient(135deg, var(--vinho-1) 0%, var(--vinho-2) 50%, var(--vinho-3) 100%);
             font-family: 'Inter', system-ui, sans-serif;
-            padding: 2.5rem 0;
         }
+        body > .container { padding: 2.5rem 0; }
         .rsvp-card {
             max-width: 560px;
             margin: 0 auto;
@@ -299,6 +299,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </style>
 </head>
 <body>
+
+<nav class="navbar navbar-dark bg-dark shadow-sm">
+  <div class="container">
+    <span class="navbar-brand mb-0">
+      <img src="img/logo-enlace-horizontal.svg" alt="Enlace" style="height:32px;">
+    </span>
+  </div>
+</nav>
 
 <div class="container">
     <div class="rsvp-card">
@@ -453,7 +461,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
 
     <div class="text-center mt-3 text-white-50 small">
-        Sistema de Gestão de Eventos
+        Enlace · Sistema de Gestão de Eventos
     </div>
 </div>
 

@@ -464,6 +464,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
+    // 14b. Adicionar pagamento (soma ao valor já pago) de um fornecedor (AJAX) (Apenas Admin)
+    if (isset($_POST['adicionar_pagamento'])) {
+        if (!$is_admin) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Acesso negado.']);
+            header("Location: gerenciar.php?id=$evento_id"); exit;
+        }
+        $forn_id   = (int)($_POST['fornecedor_id'] ?? 0);
+        $valor_add = (float)($_POST['valor_pago']  ?? 0);
+        if ($forn_id > 0 && $valor_add > 0) {
+            $chk = $pdo->prepare("SELECT valor, valor_pago FROM fornecedores_evento WHERE id = ? AND evento_id = ?");
+            $chk->execute([$forn_id, $evento_id]);
+            $forn = $chk->fetch();
+            if ($forn) {
+                $novo_pago = min((float)$forn['valor'], (float)($forn['valor_pago'] ?? 0) + $valor_add);
+                $pdo->prepare("UPDATE fornecedores_evento SET valor_pago = ? WHERE id = ? AND evento_id = ?")
+                    ->execute([$novo_pago, $forn_id, $evento_id]);
+                if ($ajax) json_out([
+                    'ok'          => true,
+                    'valor_pago'  => $novo_pago,
+                    'valor_total' => (float)$forn['valor'],
+                    'valor_rest'  => (float)$forn['valor'] - $novo_pago,
+                ]);
+            } else {
+                if ($ajax) json_out(['ok' => false, 'msg' => 'Fornecedor não encontrado.']);
+            }
+        } else {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Informe um valor de pagamento maior que zero.']);
+        }
+        header("Location: gerenciar.php?id=$evento_id"); exit;
+    }
+
     // 15. Salvar / editar nota (AJAX)
     if (isset($_POST['salvar_nota'])) {
         $nota_id  = (int)($_POST['nota_id']     ?? 0);
@@ -746,10 +777,10 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Gerenciar Evento</title>
+  <title>Gerenciar Evento - Enlace</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css?v=3">
+  <link rel="stylesheet" href="css/estilo.css?v=7">
   <style>
     /* ---- PAGAMENTO FORNECEDOR ---- */
     .forn-pago-row {
@@ -771,6 +802,13 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
     .forn-val-rest  { font-size: .75rem; font-weight: 700; }
     .forn-val-rest.ok  { color: #16a34a; }
     .forn-val-rest.nok { color: #dc2626; }
+    .forn-val-pago-linha { font-size: .72rem; font-weight: 700; color: #2563eb; display: flex; align-items: center; gap: .25rem; }
+    .forn-btn-editar-pago, .forn-btn-cancelar-edit {
+      border: none; background: transparent; color: #94a3b8; padding: 0; font-size: .68rem;
+      cursor: pointer; transition: color .15s; line-height: 1;
+    }
+    .forn-btn-editar-pago:hover  { color: #2563eb; }
+    .forn-btn-cancelar-edit:hover { color: #dc2626; }
     .forn-input-wrap { display: flex; align-items: center; gap: .35rem; }
     .forn-input-pago-adm {
       width: 90px; font-size: .75rem; border: 1.5px solid #e2e8f0;
@@ -911,6 +949,19 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
 </head>
 <body>
 
+<nav class="navbar navbar-dark bg-dark shadow-sm">
+  <div class="container">
+    <span class="navbar-brand mb-0">
+      <img src="img/logo-enlace-horizontal.svg" alt="Enlace" style="height:32px;">
+    </span>
+    <div class="d-flex align-items-center gap-2">
+      <a href="painel_admin.php" class="btn btn-sm btn-outline-light rounded-3">
+        <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
+      </a>
+    </div>
+  </div>
+</nav>
+
 <div id="toast-wrap"></div>
 
 <div class="modal fade" id="modalConfirmar" tabindex="-1" aria-hidden="true">
@@ -1025,11 +1076,7 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
   <div class="card border-0 shadow-sm mb-4 overflow-hidden" style="border-radius: var(--radius);">
     <div class="header-topo p-4 d-flex flex-wrap justify-content-between align-items-start gap-3">
       <div>
-        <a href="painel_admin.php" class="btn btn-sm btn-outline-light mb-3 rounded-3">
-          <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
-        </a>
-
-        <button type="button" class="btn btn-sm btn-danger rounded-3 mb-3 ms-2"
+        <button type="button" class="btn btn-sm btn-danger rounded-3 mb-3"
                 data-bs-toggle="modal" data-bs-target="#modalExportarPdf">
           <i class="bi bi-file-earmark-pdf-fill me-1"></i> Exportar PDF
         </button>
@@ -1580,7 +1627,7 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
                       $fQuit  = $fRest <= 0;
                       $barClr = $fQuit ? 'bg-success' : ($fPct >= 50 ? 'bg-info' : 'bg-warning');
                     ?>
-                    <div class="forn-pago-row" id="forn-adm-<?= $fid ?>">
+                    <div class="forn-pago-row" id="forn-adm-<?= $fid ?>" data-pago="<?= $fPago ?>">
                       <div>
                         <div class="forn-info-nome"><?= htmlspecialchars($f['servico'], ENT_QUOTES, 'UTF-8') ?></div>
                         <div class="forn-info-sub"><?= htmlspecialchars($f['nome'], ENT_QUOTES, 'UTF-8') ?></div>
@@ -1596,18 +1643,36 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
                       <?php if ($is_admin): ?>
                       <div class="forn-valores">
                         <div class="forn-val-total">R$ <?= number_format($fValor, 2, ',', '.') ?></div>
+                        <div class="forn-val-pago-linha">
+                          Pago: R$ <span class="forn-pago-valor-txt"><?= number_format($fPago, 2, ',', '.') ?></span>
+                          <button type="button" class="forn-btn-editar-pago" data-id="<?= $fid ?>" title="Corrigir valor pago">
+                            <i class="bi bi-pencil-fill"></i>
+                          </button>
+                        </div>
                         <div class="forn-val-rest <?= $fQuit ? 'ok' : 'nok' ?> forn-rest-adm">
                           <?= $fQuit ? '✓ Quitado' : 'Resta R$ '.number_format($fRest, 2, ',', '.') ?>
                         </div>
                       </div>
-                      <div class="forn-input-wrap">
-                        <input type="text" class="forn-input-pago-adm"
+                      <div class="forn-input-wrap forn-add-wrap">
+                        <input type="text" class="forn-input-pago-adm forn-input-add"
+                               data-id="<?= $fid ?>" data-total="<?= $fValor ?>"
+                               placeholder="+ pagamento" inputmode="decimal" title="Somar novo pagamento (R$)">
+                        <button type="button" class="forn-btn-salvar forn-btn-add-adm"
+                                 data-id="<?= $fid ?>" title="Adicionar pagamento">
+                          <i class="bi bi-plus-lg"></i>
+                        </button>
+                      </div>
+                      <div class="forn-input-wrap forn-edit-wrap" style="display:none;">
+                        <input type="text" class="forn-input-pago-adm forn-input-edit"
                                data-id="<?= $fid ?>" data-total="<?= $fValor ?>"
                                value="<?= number_format($fPago, 2, ',', '.') ?>"
-                               placeholder="0,00" inputmode="decimal" title="Valor já pago (R$)">
-                        <button type="button" class="forn-btn-salvar forn-btn-salvar-adm"
-                                 data-id="<?= $fid ?>" title="Salvar pagamento">
-                          <i class="bi bi-floppy"></i>
+                               placeholder="0,00" inputmode="decimal" title="Corrigir valor pago (R$)">
+                        <button type="button" class="forn-btn-salvar forn-btn-salvar-edit-adm"
+                                 data-id="<?= $fid ?>" title="Salvar correção">
+                          <i class="bi bi-check-lg"></i>
+                        </button>
+                        <button type="button" class="forn-btn-cancelar-edit" title="Cancelar">
+                          <i class="bi bi-x-lg"></i>
                         </button>
                       </div>
                       <?php endif; ?>
@@ -2753,38 +2818,121 @@ document.querySelectorAll('.form-ajax-tarefa').forEach(form => {
 });
 
 /* ---- PAGAMENTO FORNECEDORES (AJAX) ---- */
-function recalcularTotaisAdm() {
-  let totalContrato = 0, totalPago = 0;
-  document.querySelectorAll('.forn-input-pago-adm').forEach(inp => {
-    const t = parseFloat(inp.dataset.total || 0);
-    const p = parseBrl(inp.value);
-    totalContrato += t;
-    totalPago     += Math.min(p, t);
-  });
-  const restante = Math.max(0, totalContrato - totalPago);
-  const pct      = totalContrato > 0 ? Math.round(totalPago / totalContrato * 100) : 0;
+let totalPagoGeralAdm = <?= json_encode($total_forn_pago) ?>;
+const totalContratoGeralAdm = <?= json_encode($total_forn) ?>;
+
+function atualizarChipsGeraisAdm() {
+  const restante = Math.max(0, totalContratoGeralAdm - totalPagoGeralAdm);
+  const pct      = totalContratoGeralAdm > 0 ? Math.round(totalPagoGeralAdm / totalContratoGeralAdm * 100) : 0;
   const elPago   = document.getElementById('adm-total-pago');
   const elRest   = document.getElementById('adm-total-rest');
   const elBarra  = document.getElementById('adm-barra-pago');
   const elPct    = document.getElementById('adm-pct-pago');
-  if (elPago)  elPago.textContent  = brl(totalPago);
+  if (elPago)  elPago.textContent  = brl(totalPagoGeralAdm);
   if (elRest)  elRest.textContent  = brl(restante);
   if (elBarra) elBarra.style.width = pct + '%';
   if (elPct)   elPct.textContent   = pct + '%';
 }
 
-document.querySelectorAll('.forn-btn-salvar-adm').forEach(btn => {
+function atualizarLinhaFornecedorAdm(row, pago, total) {
+  const rest = Math.max(0, total - pago);
+  const pct  = total > 0 ? Math.round(pago / total * 100) : 0;
+  const quit = rest <= 0;
+
+  const pagoAnterior = parseFloat(row.dataset.pago || 0);
+  totalPagoGeralAdm += (pago - pagoAnterior);
+  row.dataset.pago = pago;
+
+  const barra = row.querySelector('.forn-barra-fill-adm');
+  if (barra) {
+    barra.className          = 'forn-barra-fill-adm ' + (quit ? 'bg-success' : pct >= 50 ? 'bg-info' : 'bg-warning');
+    barra.style.width        = pct + '%';
+    barra.style.height       = '100%';
+    barra.style.borderRadius = '999px';
+    barra.style.transition   = 'width .4s';
+  }
+  const badge = row.querySelector('.forn-badge-adm');
+  if (badge) {
+    badge.textContent = quit ? '✓ Quitado' : (pct > 0 ? pct + '%' : '—');
+    badge.className   = 'forn-pago-badge forn-badge-adm ' + (quit ? 'bg-success text-white' : 'bg-warning text-dark');
+  }
+  const restEl = row.querySelector('.forn-rest-adm');
+  if (restEl) {
+    restEl.textContent = quit ? '✓ Quitado' : 'Resta ' + brl(rest);
+    restEl.className   = 'forn-val-rest forn-rest-adm ' + (quit ? 'ok' : 'nok');
+  }
+  const pagoTxt = row.querySelector('.forn-pago-valor-txt');
+  if (pagoTxt) pagoTxt.textContent = pago.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+
+  atualizarChipsGeraisAdm();
+}
+
+/* Somar novo pagamento ao valor já pago */
+document.querySelectorAll('.forn-btn-add-adm').forEach(btn => {
   btn.addEventListener('click', async () => {
     const fid   = btn.dataset.id;
     const row   = document.getElementById('forn-adm-' + fid);
-    const input = row.querySelector('.forn-input-pago-adm');
+    const input = row.querySelector('.forn-input-add');
+    const total = parseFloat(input.dataset.total || 0);
+    const valor = parseBrl(input.value);
+    if (!valor || valor <= 0) { toast('Informe um valor maior que zero.', 'verm'); return; }
+    const origBtn = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    btn.disabled  = true;
+    try {
+      const r = await ajax({ adicionar_pagamento: '1', fornecedor_id: fid, valor_pago: valor.toString() });
+      if (r.ok) {
+        const pago = parseFloat(r.valor_pago);
+        const quit = parseFloat(r.valor_rest) <= 0;
+        atualizarLinhaFornecedorAdm(row, pago, total);
+        input.value = '';
+        toast(quit ? 'Pagamento quitado! 🎉' : 'Pagamento adicionado!', quit ? 'verde' : 'info');
+      } else {
+        toast(r.msg || 'Erro ao salvar pagamento.', 'verm');
+      }
+    } catch { toast('Erro de conexão. Tente novamente.', 'verm'); }
+    btn.innerHTML = origBtn;
+    btn.disabled  = false;
+  });
+});
+
+/* Alternar para o modo de corrigir o valor pago */
+document.querySelectorAll('.forn-btn-editar-pago').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const fid       = btn.dataset.id;
+    const row       = document.getElementById('forn-adm-' + fid);
+    const addWrap   = row.querySelector('.forn-add-wrap');
+    const editWrap  = row.querySelector('.forn-edit-wrap');
+    const editInput = editWrap.querySelector('.forn-input-edit');
+    editInput.value = parseFloat(row.dataset.pago || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+    addWrap.style.display  = 'none';
+    editWrap.style.display = 'flex';
+    editInput.focus();
+    editInput.select();
+  });
+});
+
+/* Cancelar a correção */
+document.querySelectorAll('.forn-btn-cancelar-edit').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const row = btn.closest('.forn-pago-row');
+    row.querySelector('.forn-edit-wrap').style.display = 'none';
+    row.querySelector('.forn-add-wrap').style.display  = 'flex';
+  });
+});
+
+/* Salvar a correção (sobrescreve o valor pago) */
+document.querySelectorAll('.forn-btn-salvar-edit-adm').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const fid   = btn.dataset.id;
+    const row   = document.getElementById('forn-adm-' + fid);
+    const input = row.querySelector('.forn-input-edit');
     const total = parseFloat(input.dataset.total || 0);
     let   valor = parseBrl(input.value);
     if (valor < 0) { toast('O valor não pode ser negativo.', 'verm'); return; }
     if (valor > total) {
       toast('Valor maior que o contrato! Ajustado para o total.', 'info');
       valor = total;
-      input.value = total.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
     }
     const origBtn = btn.innerHTML;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
@@ -2793,30 +2941,10 @@ document.querySelectorAll('.forn-btn-salvar-adm').forEach(btn => {
       const r = await ajax({ atualizar_valor_pago: '1', fornecedor_id: fid, valor_pago: valor.toString() });
       if (r.ok) {
         const pago = parseFloat(r.valor_pago);
-        const rest = Math.max(0, parseFloat(r.valor_rest));
-        const pct  = total > 0 ? Math.round(pago / total * 100) : 0;
-        const quit = rest <= 0;
-        const barra = row.querySelector('.forn-barra-fill-adm');
-        if (barra) {
-          barra.className          = 'forn-barra-fill-adm ' + (quit ? 'bg-success' : pct >= 50 ? 'bg-info' : 'bg-warning');
-          barra.style.width        = pct + '%';
-          barra.style.height       = '100%';
-          barra.style.borderRadius = '999px';
-          barra.style.transition   = 'width .4s';
-        }
-        const badge = row.querySelector('.forn-badge-adm');
-        if (badge) {
-          badge.textContent = quit ? '✓ Quitado' : (pct > 0 ? pct + '%' : '—');
-          badge.className   = 'forn-pago-badge forn-badge-adm ' + (quit ? 'bg-success text-white' : 'bg-warning text-dark');
-        }
-        const restEl = row.querySelector('.forn-rest-adm');
-        if (restEl) {
-          restEl.textContent = quit ? '✓ Quitado' : 'Resta ' + brl(rest);
-          restEl.className   = 'forn-val-rest forn-rest-adm ' + (quit ? 'ok' : 'nok');
-        }
-        input.value = pago.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-        recalcularTotaisAdm();
-        toast(quit ? 'Pagamento quitado! 🎉' : 'Pagamento atualizado!', quit ? 'verde' : 'info');
+        atualizarLinhaFornecedorAdm(row, pago, total);
+        row.querySelector('.forn-edit-wrap').style.display = 'none';
+        row.querySelector('.forn-add-wrap').style.display  = 'flex';
+        toast('Valor corrigido!', 'info');
       } else {
         toast(r.msg || 'Erro ao salvar pagamento.', 'verm');
       }
@@ -2828,6 +2956,7 @@ document.querySelectorAll('.forn-btn-salvar-adm').forEach(btn => {
 
 document.querySelectorAll('.forn-input-pago-adm').forEach(input => {
   input.addEventListener('blur',  () => {
+    if (input.value.trim() === '') return;
     const n = parseBrl(input.value);
     if (!isNaN(n)) input.value = n.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
   });
