@@ -9,6 +9,11 @@ if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['
 }
 $is_admin = ($_SESSION['usuario_tipo'] === 'admin');
 
+// Evita que o navegador guarde esta página (dados financeiros/de convidados) em cache,
+// o que já causou telas desatualizadas aparecerem depois de mudanças no sistema.
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+
 /* ============================================================
    CSRF TOKEN
    ============================================================ */
@@ -83,6 +88,17 @@ try {
     
     try { $pdo->query("SELECT status FROM musicas_evento LIMIT 1"); }
     catch (Exception $e) { $pdo->exec("ALTER TABLE musicas_evento ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'sugestao'"); }
+
+    // A coluna "status" já existia como TINYINT(1) em bancos antigos, incompatível com os
+    // valores 'sugestao'/'confirmada' usados pelo sistema — corrige o tipo se necessário.
+    $tipoStatusMusica = $pdo->query("
+        SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'musicas_evento' AND COLUMN_NAME = 'status'
+    ")->fetchColumn();
+    if ($tipoStatusMusica !== 'varchar') {
+        $pdo->exec("ALTER TABLE musicas_evento MODIFY COLUMN status VARCHAR(20) NOT NULL DEFAULT 'sugestao'");
+        $pdo->exec("UPDATE musicas_evento SET status = 'sugestao' WHERE status NOT IN ('sugestao', 'confirmada')");
+    }
     
     try { $pdo->query("SELECT momento FROM musicas_evento LIMIT 1"); }
     catch (Exception $e) { $pdo->exec("ALTER TABLE musicas_evento ADD COLUMN momento VARCHAR(150) NOT NULL DEFAULT 'Livre / Sem Momento Definido'"); }
@@ -148,6 +164,10 @@ if (!$evento_id) {
     header("Location: painel_admin.php");
     exit;
 }
+
+$link_confirmacao_scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://';
+$link_confirmacao_base   = $link_confirmacao_scheme . $_SERVER['HTTP_HOST'] . rtrim(dirname($_SERVER['PHP_SELF']), '/');
+$link_confirmacao_url    = $link_confirmacao_base . '/confirmar.php?evento=' . $evento_id;
 
 /* ============================================================
    HELPER
@@ -911,6 +931,78 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
   </div>
 </div>
 
+<div class="modal fade" id="modalLinkConfirmacao" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header border-0 bg-light">
+        <h5 class="modal-title fw-bold"><i class="bi bi-envelope-check-fill text-danger me-2"></i> Confirmação de Presença</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body p-4">
+        <p class="text-muted small mb-3">Envie este link para os convidados. Eles poderão confirmar a presença de toda a família diretamente por ele — sem precisar de login.</p>
+        <div class="input-group mb-2">
+          <input type="text" id="input-link-confirmacao" class="form-control" value="<?= htmlspecialchars($link_confirmacao_url) ?>" readonly>
+          <button class="btn btn-danger fw-bold" type="button" id="btn-copiar-link">
+            <i class="bi bi-clipboard-fill me-1"></i> Copiar
+          </button>
+        </div>
+        <a href="<?= htmlspecialchars($link_confirmacao_url) ?>" target="_blank" class="small text-decoration-none">
+          <i class="bi bi-box-arrow-up-right me-1"></i> Abrir o link em uma nova aba
+        </a>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary btn-sm px-4 rounded-pill fw-bold" data-bs-dismiss="modal">Fechar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="modalExportarPdf" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header border-0 bg-light">
+        <h5 class="modal-title fw-bold"><i class="bi bi-file-earmark-pdf-fill text-danger me-2"></i> Exportar PDF</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body p-4">
+        <a class="btn btn-outline-dark w-100 fw-bold mb-3" href="relatorio_pdf.php?id=<?= $evento_id ?>&secoes=todos" target="_blank">
+          <i class="bi bi-file-earmark-text me-1"></i> Relatório Completo
+        </a>
+        <hr>
+        <div class="small text-muted fw-bold text-uppercase mb-2" style="font-size:.7rem;">Ou escolha as seções</div>
+        <div class="form-check mb-2">
+          <input class="form-check-input pdf-secao-check" type="checkbox" value="checklist" id="pdfSecaoChecklist">
+          <label class="form-check-label" for="pdfSecaoChecklist"><i class="bi bi-list-check me-1"></i>Checklist</label>
+        </div>
+        <div class="form-check mb-2">
+          <input class="form-check-input pdf-secao-check" type="checkbox" value="convidados" id="pdfSecaoConvidados">
+          <label class="form-check-label" for="pdfSecaoConvidados"><i class="bi bi-people me-1"></i>Convidados</label>
+        </div>
+        <?php if ($is_admin): ?>
+        <div class="form-check mb-2">
+          <input class="form-check-input pdf-secao-check" type="checkbox" value="fornecedores" id="pdfSecaoFornecedores">
+          <label class="form-check-label" for="pdfSecaoFornecedores"><i class="bi bi-cash-stack me-1"></i>Financeiro</label>
+        </div>
+        <?php endif; ?>
+        <div class="form-check mb-2">
+          <input class="form-check-input pdf-secao-check" type="checkbox" value="notas" id="pdfSecaoNotas">
+          <label class="form-check-label" for="pdfSecaoNotas"><i class="bi bi-journal-text me-1"></i>Notas</label>
+        </div>
+        <div class="form-check mb-2">
+          <input class="form-check-input pdf-secao-check" type="checkbox" value="musicas" id="pdfSecaoMusicas">
+          <label class="form-check-label" for="pdfSecaoMusicas"><i class="bi bi-music-note-beamed me-1"></i>Playlist</label>
+        </div>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary btn-sm px-4 rounded-pill fw-bold" data-bs-dismiss="modal">Cancelar</button>
+        <button type="button" class="btn btn-danger fw-bold rounded-pill px-4" id="btnGerarPdfSecoes">
+          <i class="bi bi-download me-1"></i> Gerar PDF
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <?php if ($is_admin): ?>
 <form id="form-import-com-rec" method="POST" action="?id=<?= $evento_id ?>" hidden>
   <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
@@ -937,34 +1029,15 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
           <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
         </a>
 
-        <div class="dropdown d-inline-block mb-3 ms-2">
-          <button class="btn btn-sm btn-danger rounded-3 dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-            <i class="bi bi-file-earmark-pdf-fill me-1"></i> Exportar PDF
-          </button>
-          <ul class="dropdown-menu">
-            <li><a class="dropdown-item fw-bold" href="relatorio_pdf.php?id=<?= $evento_id ?>&secoes=todos" target="_blank">
-              <i class="bi bi-file-earmark-text me-1"></i> Relatório Completo
-            </a></li>
-            <li><hr class="dropdown-divider"></li>
-            <li><a class="dropdown-item" href="relatorio_pdf.php?id=<?= $evento_id ?>&secoes=checklist" target="_blank">
-              <i class="bi bi-list-check me-1"></i> Somente Checklist
-            </a></li>
-            <li><a class="dropdown-item" href="relatorio_pdf.php?id=<?= $evento_id ?>&secoes=convidados" target="_blank">
-              <i class="bi bi-people me-1"></i> Somente Convidados
-            </a></li>
-            <?php if ($is_admin): ?>
-            <li><a class="dropdown-item" href="relatorio_pdf.php?id=<?= $evento_id ?>&secoes=fornecedores" target="_blank">
-              <i class="bi bi-cash-stack me-1"></i> Somente Financeiro
-            </a></li>
-            <?php endif; ?>
-            <li><a class="dropdown-item" href="relatorio_pdf.php?id=<?= $evento_id ?>&secoes=notas" target="_blank">
-              <i class="bi bi-journal-text me-1"></i> Somente Notas
-            </a></li>
-            <li><a class="dropdown-item" href="relatorio_pdf.php?id=<?= $evento_id ?>&secoes=musicas" target="_blank">
-              <i class="bi bi-music-note-beamed me-1"></i> Somente Playlist
-            </a></li>
-          </ul>
-        </div>
+        <button type="button" class="btn btn-sm btn-danger rounded-3 mb-3 ms-2"
+                data-bs-toggle="modal" data-bs-target="#modalExportarPdf">
+          <i class="bi bi-file-earmark-pdf-fill me-1"></i> Exportar PDF
+        </button>
+
+        <button type="button" class="btn btn-sm btn-outline-light rounded-3 mb-3 ms-2"
+                data-bs-toggle="modal" data-bs-target="#modalLinkConfirmacao">
+          <i class="bi bi-envelope-check-fill me-1"></i> Confirmação de Presença
+        </button>
 
         <h2 class="fw-bold mb-1 text-white" style="letter-spacing:-.5px;">
           <i class="bi bi-rings text-warning me-2"></i>
@@ -1406,6 +1479,40 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
           </div>
         </div>
 
+        <?php if ($is_admin): ?>
+        <div class="card shadow-sm border-0 mb-3" style="border-radius: var(--radius);">
+          <div class="card-body p-3">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="fw-bold mb-0"><i class="bi bi-wallet2 text-success me-1"></i> Resumo Financeiro</h6>
+              <a href="fornecedores_evento.php?id=<?= $evento_id ?>" class="btn btn-sm btn-outline-dark shadow-sm">
+                <i class="bi bi-gear-fill me-1"></i> Completo
+              </a>
+            </div>
+            <div class="d-flex gap-2 mb-2">
+              <div class="fin-chip bg-primary bg-opacity-10 border border-primary border-opacity-20 flex-fill">
+                <span class="fin-chip-label text-primary">Total</span>
+                <span class="fin-chip-val text-primary">R$ <?= number_format($total_forn, 2, ',', '.') ?></span>
+              </div>
+              <div class="fin-chip bg-success bg-opacity-10 border border-success border-opacity-20 flex-fill">
+                <span class="fin-chip-label text-success">Pago</span>
+                <span class="fin-chip-val text-success" id="adm-total-pago">R$ <?= number_format($total_forn_pago, 2, ',', '.') ?></span>
+              </div>
+              <div class="fin-chip bg-danger bg-opacity-10 border border-danger border-opacity-20 flex-fill">
+                <span class="fin-chip-label text-danger">A Pagar</span>
+                <span class="fin-chip-val text-danger" id="adm-total-rest">R$ <?= number_format($total_forn_restante, 2, ',', '.') ?></span>
+              </div>
+            </div>
+            <div class="d-flex justify-content-between mb-1" style="font-size:.6rem;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:.05em;">
+              <span>Progresso de Pagamentos</span>
+              <span id="adm-pct-pago"><?= $pct_pago_geral ?>%</span>
+            </div>
+            <div class="barra-pag-wrap">
+              <div class="barra-pag-fill bg-success" id="adm-barra-pago" style="width:<?= $pct_pago_geral ?>%;"></div>
+            </div>
+          </div>
+        </div>
+        <?php endif; ?>
+
         <div class="row g-2" id="grupoAcessos">
           <div class="col-6">
             <button class="btn w-100 d-flex flex-column align-items-center justify-content-center p-3 shadow-sm text-white h-100"
@@ -1414,16 +1521,8 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
                     aria-expanded="false" aria-controls="collapseEquipe">
               <i class="bi bi-person-badge-fill text-info fs-3 mb-2"></i>
               <span class="fw-bold" style="font-size:.85rem;">Equipe Contratada</span>
-              <?php if ($is_admin): ?>
-              <div class="mt-2 text-warning fw-bold" style="font-size:.82rem;">
-                R$ <?= number_format($total_forn, 2, ',', '.') ?>
-              </div>
-              <?php if ($total_forn > 0): ?>
-              <div class="mt-1 d-flex gap-2">
-                <span style="font-size:.62rem;color:#86efac;">✓ R$ <?= number_format($total_forn_pago, 2, ',', '.') ?></span>
-                <span style="font-size:.62rem;color:#fca5a5;">↻ R$ <?= number_format($total_forn_restante, 2, ',', '.') ?></span>
-              </div>
-              <?php endif; ?>
+              <?php if (!$is_admin): ?>
+              <span class="mt-2 text-white-50" style="font-size:.7rem;"><i class="bi bi-lock-fill me-1"></i>Acesso restrito</span>
               <?php endif; ?>
             </button>
           </div>
@@ -1464,29 +1563,6 @@ $nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
                     </span>
                     <?php endif; ?>
                   </div>
-                  <?php if ($is_admin): ?>
-                  <div class="d-flex gap-2 mb-2">
-                    <div class="fin-chip bg-primary bg-opacity-10 border border-primary border-opacity-20 flex-fill">
-                      <span class="fin-chip-label text-primary">Total</span>
-                      <span class="fin-chip-val text-primary">R$ <?= number_format($total_forn, 2, ',', '.') ?></span>
-                    </div>
-                    <div class="fin-chip bg-success bg-opacity-10 border border-success border-opacity-20 flex-fill">
-                      <span class="fin-chip-label text-success">Pago</span>
-                      <span class="fin-chip-val text-success" id="adm-total-pago">R$ <?= number_format($total_forn_pago, 2, ',', '.') ?></span>
-                    </div>
-                    <div class="fin-chip bg-danger bg-opacity-10 border border-danger border-opacity-20 flex-fill">
-                      <span class="fin-chip-label text-danger">A Pagar</span>
-                      <span class="fin-chip-val text-danger" id="adm-total-rest">R$ <?= number_format($total_forn_restante, 2, ',', '.') ?></span>
-                    </div>
-                  </div>
-                  <div class="d-flex justify-content-between mb-1" style="font-size:.6rem;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:.05em;">
-                    <span>Progresso de Pagamentos</span>
-                    <span id="adm-pct-pago"><?= $pct_pago_geral ?>%</span>
-                  </div>
-                  <div class="barra-pag-wrap">
-                    <div class="barra-pag-fill bg-success" id="adm-barra-pago" style="width:<?= $pct_pago_geral ?>%;"></div>
-                  </div>
-                  <?php endif; ?>
                 </div>
                 <div class="scroll-lista-pequena">
                   <?php if (empty($lista_forn)): ?>
@@ -2316,6 +2392,39 @@ document.getElementById('dropdown-notificacoes')?.addEventListener('shown.bs.dro
   const badge = this.querySelector('.badge');
   if (badge) badge.remove();
   fetch('notificacoes_marcar_lidas.php', { method: 'POST' }).catch(() => {});
+});
+
+/* ---- EXPORTAR PDF: SEÇÕES ESCOLHIDAS ---- */
+document.getElementById('btnGerarPdfSecoes')?.addEventListener('click', function () {
+  const marcadas = [...document.querySelectorAll('.pdf-secao-check:checked')].map(c => c.value);
+  if (marcadas.length === 0) {
+    toast('Marque ao menos uma seção.', 'verm');
+    return;
+  }
+  const url = 'relatorio_pdf.php?id=<?= $evento_id ?>&secoes=' + marcadas.join(',');
+  // Tenta abrir em nova aba; se o navegador bloquear o pop-up (retorna null/undefined),
+  // cai para navegar na própria aba, que nenhum navegador bloqueia.
+  const nova = window.open(url, '_blank');
+  if (!nova) {
+    window.location.href = url;
+  }
+});
+
+/* ---- COPIAR LINK DE CONFIRMAÇÃO DE PRESENÇA ---- */
+document.getElementById('btn-copiar-link')?.addEventListener('click', async function () {
+  const input = document.getElementById('input-link-confirmacao');
+  const btn   = this;
+  const orig  = btn.innerHTML;
+  try {
+    await navigator.clipboard.writeText(input.value);
+  } catch {
+    input.removeAttribute('readonly');
+    input.select();
+    document.execCommand('copy');
+    input.setAttribute('readonly', 'readonly');
+  }
+  btn.innerHTML = '<i class="bi bi-check-lg me-1"></i> Copiado!';
+  setTimeout(() => { btn.innerHTML = orig; }, 1800);
 });
 
 /* ---- BUSCA + FILTRO DO CHECKLIST ---- */

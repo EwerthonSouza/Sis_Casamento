@@ -102,30 +102,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // 4. Adicionar convidado
-    if (isset($_POST['adicionar_convidado_noivos'])) {
-        $nome   = trim($_POST['nome_convidado'] ?? '');
-        $fone   = trim($_POST['telefone_convidado'] ?? '');
-        $cat    = trim($_POST['categoria_convidado'] ?? 'Outros');
-        $acomp  = trim($_POST['acompanhantes'] ?? '');
-        $filhos = trim($_POST['filhos'] ?? '');
-        if ($nome !== '') {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado) VALUES (?, ?, ?, ?, ?, ?, 0)")
-                ->execute([$evento_id, $nome, $fone, $cat, $acomp, $filhos]);
-            $newId = (int)$pdo->lastInsertId();
-            if ($ajax) json_out([
-                'ok'    => true,
-                'id'    => $newId,
-                'nome'  => htmlspecialchars($nome),
-                'fone'  => htmlspecialchars($fone),
-                'cat'   => htmlspecialchars($cat),
-                'acomp' => htmlspecialchars($acomp),
-                'filhos'=> htmlspecialchars($filhos),
-            ]);
-        }
-        header("Location: noivos.php"); exit;
-    }
-
     // 5. Toggle confirmação do convidado
     if (isset($_POST['toggle_convidado'])) {
         $id  = (int)$_POST['convidado_id'];
@@ -183,7 +159,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         if ($momento !== '' && $titulo !== '') {
-            $pdo->prepare("INSERT INTO musicas_evento (evento_id, momento, titulo, link, status) VALUES (?, ?, ?, ?, 0)")
+            $pdo->prepare("INSERT INTO musicas_evento (evento_id, momento, titulo, link, status) VALUES (?, ?, ?, ?, 'sugestao')")
                 ->execute([$evento_id, $momento, $titulo, $link]);
             $ret_id = (int)$pdo->lastInsertId();
             if ($ajax) json_out([
@@ -1134,38 +1110,6 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               </div>
             </div>
 
-            <div class="bg-light border rounded-3 p-3 mb-3">
-              <div class="text-muted fw-bold text-center mb-2" style="font-size:.68rem;text-transform:uppercase;">Adicionar Convidado</div>
-              <form id="form-add-conv">
-                <input type="hidden" name="adicionar_convidado_noivos" value="1">
-                <div class="mb-2">
-                  <input type="text" name="nome_convidado" class="form-control form-control-sm" placeholder="Nome do titular (obrigatório)" required>
-                </div>
-                <div class="mb-2">
-                  <input type="text" name="telefone_convidado" class="form-control form-control-sm" placeholder="WhatsApp / Telefone">
-                </div>
-                <div class="mb-2">
-                  <select name="categoria_convidado" class="form-select form-select-sm text-secondary" required>
-                    <option value="" disabled selected>Grupo?</option>
-                    <option value="Família">Família</option>
-                    <option value="Amigos">Amigos</option>
-                    <option value="Outros">Outros</option>
-                  </select>
-                </div>
-                <div class="row g-2 mb-2">
-                  <div class="col-6">
-                    <input type="text" name="acompanhantes" class="form-control form-control-sm" placeholder="Acompanhante(s)">
-                  </div>
-                  <div class="col-6">
-                    <input type="text" name="filhos" class="form-control form-control-sm" placeholder="Filho(s)">
-                  </div>
-                </div>
-                <button type="submit" id="btn-add-conv" class="btn btn-primary btn-sm w-100 fw-bold">
-                  <i class="bi bi-plus-lg me-1"></i> Incluir na Lista
-                </button>
-              </form>
-            </div>
-
             <button class="btn btn-outline-primary btn-sm w-100 fw-bold rounded-pill shadow-sm collapsed"
                     type="button" data-bs-toggle="collapse" data-bs-target="#colapso-convidados">
               <i class="bi bi-list-ul me-1"></i> Ver Lista Completa
@@ -1334,7 +1278,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
           <?php else: ?>
             <div class="row g-3" id="grid-musicas">
               <?php foreach ($lista_musicas as $m):
-                $mOk = (int)$m['status'] === 1;
+                $mOk = $m['status'] === 'confirmada';
               ?>
                 <div class="col-12 musica-card-wrap" data-id="<?= $m['id'] ?>">
                   <div class="card border-0 shadow-sm rounded-3 <?= $mOk ? 'border-success border bg-success bg-opacity-10' : 'bg-white' ?>">
@@ -1755,70 +1699,6 @@ function deltaCntStatus(conf, n) {
   const e = document.getElementById(conf ? 'cnt-conf' : 'cnt-pend');
   if (e) e.textContent = +e.textContent + n;
 }
-
-document.getElementById('form-add-conv').addEventListener('submit', async e => {
-  e.preventDefault();
-  const form = e.target;
-  const fd   = new FormData(form);
-  const btn  = document.getElementById('btn-add-conv');
-  const orig = btn.innerHTML;
-  fd.append('is_ajax', '1');
-  btn.disabled  = true;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Salvando…';
-  try {
-    const r = await (await fetch(SELF, { method: 'POST', body: fd })).json();
-    if (r.ok) {
-      const extras = [
-        r.fone   ? `<div><i class="bi bi-whatsapp me-1 text-success"></i>${r.fone}</div>`   : '',
-        r.acomp  ? `<div><i class="bi bi-person-plus me-1"></i>Acomp: ${r.acomp}</div>`      : '',
-        r.filhos ? `<div><i class="bi bi-emoji-smile me-1"></i>Filhos: ${r.filhos}</div>`   : '',
-      ].filter(Boolean).join('');
-      const rowHtml = `
-        <div class="conv-row pend p-2 mb-2 bg-light shadow-sm"
-             data-id="${r.id}" data-conf="0" data-nome="${r.nome.toLowerCase()}">
-          <div class="d-flex justify-content-between align-items-start mb-1">
-            <h6 class="mb-0 small fw-bold text-dark text-truncate pe-2">${r.nome}</h6>
-            <div class="d-flex align-items-center gap-1 flex-shrink-0">
-              <button type="button" class="btn p-0 border-0 bg-transparent btn-toggle-conv" data-id="${r.id}">
-                <span class="badge bg-warning text-dark rounded-pill" style="font-size:.6rem;">
-                  <i class="bi bi-hourglass-split me-1"></i> Pendente
-                </span>
-              </button>
-              <button type="button" class="btn p-0 border-0 bg-transparent text-danger btn-excluir-conv" data-id="${r.id}" title="Remover">
-                <i class="bi bi-trash fs-6"></i>
-              </button>
-            </div>
-          </div>
-          ${extras ? `<div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.5;">${extras}</div>` : ''}
-        </div>`;
-
-      const lista   = document.getElementById('lista-convidados');
-      let   grupoEl = lista.querySelector(`.grupo-sec[data-grupo="${r.cat}"]`);
-      if (!grupoEl) {
-        const icons = { 'Família': 'bi-house-heart-fill', 'Amigos': 'bi-emoji-sunglasses-fill', 'Outros': 'bi-collection-fill' };
-        grupoEl = document.createElement('div');
-        grupoEl.className     = 'grupo-sec';
-        grupoEl.dataset.grupo = r.cat;
-        grupoEl.innerHTML     = `
-          <div class="badge bg-secondary text-white w-100 text-start px-3 py-2 rounded-2 mb-1 mt-2" style="font-size:.72rem;">
-            <i class="bi ${icons[r.cat] || 'bi-collection-fill'} me-1"></i>
-            ${r.cat} (<span class="cnt-grp">0</span>)
-          </div>`;
-        lista.appendChild(grupoEl);
-      }
-      grupoEl.insertAdjacentHTML('beforeend', rowHtml);
-      const cntG = grupoEl.querySelector('.cnt-grp');
-      if (cntG) cntG.textContent = +cntG.textContent + 1;
-      bindConvRow(grupoEl.querySelector('.conv-row:last-child'));
-      deltaCntTotal(1);
-      deltaCntStatus(false, 1);
-      form.reset();
-      toast('Convidado adicionado!');
-    }
-  } catch { toast('Erro ao adicionar convidado.', 'verm'); }
-  btn.disabled  = false;
-  btn.innerHTML = orig;
-});
 
 function bindToggleConv(btn) {
   btn.addEventListener('click', async () => {
