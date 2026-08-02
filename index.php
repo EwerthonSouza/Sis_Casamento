@@ -2,6 +2,11 @@
 session_start();
 require_once 'conexao.php';
 
+// Evita que o navegador guarde esta página em cache, já causou telas
+// desatualizadas aparecerem depois de mudanças no sistema.
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+
 $erro = "";
 
 function validarSenha($senhaDigitada, $senhaBanco)
@@ -124,11 +129,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
-<title>Login - Gestão de Eventos</title>
+<title>Login - Enlace</title>
 
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-<link rel="stylesheet" href="css/estilo.css?v=3">
+<link rel="stylesheet" href="css/estilo.css?v=7">
 
 <style>
 
@@ -187,36 +192,39 @@ body{
     }
 }
 
-.logo-circle{
-    width:120px;
-    height:120px;
-    border-radius:50%;
+@keyframes aproximar{
+    from{
+        opacity:0;
+        transform:scale(.55);
+    }
+    to{
+        opacity:1;
+        transform:scale(1);
+    }
+}
+
+.logo-card{
     background:white;
-    display:flex;
-    align-items:center;
-    justify-content:center;
+    border-radius:24px;
+    padding:22px 34px;
+    display:inline-block;
     margin:auto;
     box-shadow:0 10px 30px rgba(0,0,0,.25);
+    animation:aproximar .8s ease-out;
+    transition:transform .3s ease, box-shadow .3s ease;
+    cursor:pointer;
 }
 
-.logo-circle i{
-    font-size:4rem;
-    color:var(--color-primary-dark);
+.logo-card:hover{
+    transform:scale(1.06);
+    box-shadow:0 16px 40px rgba(0,0,0,.3);
 }
 
-.login-title{
-    color:white;
-    text-align:center;
-    margin-top:20px;
-}
-
-.login-title h2{
-    font-weight:700;
-    margin-bottom:5px;
-}
-
-.login-title p{
-    opacity:.85;
+.logo-card img{
+    display:block;
+    width:230px;
+    max-width:62vw;
+    height:auto;
 }
 
 .card-body{
@@ -268,13 +276,8 @@ body{
 
     <div class="text-center mb-4">
 
-        <div class="logo-circle">
-            <i class="bi bi-calendar-heart-fill"></i>
-        </div>
-
-        <div class="login-title">
-            <h2>Cerimonial & Assessoria</h2>
-            <p>Sistema Integrado de Gestão de Eventos</p>
+        <div class="logo-card">
+            <img src="img/logo-enlace.svg" alt="Enlace — Sistema de Gestão de Casamentos">
         </div>
 
     </div>
@@ -380,7 +383,7 @@ body{
 
     <div class="footer-text">
 
-        © <?= date('Y') ?> Cerimonial & Assessoria<br>
+        © <?= date('Y') ?> Enlace<br>
         Sistema de Gestão de Eventos
 
     </div>

@@ -161,11 +161,13 @@ ob_start();
   .footer-pg { position: fixed; bottom: -20px; left: 0; right: 0; font-size: 9px; color: #94a3b8; text-align: center; }
   .vazio { color: #94a3b8; font-style: italic; font-size: 10px; }
   .etapa-title { background: #f8fafc; padding: 4px 8px; font-weight: bold; font-size: 11px; border-left: 4px solid #7a1308; margin-top: 8px; }
+  .marca { font-size: 10px; font-weight: bold; letter-spacing: 1px; color: #7a1308; text-transform: uppercase; margin-bottom: 6px; }
 </style>
 </head>
 <body>
 
 <div class="cabecalho">
+  <div class="marca">Enlace</div>
   <h1>Casamento de <?= h($evento['nome']) ?></h1>
   <div class="sub">Relatório gerado em <?= h($gerado_em) ?></div>
 
@@ -291,7 +293,7 @@ ob_start();
 <?php endif; ?>
 <?php endif; ?>
 
-<div class="footer-pg">Sistema de Gestão de Eventos &middot; Relatório de <?= h($evento['nome']) ?></div>
+<div class="footer-pg">Enlace &middot; Relatório de <?= h($evento['nome']) ?></div>
 
 </body>
 </html>

@@ -124,17 +124,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: noivos.php"); exit;
     }
 
-    // 7. Atualizar valor pago de um fornecedor (AJAX)
+    // 7. Corrigir valor pago de um fornecedor, sobrescrevendo o total (AJAX)
     if (isset($_POST['atualizar_valor_pago'])) {
         $forn_id    = (int)$_POST['fornecedor_id'];
-        $valor_pago = (float)str_replace(['.', ','], ['', '.'], $_POST['valor_pago'] ?? '0');
+        $valor_pago = (float)($_POST['valor_pago'] ?? 0);
 
         $chk = $pdo->prepare("SELECT valor FROM fornecedores_evento WHERE id = ? AND evento_id = ?");
         $chk->execute([$forn_id, $evento_id]);
         $forn = $chk->fetch();
 
         if ($forn) {
-            $valor_pago = min($valor_pago, (float)$forn['valor']);
+            $valor_pago = min(max(0.0, $valor_pago), (float)$forn['valor']);
             $pdo->prepare("UPDATE fornecedores_evento SET valor_pago = ? WHERE id = ? AND evento_id = ?")
                 ->execute([$valor_pago, $forn_id, $evento_id]);
             if ($ajax) json_out([
@@ -145,6 +145,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
         } else {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Fornecedor não encontrado.']);
+        }
+        header("Location: noivos.php"); exit;
+    }
+
+    // 7b. Adicionar pagamento (soma ao valor já pago) de um fornecedor (AJAX)
+    if (isset($_POST['adicionar_pagamento'])) {
+        $forn_id   = (int)($_POST['fornecedor_id'] ?? 0);
+        $valor_add = (float)($_POST['valor_pago']  ?? 0);
+
+        if ($forn_id > 0 && $valor_add > 0) {
+            $chk = $pdo->prepare("SELECT valor, valor_pago FROM fornecedores_evento WHERE id = ? AND evento_id = ?");
+            $chk->execute([$forn_id, $evento_id]);
+            $forn = $chk->fetch();
+
+            if ($forn) {
+                $novo_pago = min((float)$forn['valor'], (float)($forn['valor_pago'] ?? 0) + $valor_add);
+                $pdo->prepare("UPDATE fornecedores_evento SET valor_pago = ? WHERE id = ? AND evento_id = ?")
+                    ->execute([$novo_pago, $forn_id, $evento_id]);
+                if ($ajax) json_out([
+                    'ok'          => true,
+                    'valor_pago'  => $novo_pago,
+                    'valor_total' => (float)$forn['valor'],
+                    'valor_rest'  => (float)$forn['valor'] - $novo_pago,
+                ]);
+            } else {
+                if ($ajax) json_out(['ok' => false, 'msg' => 'Fornecedor não encontrado.']);
+            }
+        } else {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Informe um valor de pagamento maior que zero.']);
         }
         header("Location: noivos.php"); exit;
     }
@@ -313,10 +342,10 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Nosso Casamento ♡</title>
+  <title>Nosso Casamento ♡ - Enlace</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css?v=3">
+  <link rel="stylesheet" href="css/estilo.css?v=7">
   <style>
     :root {
       --radius: 16px;
@@ -452,6 +481,14 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     .btn-salvar-pag:hover { background: #16a34a; }
     .btn-salvar-pag:active { transform: scale(.96); }
 
+    .btn-editar-pago-noivos, .btn-cancelar-edit-noivos {
+      border: none; background: transparent; color: #94a3b8; padding: 0; font-size: .68rem;
+      cursor: pointer; transition: color .15s; line-height: 1;
+    }
+    .btn-editar-pago-noivos:hover  { color: #2563eb; }
+    .btn-cancelar-edit-noivos:hover { color: #dc2626; }
+    .btn-salvar-edit-noivos { padding: .3rem .6rem; }
+
     /* Resumo financeiro global */
     .fin-summary-card {
       border-radius: 12px;
@@ -520,6 +557,19 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
   </style>
 </head>
 <body>
+
+<nav class="navbar navbar-dark bg-dark shadow-sm">
+  <div class="container">
+    <span class="navbar-brand mb-0">
+      <img src="img/logo-enlace-horizontal.svg" alt="Enlace" style="height:32px;">
+    </span>
+    <div class="d-flex align-items-center gap-2">
+      <a href="logout.php" class="btn btn-sm btn-outline-danger">
+        <i class="bi bi-box-arrow-right"></i> <span class="d-none d-sm-inline">Sair</span>
+      </a>
+    </div>
+  </div>
+</nav>
 
 <div id="toast-wrap"></div>
 
@@ -1019,7 +1069,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                   $fQuitado   = $fRest <= 0;
                   $barColor   = $fQuitado ? 'bg-success' : ($fPct >= 50 ? 'bg-info' : 'bg-warning');
                 ?>
-                <div class="forn-card" id="forn-<?= $fid ?>">
+                <div class="forn-card" id="forn-<?= $fid ?>" data-pago="<?= $fPago ?>">
                   <div class="d-flex justify-content-between align-items-start mb-1">
                     <div class="fw-bold text-dark" style="font-size:.83rem;line-height:1.3;">
                       <?= htmlspecialchars($f['servico']) ?>
@@ -1048,18 +1098,49 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                     </div>
                   </div>
 
+                  <div class="mb-2 d-flex align-items-center gap-1" style="font-size:.72rem;">
+                    <span class="text-muted">Pago:</span>
+                    <span class="fw-bold text-primary forn-pago-valor-txt">R$ <?= number_format($fPago, 2, ',', '.') ?></span>
+                    <button type="button" class="btn-editar-pago-noivos" data-id="<?= $fid ?>" title="Corrigir valor pago">
+                      <i class="bi bi-pencil-fill"></i>
+                    </button>
+                  </div>
+
                   <div class="barra-pago-wrap mb-2">
                     <div class="barra-pago-fill <?= $barColor ?> forn-barra-fill" style="width:<?= $fPct ?>%;"></div>
                   </div>
 
-                  <div class="d-flex align-items-center gap-2 mt-2">
+                  <div class="d-flex align-items-center gap-2 mt-2 forn-add-wrap-noivos">
                     <div class="flex-grow-1">
                       <label style="font-size:.62rem;color:#64748b;text-transform:uppercase;font-weight:700;letter-spacing:.05em;">
-                        Valor já pago (R$)
+                        Adicionar pagamento (R$)
                       </label>
                       <input
                         type="text"
-                        class="valor-pago-input forn-input-pago"
+                        class="valor-pago-input forn-input-add-noivos"
+                        data-id="<?= $fid ?>"
+                        data-total="<?= $fValor ?>"
+                        placeholder="0,00"
+                        inputmode="decimal"
+                      >
+                    </div>
+                    <div class="mt-3">
+                      <button type="button"
+                              class="btn-salvar-pag btn-add-pagamento-noivos"
+                              data-id="<?= $fid ?>">
+                        <i class="bi bi-plus-lg me-1"></i>Somar
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="d-flex align-items-center gap-2 mt-2 forn-edit-wrap-noivos" style="display:none;">
+                    <div class="flex-grow-1">
+                      <label style="font-size:.62rem;color:#64748b;text-transform:uppercase;font-weight:700;letter-spacing:.05em;">
+                        Corrigir valor pago (R$)
+                      </label>
+                      <input
+                        type="text"
+                        class="valor-pago-input forn-input-edit-noivos"
                         data-id="<?= $fid ?>"
                         data-total="<?= $fValor ?>"
                         value="<?= number_format($fPago, 2, ',', '.') ?>"
@@ -1067,11 +1148,12 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                         inputmode="decimal"
                       >
                     </div>
-                    <div class="mt-3">
-                      <button type="button"
-                              class="btn-salvar-pag btn-salvar-pagamento"
-                              data-id="<?= $fid ?>">
-                        <i class="bi bi-floppy me-1"></i>Salvar
+                    <div class="mt-3 d-flex gap-1">
+                      <button type="button" class="btn-salvar-pag btn-salvar-edit-noivos" data-id="<?= $fid ?>" title="Salvar correção">
+                        <i class="bi bi-check-lg"></i>
+                      </button>
+                      <button type="button" class="btn-cancelar-edit-noivos" title="Cancelar">
+                        <i class="bi bi-x-lg"></i>
                       </button>
                     </div>
                   </div>
@@ -1586,37 +1668,126 @@ document.querySelectorAll('.form-ajax-tarefa').forEach(form => {
 /* ============================================================
    CONTROLE DE PAGAMENTO DOS FORNECEDORES
    ============================================================ */
-function recalcularTotaisGlobais() {
-  let totalContrato = 0;
-  let totalPago     = 0;
+let totalPagoGeralNoivos = <?= json_encode($valor_pago_total) ?>;
+const totalContratoGeralNoivos = <?= json_encode($valor_cont) ?>;
 
-  document.querySelectorAll('.forn-card').forEach(card => {
-    const input = card.querySelector('.forn-input-pago');
-    const total = parseFloat(input?.dataset.total || 0);
-    const pago  = parseBrl(input?.value || '0');
-    totalContrato += total;
-    totalPago     += Math.min(pago, total);
-  });
-
-  const restante = Math.max(0, totalContrato - totalPago);
-  const pct      = totalContrato > 0 ? Math.round(totalPago / totalContrato * 100) : 0;
+function atualizarChipsGeraisNoivos() {
+  const restante = Math.max(0, totalContratoGeralNoivos - totalPagoGeralNoivos);
+  const pct      = totalContratoGeralNoivos > 0 ? Math.round(totalPagoGeralNoivos / totalContratoGeralNoivos * 100) : 0;
 
   const elPago  = document.getElementById('total-pago-geral');
   const elRest  = document.getElementById('total-rest-geral');
   const elBarra = document.getElementById('barra-pago-global');
   const elPct   = document.getElementById('pct-pago-label');
 
-  if (elPago)  elPago.textContent  = brl(totalPago);
+  if (elPago)  elPago.textContent  = brl(totalPagoGeralNoivos);
   if (elRest)  elRest.textContent  = brl(restante);
   if (elBarra) elBarra.style.width = pct + '%';
   if (elPct)   elPct.textContent   = pct + '%';
 }
 
-document.querySelectorAll('.btn-salvar-pagamento').forEach(btn => {
+function atualizarCardFornecedorNoivos(card, pago, total) {
+  const rest = Math.max(0, total - pago);
+  const pct  = total > 0 ? Math.round(pago / total * 100) : 0;
+  const quit = rest <= 0;
+
+  const pagoAnterior = parseFloat(card.dataset.pago || 0);
+  totalPagoGeralNoivos += (pago - pagoAnterior);
+  card.dataset.pago = pago;
+
+  const barra  = card.querySelector('.forn-barra-fill');
+  const restEl = card.querySelector('.forn-rest-val');
+  const badge  = card.querySelector('.forn-pago-badge');
+  const pagoTxt = card.querySelector('.forn-pago-valor-txt');
+
+  if (barra) {
+    barra.style.width = pct + '%';
+    barra.className   = 'barra-pago-fill forn-barra-fill ' + (quit ? 'bg-success' : pct >= 50 ? 'bg-info' : 'bg-warning');
+  }
+  if (restEl) {
+    restEl.textContent = brl(rest);
+    restEl.className   = 'fw-bold forn-rest-val ' + (quit ? 'text-success' : 'text-danger');
+  }
+  if (badge) {
+    badge.textContent = quit ? '✓ Quitado' : (pct > 0 ? pct + '% pago' : 'Não iniciado');
+    badge.className   = 'forn-pago-badge ms-2 flex-shrink-0 ' + (quit ? 'bg-success text-white' : 'bg-warning text-dark');
+  }
+  if (pagoTxt) pagoTxt.textContent = 'R$ ' + pago.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+
+  atualizarChipsGeraisNoivos();
+}
+
+/* Somar novo pagamento ao valor já pago */
+document.querySelectorAll('.btn-add-pagamento-noivos').forEach(btn => {
   btn.addEventListener('click', async () => {
     const fid   = btn.dataset.id;
     const card  = document.getElementById('forn-' + fid);
-    const input = card.querySelector('.forn-input-pago');
+    const input = card.querySelector('.forn-input-add-noivos');
+    const total = parseFloat(input.dataset.total || 0);
+    const valor = parseBrl(input.value);
+
+    if (!valor || valor <= 0) { toast('Informe um valor maior que zero.', 'verm'); return; }
+
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    btn.disabled  = true;
+
+    try {
+      const r = await ajax({
+        adicionar_pagamento: '1',
+        fornecedor_id:       fid,
+        valor_pago:          valor.toString(),
+      });
+
+      if (r.ok) {
+        const pago = parseFloat(r.valor_pago);
+        const quit = parseFloat(r.valor_rest) <= 0;
+        atualizarCardFornecedorNoivos(card, pago, total);
+        input.value = '';
+        toast(quit ? 'Pagamento quitado! 🎉' : 'Pagamento adicionado!', quit ? 'verde' : 'info');
+      } else {
+        toast(r.msg || 'Erro ao salvar pagamento.', 'verm');
+      }
+    } catch {
+      toast('Erro de conexão. Tente novamente.', 'verm');
+    }
+
+    btn.innerHTML = orig;
+    btn.disabled  = false;
+  });
+});
+
+/* Alternar para o modo de corrigir o valor pago */
+document.querySelectorAll('.btn-editar-pago-noivos').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const fid       = btn.dataset.id;
+    const card      = document.getElementById('forn-' + fid);
+    const addWrap   = card.querySelector('.forn-add-wrap-noivos');
+    const editWrap  = card.querySelector('.forn-edit-wrap-noivos');
+    const editInput = editWrap.querySelector('.forn-input-edit-noivos');
+    editInput.value = parseFloat(card.dataset.pago || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+    addWrap.style.display  = 'none';
+    editWrap.style.display = 'flex';
+    editInput.focus();
+    editInput.select();
+  });
+});
+
+/* Cancelar a correção */
+document.querySelectorAll('.btn-cancelar-edit-noivos').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const card = btn.closest('.forn-card');
+    card.querySelector('.forn-edit-wrap-noivos').style.display = 'none';
+    card.querySelector('.forn-add-wrap-noivos').style.display  = 'flex';
+  });
+});
+
+/* Salvar a correção (sobrescreve o valor pago) */
+document.querySelectorAll('.btn-salvar-edit-noivos').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const fid   = btn.dataset.id;
+    const card  = document.getElementById('forn-' + fid);
+    const input = card.querySelector('.forn-input-edit-noivos');
     const total = parseFloat(input.dataset.total || 0);
     let   valor = parseBrl(input.value);
 
@@ -1625,7 +1796,6 @@ document.querySelectorAll('.btn-salvar-pagamento').forEach(btn => {
     if (valor > total) {
       toast('Valor maior que o contrato! Ajustado para o total.', 'info');
       valor = total;
-      input.value = total.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
     }
 
     const orig = btn.innerHTML;
@@ -1640,32 +1810,11 @@ document.querySelectorAll('.btn-salvar-pagamento').forEach(btn => {
       });
 
       if (r.ok) {
-        const pago   = parseFloat(r.valor_pago);
-        const rest   = Math.max(0, parseFloat(r.valor_rest));
-        const pct    = total > 0 ? Math.round(pago / total * 100) : 0;
-        const quit   = rest <= 0;
-
-        const barra  = card.querySelector('.forn-barra-fill');
-        const restEl = card.querySelector('.forn-rest-val');
-        const badge  = card.querySelector('.forn-pago-badge');
-
-        if (barra) {
-          barra.style.width = pct + '%';
-          barra.className   = 'barra-pago-fill forn-barra-fill ' + (quit ? 'bg-success' : pct >= 50 ? 'bg-info' : 'bg-warning');
-        }
-        if (restEl) {
-          restEl.textContent = brl(rest);
-          restEl.className   = 'fw-bold forn-rest-val ' + (quit ? 'text-success' : 'text-danger');
-        }
-        if (badge) {
-          badge.textContent = quit ? '✓ Quitado' : (pct > 0 ? pct + '% pago' : 'Não iniciado');
-          badge.className   = 'forn-pago-badge ms-2 flex-shrink-0 ' + (quit ? 'bg-success text-white' : 'bg-warning text-dark');
-        }
-
-        input.value = pago.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-
-        recalcularTotaisGlobais();
-        toast(quit ? 'Pagamento quitado! 🎉' : 'Pagamento atualizado!', quit ? 'verde' : 'info');
+        const pago = parseFloat(r.valor_pago);
+        atualizarCardFornecedorNoivos(card, pago, total);
+        card.querySelector('.forn-edit-wrap-noivos').style.display = 'none';
+        card.querySelector('.forn-add-wrap-noivos').style.display  = 'flex';
+        toast('Valor corrigido!', 'info');
       } else {
         toast(r.msg || 'Erro ao salvar pagamento.', 'verm');
       }
@@ -1678,8 +1827,9 @@ document.querySelectorAll('.btn-salvar-pagamento').forEach(btn => {
   });
 });
 
-document.querySelectorAll('.forn-input-pago').forEach(input => {
+document.querySelectorAll('.forn-input-add-noivos, .forn-input-edit-noivos').forEach(input => {
   input.addEventListener('blur', () => {
+    if (input.value.trim() === '') return;
     const n = parseBrl(input.value);
     if (!isNaN(n)) {
       input.value = n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

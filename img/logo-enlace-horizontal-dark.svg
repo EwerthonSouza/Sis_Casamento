@@ -1,0 +1,13 @@
+<svg viewBox="0 0 210 50" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Enlace">
+  <defs>
+    <linearGradient id="anelGradD" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c9a171"/>
+      <stop offset="100%" stop-color="#8b5e3c"/>
+    </linearGradient>
+  </defs>
+  <g>
+    <circle cx="20" cy="25" r="15" fill="none" stroke="url(#anelGradD)" stroke-width="3.2"/>
+    <circle cx="33" cy="25" r="15" fill="none" stroke="url(#anelGradD)" stroke-width="3.2"/>
+  </g>
+  <text x="58" y="34" font-family="Georgia, 'Times New Roman', serif" font-size="27" font-weight="700" letter-spacing="2" fill="#8b5e3c">ENLACE</text>
+</svg>

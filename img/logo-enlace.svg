@@ -1,0 +1,14 @@
+<svg viewBox="0 0 320 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Enlace">
+  <defs>
+    <linearGradient id="anelGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c9a171"/>
+      <stop offset="100%" stop-color="#8b5e3c"/>
+    </linearGradient>
+  </defs>
+  <g>
+    <circle cx="140" cy="52" r="40" fill="none" stroke="url(#anelGrad)" stroke-width="6"/>
+    <circle cx="178" cy="52" r="40" fill="none" stroke="url(#anelGrad)" stroke-width="6"/>
+  </g>
+  <text x="160" y="132" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="38" font-weight="700" letter-spacing="5" fill="#8b5e3c">ENLACE</text>
+  <text x="160" y="158" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" letter-spacing="1" fill="#96897c">Sistema de Gestão de Casamentos</text>
+</svg>
