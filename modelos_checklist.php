@@ -143,7 +143,7 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
     <title>Modelos de Checklist - Enlace</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=7">
+    <link rel="stylesheet" href="css/estilo.css?v=8">
     <style>
         .tarefa-row { transition: background-color .15s; }
         .tarefa-row:hover { background-color: #f8f9fa; }
