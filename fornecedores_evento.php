@@ -33,9 +33,30 @@ $evento = $stmt->fetch();
 
 if (!$evento) { die("Evento não encontrado."); }
 
+/* ============================================================
+   CSRF TOKEN
+   ============================================================ */
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
+function verificar_csrf(): void {
+    $token_post    = $_POST['csrf_token']    ?? '';
+    $token_header  = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    $token_enviado = $token_post !== '' ? $token_post : $token_header;
+    if (!hash_equals($_SESSION['csrf_token'], $token_enviado)) {
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => false, 'msg' => 'Token CSRF inválido.']);
+        exit;
+    }
+}
+
 // --- LÓGICA DE PROCESSAMENTO (POST) ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    
+
+    verificar_csrf();
+
     // ADICIONAR
     if (isset($_POST['adicionar_fornecedor'])) {
         $nome = trim($_POST['nome_fornecedor']);
@@ -233,6 +254,7 @@ foreach ($lista_fornecedores as $f) {
                                             <i class="bi bi-pencil"></i>
                                         </button>
                                         <form method="POST" class="d-inline" onsubmit="return confirm('Tem certeza que deseja excluir este fornecedor?');">
+                                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                                             <input type="hidden" name="id_fornecedor" value="<?= $forn['id'] ?>">
                                             <button type="submit" name="excluir_fornecedor" class="btn btn-sm btn-outline-danger" title="Excluir"><i class="bi bi-trash"></i></button>
                                         </form>
@@ -255,6 +277,7 @@ foreach ($lista_fornecedores as $f) {
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <form method="POST">
+          <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
           <input type="hidden" name="adicionar_fornecedor" value="1">
           <div class="modal-body">
               <div class="mb-3">
@@ -302,6 +325,7 @@ foreach ($lista_fornecedores as $f) {
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <form method="POST">
+          <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
           <input type="hidden" name="editar_fornecedor" value="1">
           <input type="hidden" name="id_fornecedor" value="<?= $forn['id'] ?>">
           <div class="modal-body">

@@ -9,6 +9,25 @@ $eh_noivos = ($_SESSION['usuario_tipo'] === 'noivos');
 
 require_once 'conexao.php';
 
+/* ============================================================
+   CSRF TOKEN
+   ============================================================ */
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
+function verificar_csrf(): void {
+    $token_post    = $_POST['csrf_token']    ?? '';
+    $token_header  = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    $token_enviado = $token_post !== '' ? $token_post : $token_header;
+    if (!hash_equals($_SESSION['csrf_token'], $token_enviado)) {
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => false, 'msg' => 'Token CSRF inválido.']);
+        exit;
+    }
+}
+
 if ($eh_noivos) {
     // Noivos só podem organizar mesas do próprio evento (ignora manipulação da URL)
     $evento_id = (int)($_SESSION['evento_id'] ?? 0);
@@ -57,7 +76,9 @@ function json_out($data) {
    POST HANDLERS
    ============================================================ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    
+
+    verificar_csrf();
+
     $is_ajax_html = isset($_POST['ajax_html']);
 
     // AJAX: Mover convidado (Drag & Drop)
@@ -849,6 +870,8 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
 
 <script>
+const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;
+
 document.addEventListener('DOMContentLoaded', function () {
 
   document.querySelectorAll('.toast').forEach(el => bootstrap.Toast.getOrCreateInstance(el).show());
@@ -937,6 +960,7 @@ document.addEventListener('DOMContentLoaded', function () {
   async function processAjaxAction(formData, actionType = 'full') {
     overlay.classList.add('show');
     formData.append('ajax_html', '1');
+    formData.append('csrf_token', CSRF_TOKEN);
 
     try {
       const resp = await fetch(window.location.href, { method: 'POST', body: formData });
@@ -1093,7 +1117,8 @@ document.addEventListener('DOMContentLoaded', function () {
           const fd = new FormData();
           fd.append('reordenar_mesas_ajax', '1');
           fd.append('ordem_mesas', JSON.stringify(ordem));
-          fetch(window.location.href, { method: 'POST', body: fd }); 
+          fd.append('csrf_token', CSRF_TOKEN);
+          fetch(window.location.href, { method: 'POST', body: fd });
         }
       });
       sortables.push(sg);

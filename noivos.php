@@ -10,6 +10,25 @@ require_once 'conexao.php';
 
 $evento_id = (int)$_SESSION['evento_id'];
 
+/* ============================================================
+   CSRF TOKEN
+   ============================================================ */
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
+function verificar_csrf(): void {
+    $token_post    = $_POST['csrf_token']    ?? '';
+    $token_header  = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    $token_enviado = $token_post !== '' ? $token_post : $token_header;
+    if (!hash_equals($_SESSION['csrf_token'], $token_enviado)) {
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => false, 'msg' => 'Token CSRF inválido.']);
+        exit;
+    }
+}
+
 // Link público de confirmação de presença para compartilhar com os convidados
 $link_confirmacao_scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://';
 $link_confirmacao_base   = $link_confirmacao_scheme . $_SERVER['HTTP_HOST'] . rtrim(dirname($_SERVER['PHP_SELF']), '/');
@@ -62,6 +81,8 @@ if (!$evento) { die("Casamento não encontrado."); }
    POST HANDLERS
    ============================================================ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+    verificar_csrf();
 
     $ajax = isset($_POST['is_ajax']);
 
@@ -848,6 +869,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                         <?php endforeach; ?>
                       </div>
                       <form class="d-flex gap-2 form-ajax-etapa">
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                         <input type="hidden" name="comentario_etapa_noivos" value="1">
                         <input type="hidden" name="etapa_nome" value="<?= htmlspecialchars($etapa) ?>">
                         <input type="text" name="novo_comentario_etapa" class="form-control form-control-sm" placeholder="Nota geral…" required>
@@ -902,6 +924,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                                 <?php endforeach; ?>
                               </div>
                               <form class="d-flex gap-2 form-ajax-tarefa">
+                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                                 <input type="hidden" name="adicionar_comentario_noivos" value="1">
                                 <input type="hidden" name="check_id" value="<?= $tid ?>">
                                 <input type="text" name="novo_comentario" class="form-control form-control-sm bg-light border-0" placeholder="Comentar…" required>
@@ -1481,8 +1504,11 @@ function toast(msg, tipo = 'verde') {
   }, 2800);
 }
 
+const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;
+
 async function ajax(obj) {
   obj.is_ajax = '1';
+  obj.csrf_token = CSRF_TOKEN;
   const fd = new FormData();
   Object.entries(obj).forEach(([k, v]) => fd.append(k, v));
   const r = await fetch(SELF, { method: 'POST', body: fd });

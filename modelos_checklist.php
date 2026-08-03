@@ -9,8 +9,29 @@ if (!isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'admin') 
 
 require_once 'conexao.php';
 
+/* ============================================================
+   CSRF TOKEN
+   ============================================================ */
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
+function verificar_csrf(): void {
+    $token_post    = $_POST['csrf_token']    ?? '';
+    $token_header  = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    $token_enviado = $token_post !== '' ? $token_post : $token_header;
+    if (!hash_equals($_SESSION['csrf_token'], $token_enviado)) {
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => false, 'msg' => 'Token CSRF inválido.']);
+        exit;
+    }
+}
+
 // --- PROCESSAMENTO DOS FORMULÁRIOS ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+    verificar_csrf();
 
     // 1. CADASTRAR NOVO MODELO
     if (isset($_POST['cadastrar_modelo'])) {
@@ -202,6 +223,7 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
                 </div>
                 <div class="card-body">
                     <form method="POST" action="" id="formCadastrar" novalidate>
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                         <div class="mb-3">
                             <label class="form-label fw-bold">Padrão do Evento <span class="text-danger">*</span></label>
                             <select name="tipo_padrao" class="form-select" required id="selectTipoPadrao">
@@ -340,6 +362,7 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
 
                                                 <!-- Botão Duplicar -->
                                                 <form method="POST" class="d-inline">
+                                                    <input type="hidden" name="csrf_token" value="' . htmlspecialchars($csrf_token) . '">
                                                     <input type="hidden" name="id_duplicar" value="' . $id . '">
                                                     <button type="submit" name="duplicar_modelo" class="btn btn-sm btn-outline-info" title="Duplicar tarefa">
                                                         <i class="bi bi-copy"></i>
@@ -365,6 +388,7 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
                                                 </div>
                                                 <form method="POST" action="" class="needs-validation" novalidate>
                                                     <div class="modal-body">
+                                                        <input type="hidden" name="csrf_token" value="' . htmlspecialchars($csrf_token) . '">
                                                         <input type="hidden" name="id_editar" value="' . $id . '">
                                                         <div class="mb-3">
                                                             <label class="form-label fw-bold">Padrão <span class="text-danger">*</span></label>
@@ -415,6 +439,7 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
                                                 <div class="modal-footer border-0 justify-content-center gap-2">
                                                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
                                                     <form method="POST" action="">
+                                                        <input type="hidden" name="csrf_token" value="' . htmlspecialchars($csrf_token) . '">
                                                         <input type="hidden" name="id_excluir" value="' . $id . '">
                                                         <input type="hidden" name="aba_retorno" value="' . $tipo_padrao . '">
                                                         <button type="submit" name="excluir_modelo" class="btn btn-danger">

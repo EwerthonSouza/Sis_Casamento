@@ -31,10 +31,30 @@ if (!isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'admin') 
 $msg_sucesso = '';
 $msg_erro = '';
 
+/* ============================================================
+   CSRF TOKEN
+   ============================================================ */
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
+function verificar_csrf(): void {
+    $token_post    = $_POST['csrf_token']    ?? '';
+    $token_header  = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    $token_enviado = $token_post !== '' ? $token_post : $token_header;
+    if (!hash_equals($_SESSION['csrf_token'], $token_enviado)) {
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => false, 'msg' => 'Token CSRF inválido.']);
+        exit;
+    }
+}
+
 // ============================================================
 // ADICIONAR USUÁRIO
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adicionar_usuario'])) {
+    verificar_csrf();
     $nome  = trim($_POST['nome'] ?? '');
     $email = trim($_POST['email'] ?? '');
     $senha = trim($_POST['senha'] ?? '');
@@ -58,6 +78,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adicionar_usuario']))
 // ALTERAR SENHA
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['alterar_senha'])) {
+    verificar_csrf();
     $id_usuario = (int)($_POST['id_usuario'] ?? 0);
     $nova_senha = trim($_POST['nova_senha'] ?? '');
 
@@ -75,6 +96,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['alterar_senha'])) {
 // EXCLUIR USUÁRIO
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['excluir_usuario'])) {
+    verificar_csrf();
     $id_excluir = (int)$_POST['id_usuario'];
     
     try {
@@ -162,6 +184,7 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER 
                                     <i class="bi bi-key-fill"></i>
                                 </button>
                                 <form method="POST" onsubmit="return confirm('Tem certeza que deseja excluir o acesso de <?= htmlspecialchars($user['nome']) ?>?');">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                                     <input type="hidden" name="excluir_usuario" value="1">
                                     <input type="hidden" name="id_usuario" value="<?= $user['id'] ?>">
                                     <button type="submit" class="btn btn-sm btn-outline-danger" title="Excluir Usuário">
@@ -191,6 +214,7 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER 
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                 <input type="hidden" name="alterar_senha" value="1">
                 <input type="hidden" name="id_usuario" value="<?= $user['id'] ?>">
                 <div class="modal-body p-4">
@@ -215,6 +239,7 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER 
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                 <input type="hidden" name="adicionar_usuario" value="1">
                 <div class="modal-body p-4">
                     <div class="mb-3">

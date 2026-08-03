@@ -9,11 +9,16 @@ if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['
 
 require_once 'conexao.php';
 
-if (!isset($_GET['id']) || empty($_GET['id'])) {
-    die("Acesso negado. Evento inválido.");
+// Noivos só podem ver o próprio evento (ignora manipulação da URL); admin/assistente usam o ?id= normalmente
+if ($_SESSION['usuario_tipo'] === 'noivos') {
+    $evento_id = (int)($_SESSION['evento_id'] ?? 0);
+    if (!$evento_id) { die("Acesso negado. Evento inválido."); }
+} else {
+    if (!isset($_GET['id']) || empty($_GET['id'])) {
+        die("Acesso negado. Evento inválido.");
+    }
+    $evento_id = (int)$_GET['id'];
 }
-
-$evento_id = (int)$_GET['id'];
 
 // Buscar dados do casamento
 $stmt = $pdo->prepare("SELECT e.*, c.nome FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
@@ -28,10 +33,30 @@ $categorias_banco = $stmt_cats->fetchAll(PDO::FETCH_COLUMN);
 
 $categorias_padrao = ['Decoração', 'Buquê', 'Bolo', 'Outros'];
 $todas_categorias = array_unique(array_merge($categorias_padrao, $categorias_banco));
-sort($todas_categorias); 
+sort($todas_categorias);
+
+/* ============================================================
+   CSRF TOKEN
+   ============================================================ */
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
+function verificar_csrf(): void {
+    $token_post    = $_POST['csrf_token']    ?? '';
+    $token_header  = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    $token_enviado = $token_post !== '' ? $token_post : $token_header;
+    if (!hash_equals($_SESSION['csrf_token'], $token_enviado)) {
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => false, 'msg' => 'Token CSRF inválido.']);
+        exit;
+    }
+}
 
 // 1. PROCESSAR SELEÇÃO DE REFERÊNCIA OFICIAL (POST)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['favoritar_foto'])) {
+    verificar_csrf();
     $foto_id = (int)$_POST['foto_id'];
     $status_atual = (int)$_POST['status_atual'];
     $novo_status = $status_atual === 1 ? 0 : 1;
@@ -45,6 +70,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['favoritar_foto'])) {
 
 // 2. PROCESSAR UPLOAD DA FOTO COM CATEGORIA NOVA (POST)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload_foto'])) {
+    verificar_csrf();
     $titulo = trim($_POST['titulo']);
     $categoria = !empty($_POST['nova_categoria']) ? trim($_POST['nova_categoria']) : ($_POST['categoria'] ?? '');
     
@@ -54,7 +80,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload_foto'])) {
         $fileExtension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
         
         $extensoes_permitidas = ['jpg', 'jpeg', 'png', 'webp'];
-        if (in_array($fileExtension, $extensoes_permitidas)) {
+        if (in_array($fileExtension, $extensoes_permitidas) && @getimagesize($fileTmpPath) !== false) {
             $novo_nome_imagem = "insp_" . $evento_id . "_" . time() . "." . $fileExtension;
             if (move_uploaded_file($fileTmpPath, './uploads/' . $novo_nome_imagem)) {
                 $stmt = $pdo->prepare("INSERT INTO inspiracoes_fotos (evento_id, categoria, titulo, nome_imagem) VALUES (?, ?, ?, ?)");
@@ -158,6 +184,7 @@ $fotos = $stmt_fotos->fetchAll();
                 </div>
                 <div class="card-body p-4">
                     <form method="POST" enctype="multipart/form-data">
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                         <input type="hidden" name="upload_foto" value="1">
                         
                         <div class="mb-3">
@@ -248,6 +275,7 @@ $fotos = $stmt_fotos->fetchAll();
                                         </div>
                                         
                                         <form method="POST" action="" class="m-0">
+                                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                                             <input type="hidden" name="favoritar_foto" value="1">
                                             <input type="hidden" name="foto_id" value="<?= $f['id'] ?>">
                                             <input type="hidden" name="status_atual" value="<?= $f['selecionada'] ?>">
