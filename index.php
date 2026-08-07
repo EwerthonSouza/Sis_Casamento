@@ -2,7 +2,13 @@
 session_start();
 require_once 'conexao.php';
 
+// Evita que o navegador guarde esta página em cache, já causou telas
+// desatualizadas aparecerem depois de mudanças no sistema.
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+
 $erro = "";
+$aviso_sessao_expirada = isset($_GET['sessao_expirada']);
 
 function validarSenha($senhaDigitada, $senhaBanco)
 {
@@ -47,69 +53,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $erro = "Senha incorreta.";
         } else {
 
-            // ADMINISTRADOR ANTIGO
-            $stmt = $pdo->prepare("SELECT * FROM administradores WHERE usuario = ?");
+            // NOIVOS
+            $stmt = $pdo->prepare("
+                SELECT c.*, e.id AS evento_id
+                FROM clientes c
+                LEFT JOIN eventos e ON e.cliente_id = c.id
+                WHERE c.email = ?
+            ");
+
             $stmt->execute([$usuario_input]);
-            $admin = $stmt->fetch();
+            $cliente = $stmt->fetch();
 
-            if ($admin) {
+            if ($cliente) {
 
-                if (validarSenha($senha_input, $admin['senha'])) {
+                if (validarSenha($senha_input, $cliente['senha'])) {
 
-                    session_regenerate_id(true);
+                    if (empty($cliente['evento_id'])) {
 
-                    criarSessao(
-                        'admin',
-                        $admin['id'],
-                        'Assessoria Geral'
-                    );
-
-                    header("Location: painel_admin.php");
-                    exit;
-                }
-
-                $erro = "Senha incorreta.";
-            } else {
-
-                // NOIVOS
-                $stmt = $pdo->prepare("
-                    SELECT c.*, e.id AS evento_id
-                    FROM clientes c
-                    LEFT JOIN eventos e ON e.cliente_id = c.id
-                    WHERE c.email = ?
-                ");
-
-                $stmt->execute([$usuario_input]);
-                $cliente = $stmt->fetch();
-
-                if ($cliente) {
-
-                    if (validarSenha($senha_input, $cliente['senha'])) {
-
-                        if (empty($cliente['evento_id'])) {
-
-                            $erro = "Nenhum evento vinculado ao cadastro.";
-
-                        } else {
-
-                            session_regenerate_id(true);
-
-                            $_SESSION['usuario_tipo'] = 'noivos';
-                            $_SESSION['usuario_id'] = $cliente['id'];
-                            $_SESSION['evento_id'] = $cliente['evento_id'];
-                            $_SESSION['usuario_nome'] = $cliente['nome'] ?? 'Casal';
-
-                            header("Location: noivos.php?id=" . $cliente['evento_id']);
-                            exit;
-                        }
+                        $erro = "Nenhum evento vinculado ao cadastro.";
 
                     } else {
-                        $erro = "Senha incorreta.";
+
+                        session_regenerate_id(true);
+
+                        $_SESSION['usuario_tipo'] = 'noivos';
+                        $_SESSION['usuario_id'] = $cliente['id'];
+                        $_SESSION['evento_id'] = $cliente['evento_id'];
+                        $_SESSION['usuario_nome'] = $cliente['nome'] ?? 'Casal';
+
+                        header("Location: noivos.php?id=" . $cliente['evento_id']);
+                        exit;
                     }
 
                 } else {
-                    $erro = "Usuário não encontrado.";
+                    $erro = "Senha incorreta.";
                 }
+
+            } else {
+                $erro = "Usuário não encontrado.";
             }
         }
 
@@ -124,35 +105,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
-<title>Login - Gestão de Eventos</title>
+<title>Login - Meu Evento PRO</title>
 
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+<link rel="stylesheet" href="css/estilo.css?v=8">
 
 <style>
 
+html{
+    background:#6f4a2f;
+}
+
 body{
     min-height:100vh;
+    min-height:100dvh;
     display:flex;
     align-items:center;
     justify-content:center;
+    padding:20px 15px;
+    position:relative;
+    overflow-x:hidden;
     background:
-    linear-gradient(
-        135deg,
-        #7a1308 0%,
-        #aa2710 50%,
-        #d63f21 100%
-    );
-    overflow:hidden;
+        radial-gradient(circle at 50% 22%, rgba(255,218,160,.4) 0%, transparent 40%),
+        repeating-radial-gradient(circle at 50% 22%, rgba(255,255,255,.05) 0px, rgba(255,255,255,.05) 1px, transparent 1px, transparent 34px),
+        radial-gradient(ellipse at 50% 0%, #a9744f 0%, #8b5e3c 42%, #5c3d28 100%);
+    background-repeat:no-repeat;
+    background-attachment:fixed;
+    background-size:cover;
+}
+
+.bg-shape{ display:none; }
+
+@media (max-width:767.98px){
+    body{ background-attachment:scroll; }
+
+    .login-card{ max-width:340px; border-radius:20px; }
+
+    .card-body{ padding:22px 20px; }
+
+    .card-body h4{ font-size:1.15rem; margin-bottom:1rem !important; }
+
+    .card-body .form-label{ font-size:.82rem; margin-bottom:.3rem; }
+
+    .card-body .form-control{ padding:9px 10px; font-size:16px; }
+
+    .card-body .input-group-text{ padding:9px 10px; }
+
+    .card-body .mb-3{ margin-bottom:.8rem !important; }
+
+    .card-body .form-check.mb-4{ margin-bottom:.9rem !important; }
+
+    .card-body .form-check-label{ font-size:.85rem; }
+
+    .btn-login{ padding:9px; font-size:.9rem; }
 }
 
 .bg-shape{
-    position:absolute;
+    position:fixed;
     width:500px;
     height:500px;
     border-radius:50%;
     background:rgba(255,255,255,.05);
     filter:blur(20px);
+    pointer-events:none;
+    z-index:0;
 }
 
 .shape1{
@@ -173,6 +190,8 @@ body{
     overflow:hidden;
     backdrop-filter:blur(20px);
     animation:fadeIn .7s ease;
+    position:relative;
+    z-index:1;
 }
 
 @keyframes fadeIn{
@@ -186,36 +205,40 @@ body{
     }
 }
 
-.logo-circle{
-    width:120px;
-    height:120px;
-    border-radius:50%;
-    background:white;
-    display:flex;
-    align-items:center;
-    justify-content:center;
+@keyframes aproximar{
+    from{
+        opacity:0;
+        transform:scale(.55);
+    }
+    to{
+        opacity:1;
+        transform:scale(1);
+    }
+}
+
+.logo-card{
+    display:inline-block;
     margin:auto;
-    box-shadow:0 10px 30px rgba(0,0,0,.25);
+    animation:aproximar .8s ease-out;
+    transition:transform .3s ease;
+    cursor:pointer;
 }
 
-.logo-circle i{
-    font-size:4rem;
-    color:#aa2710;
+.logo-card:hover{
+    transform:scale(1.06);
 }
 
-.login-title{
-    color:white;
-    text-align:center;
-    margin-top:20px;
+.logo-card img{
+    display:block;
+    width:400px;
+    max-width:85vw;
+    height:auto;
 }
 
-.login-title h2{
-    font-weight:700;
-    margin-bottom:5px;
-}
-
-.login-title p{
-    opacity:.85;
+@media (min-width:768px){
+    .logo-card img{
+        width:560px;
+    }
 }
 
 .card-body{
@@ -232,7 +255,7 @@ body{
 }
 
 .btn-login{
-    background:#aa2710;
+    background:var(--color-primary-dark);
     border:none;
     border-radius:12px;
     padding:12px;
@@ -241,7 +264,7 @@ body{
 }
 
 .btn-login:hover{
-    background:#891a08;
+    background:#6f4a2f;
     transform:translateY(-2px);
 }
 
@@ -250,6 +273,8 @@ body{
     color:rgba(255,255,255,.8);
     margin-top:20px;
     font-size:.85rem;
+    position:relative;
+    z-index:1;
 }
 
 .toggle-password{
@@ -267,13 +292,8 @@ body{
 
     <div class="text-center mb-4">
 
-        <div class="logo-circle">
-            <i class="bi bi-calendar-heart-fill"></i>
-        </div>
-
-        <div class="login-title">
-            <h2>Cerimonial & Assessoria</h2>
-            <p>Sistema Integrado de Gestão de Eventos</p>
+        <div class="logo-card">
+            <img src="img/logo MEP1.svg" alt="Meu Evento PRO — Sistema de Gestão de Casamentos">
         </div>
 
     </div>
@@ -285,6 +305,13 @@ body{
             <h4 class="text-center mb-4 fw-bold">
                 Acessar Sistema
             </h4>
+
+            <?php if($aviso_sessao_expirada): ?>
+                <div class="alert alert-warning text-center">
+                    <i class="bi bi-clock-history"></i>
+                    Sua sessão expirou por inatividade. Faça login novamente.
+                </div>
+            <?php endif; ?>
 
             <?php if(!empty($erro)): ?>
                 <div class="alert alert-danger text-center">
@@ -343,7 +370,7 @@ body{
                             class="input-group-text toggle-password"
                             onclick="toggleSenha()">
 
-                            <i id="iconeSenha" class="bi bi-eye-fill"></i>
+                            <i id="iconeSenha" class="bi bi-eye-slash-fill"></i>
 
                         </span>
 
@@ -366,7 +393,7 @@ body{
 
                 <button class="btn btn-login text-white w-100">
 
-                    Entrar no Sistema
+                    Entrar
                     <i class="bi bi-box-arrow-in-right ms-1"></i>
 
                 </button>
@@ -379,7 +406,7 @@ body{
 
     <div class="footer-text">
 
-        © <?= date('Y') ?> Cerimonial & Assessoria<br>
+        © <?= date('Y') ?> Meu Evento PRO<br>
         Sistema de Gestão de Eventos
 
     </div>
@@ -396,21 +423,19 @@ function toggleSenha(){
     if(campo.type === 'password'){
 
         campo.type = 'text';
-        icone.classList.remove('bi-eye-fill');
-        icone.classList.add('bi-eye-slash-fill');
+        icone.classList.remove('bi-eye-slash-fill');
+        icone.classList.add('bi-eye-fill');
 
     }else{
 
         campo.type = 'password';
-        icone.classList.remove('bi-eye-slash-fill');
-        icone.classList.add('bi-eye-fill');
+        icone.classList.remove('bi-eye-fill');
+        icone.classList.add('bi-eye-slash-fill');
 
     }
 }
 
 </script>
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
 </body>
 </html>

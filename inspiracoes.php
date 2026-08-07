@@ -1,20 +1,29 @@
 <?php
 session_start();
+require_once 'sessao_timeout.inc.php';
+verificar_sessao_ativa();
 
-// 1. LEÃO DE CHÁCARA INTELIGENTE (Aceita Admin e Noivos)
-if (!isset($_SESSION['usuario_tipo']) || ($_SESSION['usuario_tipo'] !== 'admin' && $_SESSION['usuario_tipo'] !== 'noivos')) {
-    header("Location: index.php");
+// 1. LEÃO DE CHÁCARA INTELIGENTE (Aceita Admin, Assistente e Noivos)
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'noivos'], true)) {
+    header("Location: index.php?sessao_expirada=1");
     exit;
 }
 
 require_once 'conexao.php';
 
-if (!isset($_GET['id']) || empty($_GET['id'])) {
-    die("Acesso negado. Evento inválido.");
-}
+// Apenas admin pode excluir uploads feitos no mural
+$is_admin = ($_SESSION['usuario_tipo'] === 'admin');
 
-$evento_id = (int)$_GET['id'];
-$usuario_atual = $_GET['usuario'] ?? 'Assessoria'; 
+// Noivos só podem ver o próprio evento (ignora manipulação da URL); admin/assistente usam o ?id= normalmente
+if ($_SESSION['usuario_tipo'] === 'noivos') {
+    $evento_id = (int)($_SESSION['evento_id'] ?? 0);
+    if (!$evento_id) { die("Acesso negado. Evento inválido."); }
+} else {
+    if (!isset($_GET['id']) || empty($_GET['id'])) {
+        die("Acesso negado. Evento inválido.");
+    }
+    $evento_id = (int)$_GET['id'];
+}
 
 // Buscar dados do casamento
 $stmt = $pdo->prepare("SELECT e.*, c.nome FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
@@ -29,25 +38,70 @@ $categorias_banco = $stmt_cats->fetchAll(PDO::FETCH_COLUMN);
 
 $categorias_padrao = ['Decoração', 'Buquê', 'Bolo', 'Outros'];
 $todas_categorias = array_unique(array_merge($categorias_padrao, $categorias_banco));
-sort($todas_categorias); 
+sort($todas_categorias);
+
+/* ============================================================
+   CSRF TOKEN
+   ============================================================ */
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
+function verificar_csrf(): void {
+    $token_post    = $_POST['csrf_token']    ?? '';
+    $token_header  = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    $token_enviado = $token_post !== '' ? $token_post : $token_header;
+    if (!hash_equals($_SESSION['csrf_token'], $token_enviado)) {
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => false, 'msg' => 'Token CSRF inválido.']);
+        exit;
+    }
+}
 
 // 1. PROCESSAR SELEÇÃO DE REFERÊNCIA OFICIAL (POST)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['favoritar_foto'])) {
+    verificar_csrf();
     $foto_id = (int)$_POST['foto_id'];
     $status_atual = (int)$_POST['status_atual'];
     $novo_status = $status_atual === 1 ? 0 : 1;
 
     $stmt = $pdo->prepare("UPDATE inspiracoes_fotos SET selecionada = ? WHERE id = ? AND evento_id = ?");
     $stmt->execute([$novo_status, $foto_id, $evento_id]);
-    
-    header("Location: inspiracoes.php?id=" . $evento_id . "&usuario=" . $usuario_atual . "&cat=" . ($_GET['cat'] ?? 'Todos'));
+
+    header("Location: inspiracoes.php?id=" . $evento_id . "&cat=" . ($_GET['cat'] ?? 'Todos'));
+    exit;
+}
+
+// 1b. EXCLUIR UPLOAD (apenas admin)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['excluir_foto'])) {
+    verificar_csrf();
+
+    if ($is_admin) {
+        $foto_id = (int)$_POST['foto_id'];
+
+        $stmt = $pdo->prepare("SELECT nome_imagem FROM inspiracoes_fotos WHERE id = ? AND evento_id = ?");
+        $stmt->execute([$foto_id, $evento_id]);
+        $foto = $stmt->fetch();
+
+        if ($foto) {
+            $caminho_arquivo = './uploads/' . $foto['nome_imagem'];
+            if (is_file($caminho_arquivo)) {
+                @unlink($caminho_arquivo);
+            }
+            $pdo->prepare("DELETE FROM inspiracoes_fotos WHERE id = ? AND evento_id = ?")->execute([$foto_id, $evento_id]);
+        }
+    }
+
+    header("Location: inspiracoes.php?id=" . $evento_id . "&cat=" . ($_GET['cat'] ?? 'Todos'));
     exit;
 }
 
 // 2. PROCESSAR UPLOAD DA FOTO COM CATEGORIA NOVA (POST)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload_foto'])) {
+    verificar_csrf();
     $titulo = trim($_POST['titulo']);
-    $categoria = !empty($_POST['nova_categoria']) ? trim($_POST['nova_categoria']) : $_POST['categoria'];
+    $categoria = !empty($_POST['nova_categoria']) ? trim($_POST['nova_categoria']) : ($_POST['categoria'] ?? '');
     
     if (isset($_FILES['foto_arquivo']) && $_FILES['foto_arquivo']['error'] === UPLOAD_ERR_OK) {
         $fileTmpPath = $_FILES['foto_arquivo']['tmp_name'];
@@ -55,7 +109,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload_foto'])) {
         $fileExtension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
         
         $extensoes_permitidas = ['jpg', 'jpeg', 'png', 'webp'];
-        if (in_array($fileExtension, $extensoes_permitidas)) {
+        if (in_array($fileExtension, $extensoes_permitidas) && @getimagesize($fileTmpPath) !== false) {
             $novo_nome_imagem = "insp_" . $evento_id . "_" . time() . "." . $fileExtension;
             if (move_uploaded_file($fileTmpPath, './uploads/' . $novo_nome_imagem)) {
                 $stmt = $pdo->prepare("INSERT INTO inspiracoes_fotos (evento_id, categoria, titulo, nome_imagem) VALUES (?, ?, ?, ?)");
@@ -63,7 +117,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload_foto'])) {
             }
         }
     }
-    header("Location: inspiracoes.php?id=" . $evento_id . "&usuario=" . $usuario_atual);
+    header("Location: inspiracoes.php?id=" . $evento_id);
     exit;
 }
 
@@ -88,10 +142,10 @@ $fotos = $stmt_fotos->fetchAll();
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mural de Inspirações - <?= htmlspecialchars($evento['nome']) ?></title>
+    <title>Mural de Inspirações - <?= htmlspecialchars($evento['nome']) ?> - Meu Evento PRO</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css">
+    <link rel="stylesheet" href="css/estilo.css?v=8">
     <style>
         /* Estilização Premium para os Cards de Foto */
         .foto-card {
@@ -128,33 +182,38 @@ $fotos = $stmt_fotos->fetchAll();
 </head>
 <body class="bg-light">
 
-<div class="container my-5">
-    
-    <div class="bg-white p-4 rounded-4 shadow-sm mb-4 d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-3 border-top border-4 border-primary">
-        <div class="d-flex align-items-center">
-            <?php $link_voltar = ($_SESSION['usuario_tipo'] === 'noivos') ? "noivos.php" : "gerenciar.php?id=" . $evento_id; ?>
-            <a href="<?= $link_voltar ?>" class="btn btn-outline-secondary btn-sm shadow-sm fw-bold me-3">
-                <i class="bi bi-arrow-left"></i> Voltar
-            </a>
-            <h4 class="mb-0 text-dark fw-bold">Mural: <span class="text-primary"><?= htmlspecialchars($evento['nome']) ?></span></h4>
-        </div>
-        
-        <div class="bg-light p-2 rounded-3 border d-flex align-items-center gap-2">
-            <small class="text-muted fw-bold mb-0"><i class="bi bi-eye-fill"></i> Visão:</small>
-            <a href="inspiracoes.php?id=<?= $evento_id ?>&usuario=Assessoria" class="btn btn-sm <?= $usuario_atual == 'Assessoria' ? 'btn-dark fw-bold' : 'btn-outline-dark' ?> py-1 px-3" style="font-size:0.8rem;">Assessoria</a>
-            <a href="inspiracoes.php?id=<?= $evento_id ?>&usuario=Noivos" class="btn btn-sm <?= $usuario_atual == 'Noivos' ? 'btn-danger fw-bold' : 'btn-outline-danger' ?> py-1 px-3" style="font-size:0.8rem;">Noivos ❤️</a>
-        </div>
+<?php $link_voltar = ($_SESSION['usuario_tipo'] === 'noivos') ? "noivos.php" : "gerenciar.php?id=" . $evento_id; ?>
+<nav class="navbar navbar-dark bg-dark shadow-sm">
+  <div class="container">
+    <span class="navbar-brand mb-0">
+      <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">
+    </span>
+    <div class="d-flex align-items-center gap-2">
+      <a href="<?= $link_voltar ?>" class="btn btn-sm btn-outline-light rounded-3">
+        <i class="bi bi-arrow-left me-1"></i> Voltar
+      </a>
     </div>
+  </div>
+</nav>
+
+<div class="container my-5">
 
     <div class="row g-4 align-items-start">
         
         <div class="col-lg-4">
             <div class="card shadow-sm border-0 rounded-4 position-sticky" style="top: 20px;">
-                <div class="card-header bg-dark text-white p-3 rounded-top-4 text-center">
-                    <h5 class="mb-0 fw-bold"><i class="bi bi-cloud-arrow-up-fill text-primary"></i> Sugerir Referência</h5>
+                <div class="card-header bg-dark text-white p-3 rounded-top-4 text-center" style="cursor:pointer;"
+                     data-bs-toggle="collapse" data-bs-target="#collapseSugerirRef" role="button"
+                     aria-expanded="false" aria-controls="collapseSugerirRef">
+                    <h5 class="mb-0 fw-bold">
+                        <i class="bi bi-cloud-arrow-up-fill text-primary"></i> Sugerir Referência
+                        <i class="bi bi-chevron-down d-md-none ms-1 small"></i>
+                    </h5>
                 </div>
+                <div class="collapse d-md-block" id="collapseSugerirRef">
                 <div class="card-body p-4">
                     <form method="POST" enctype="multipart/form-data">
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                         <input type="hidden" name="upload_foto" value="1">
                         
                         <div class="mb-3">
@@ -194,6 +253,7 @@ $fotos = $stmt_fotos->fetchAll();
                         </button>
                     </form>
                 </div>
+                </div>
             </div>
         </div>
 
@@ -201,17 +261,17 @@ $fotos = $stmt_fotos->fetchAll();
             <div class="card shadow-sm border-0 rounded-4 p-4 mb-4">
                 
                 <div class="d-flex flex-wrap gap-2 mb-4 justify-content-center border-bottom pb-4">
-                    <a href="inspiracoes.php?id=<?= $evento_id ?>&usuario=<?= $usuario_atual ?>&cat=Todos" class="btn btn-sm <?= $categoria_filtrada == 'Todos' ? 'btn-primary shadow-sm fw-bold' : 'btn-light border text-muted' ?> px-4 rounded-pill transition-all">
+                    <a href="inspiracoes.php?id=<?= $evento_id ?>&cat=Todos" class="btn btn-sm <?= $categoria_filtrada == 'Todos' ? 'btn-primary shadow-sm fw-bold' : 'btn-light border text-muted' ?> px-4 rounded-pill transition-all">
                         <i class="bi bi-grid-fill me-1"></i> Tudo
                     </a>
                     
                     <?php foreach($todas_categorias as $c): ?>
-                        <a href="inspiracoes.php?id=<?= $evento_id ?>&usuario=<?= $usuario_atual ?>&cat=<?= urlencode($c) ?>" class="btn btn-sm <?= $categoria_filtrada == $c ? 'btn-primary shadow-sm fw-bold' : 'btn-light border text-muted' ?> px-4 rounded-pill transition-all">
+                        <a href="inspiracoes.php?id=<?= $evento_id ?>&cat=<?= urlencode($c) ?>" class="btn btn-sm <?= $categoria_filtrada == $c ? 'btn-primary shadow-sm fw-bold' : 'btn-light border text-muted' ?> px-4 rounded-pill transition-all">
                             <?= htmlspecialchars($c) ?>
                         </a>
                     <?php endforeach; ?>
                     
-                    <a href="inspiracoes.php?id=<?= $evento_id ?>&usuario=<?= $usuario_atual ?>&cat=Escolhidos" class="btn btn-sm <?= $categoria_filtrada == 'Escolhidos' ? 'btn-danger shadow-sm fw-bold text-white' : 'btn-outline-danger' ?> px-4 rounded-pill ms-lg-auto mt-2 mt-sm-0 transition-all">
+                    <a href="inspiracoes.php?id=<?= $evento_id ?>&cat=Escolhidos" class="btn btn-sm <?= $categoria_filtrada == 'Escolhidos' ? 'btn-danger shadow-sm fw-bold text-white' : 'btn-outline-danger' ?> px-4 rounded-pill ms-lg-auto mt-2 mt-sm-0 transition-all">
                         <i class="bi bi-heart-fill me-1"></i> Escolhidos
                     </a>
                 </div>
@@ -244,19 +304,34 @@ $fotos = $stmt_fotos->fetchAll();
                                             <h6 class="mb-0 text-dark text-truncate fw-bold" style="font-size: 0.9rem;" title="<?= htmlspecialchars($f['titulo']) ?>"><?= htmlspecialchars($f['titulo']) ?></h6>
                                         </div>
                                         
-                                        <form method="POST" action="" class="m-0">
-                                            <input type="hidden" name="favoritar_foto" value="1">
-                                            <input type="hidden" name="foto_id" value="<?= $f['id'] ?>">
-                                            <input type="hidden" name="status_atual" value="<?= $f['selecionada'] ?>">
-                                            
-                                            <button type="submit" class="btn p-0 border-0 bg-transparent btn-fav" title="Alternar Referência">
-                                                <?php if($f['selecionada']): ?>
-                                                    <i class="bi bi-heart-fill text-danger fs-3 drop-shadow"></i>
-                                                <?php else: ?>
-                                                    <i class="bi bi-heart text-secondary opacity-50 fs-3"></i>
-                                                <?php endif; ?>
-                                            </button>
-                                        </form>
+                                        <div class="d-flex align-items-center gap-2">
+                                            <form method="POST" action="" class="m-0">
+                                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
+                                                <input type="hidden" name="favoritar_foto" value="1">
+                                                <input type="hidden" name="foto_id" value="<?= $f['id'] ?>">
+                                                <input type="hidden" name="status_atual" value="<?= $f['selecionada'] ?>">
+
+                                                <button type="submit" class="btn p-0 border-0 bg-transparent btn-fav" title="Alternar Referência">
+                                                    <?php if($f['selecionada']): ?>
+                                                        <i class="bi bi-heart-fill text-danger fs-3 drop-shadow"></i>
+                                                    <?php else: ?>
+                                                        <i class="bi bi-heart text-secondary opacity-50 fs-3"></i>
+                                                    <?php endif; ?>
+                                                </button>
+                                            </form>
+
+                                            <?php if ($is_admin): ?>
+                                            <form method="POST" action="" class="m-0" onsubmit="return confirm('Excluir esta foto do mural? Esta ação não pode ser desfeita.');">
+                                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
+                                                <input type="hidden" name="excluir_foto" value="1">
+                                                <input type="hidden" name="foto_id" value="<?= $f['id'] ?>">
+
+                                                <button type="submit" class="btn p-0 border-0 bg-transparent btn-fav" title="Excluir foto">
+                                                    <i class="bi bi-trash-fill text-secondary opacity-50 fs-5"></i>
+                                                </button>
+                                            </form>
+                                            <?php endif; ?>
+                                        </div>
                                     </div>
                                 </div>
                             </div>

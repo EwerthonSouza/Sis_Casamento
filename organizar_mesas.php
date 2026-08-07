@@ -1,17 +1,45 @@
 <?php
 session_start();
+require_once 'sessao_timeout.inc.php';
+verificar_sessao_ativa();
 
-if (!isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'admin') {
-    header("Location: index.php");
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'noivos'])) {
+    header("Location: index.php?sessao_expirada=1");
     exit;
 }
+$eh_noivos = ($_SESSION['usuario_tipo'] === 'noivos');
 
 require_once 'conexao.php';
 
-$evento_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
-if (!$evento_id) {
-    header("Location: painel_admin.php");
-    exit;
+/* ============================================================
+   CSRF TOKEN
+   ============================================================ */
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
+function verificar_csrf(): void {
+    $token_post    = $_POST['csrf_token']    ?? '';
+    $token_header  = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    $token_enviado = $token_post !== '' ? $token_post : $token_header;
+    if (!hash_equals($_SESSION['csrf_token'], $token_enviado)) {
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => false, 'msg' => 'Token CSRF inválido.']);
+        exit;
+    }
+}
+
+if ($eh_noivos) {
+    // Noivos só podem organizar mesas do próprio evento (ignora manipulação da URL)
+    $evento_id = (int)($_SESSION['evento_id'] ?? 0);
+    if (!$evento_id) { header("Location: index.php"); exit; }
+} else {
+    $evento_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
+    if (!$evento_id) {
+        header("Location: painel_admin.php");
+        exit;
+    }
 }
 
 /* ============================================================
@@ -50,13 +78,15 @@ function json_out($data) {
    POST HANDLERS
    ============================================================ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    
+
+    verificar_csrf();
+
     $is_ajax_html = isset($_POST['ajax_html']);
 
     // AJAX: Mover convidado (Drag & Drop)
     if (isset($_POST['mover_convidado_ajax'])) {
-        $cid = (int)$_POST['convidado_id'];
-        $mid = (int)$_POST['nova_mesa_id'] ?: null;
+        $cid = (int)($_POST['convidado_id'] ?? 0);
+        $mid = (int)($_POST['nova_mesa_id'] ?? 0) ?: null;
         $pdo->prepare("UPDATE convidados SET mesa_id = ? WHERE id = ? AND evento_id = ?")
             ->execute([$mid, $cid, $evento_id]);
         
@@ -65,7 +95,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // AJAX: Reordenar mesas
     if (isset($_POST['reordenar_mesas_ajax'])) {
-        $ordem = json_decode($_POST['ordem_mesas'], true);
+        $ordem = json_decode($_POST['ordem_mesas'] ?? '', true);
         if (is_array($ordem)) {
             $st = $pdo->prepare("UPDATE mesas SET ordem = ? WHERE id = ? AND evento_id = ?");
             foreach ($ordem as $i => $id) $st->execute([$i, (int)$id, $evento_id]);
@@ -83,6 +113,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->prepare("INSERT INTO mesas (evento_id, nome, capacidade, ordem) VALUES (?, ?, ?, ?)")
                 ->execute([$evento_id, $nome, $cap, (int)$st->fetchColumn() + 1]);
             $_SESSION['msg_sucesso'] = "Mesa <strong>" . htmlspecialchars($nome) . "</strong> criada com sucesso!";
+        } else {
+            $_SESSION['msg_erro'] = "Informe um nome e uma capacidade válida (maior que zero) para a mesa.";
         }
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
     }
@@ -96,6 +128,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->prepare("UPDATE mesas SET nome = ?, capacidade = ? WHERE id = ? AND evento_id = ?")
                 ->execute([$nome, $cap, $mid, $evento_id]);
             $_SESSION['msg_sucesso'] = "Mesa <strong>" . htmlspecialchars($nome) . "</strong> atualizada!";
+        } else {
+            $_SESSION['msg_erro'] = "Informe um nome e uma capacidade válida (maior que zero) para a mesa.";
         }
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
     }
@@ -114,6 +148,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             for ($i = 0; $i < $qtd; $i++)
                 $ins->execute([$evento_id, $pfx . ' ' . str_pad($ini + $i, 2, '0', STR_PAD_LEFT), $cap, ++$maxO]);
             $_SESSION['msg_sucesso'] = "<strong>$qtd mesa(s)</strong> criada(s) com sucesso!";
+        } else {
+            $_SESSION['msg_erro'] = "Preencha o prefixo, a quantidade e a capacidade corretamente.";
         }
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
     }
@@ -152,6 +188,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($cid > 0 && $mid > 0) {
             $pdo->prepare("UPDATE convidados SET mesa_id = ? WHERE id = ? AND evento_id = ?")
                 ->execute([$mid, $cid, $evento_id]);
+        }
+        if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
+    }
+
+    // 7b. Adicionar Convidado (novo, vai direto pra fila de espera)
+    if (isset($_POST['adicionar_convidado'])) {
+        $nome       = trim($_POST['nome_convidado']      ?? '');
+        $fone       = trim($_POST['telefone_convidado']  ?? '');
+        $cat        = trim($_POST['categoria_convidado'] ?? 'Outros');
+        $acomp_qtd  = max(0, (int)($_POST['acompanhantes']      ?? 0));
+        $acomp_nms  = trim($_POST['nomes_acompanhantes'] ?? '');
+        $filhos_qtd = max(0, (int)($_POST['filhos']             ?? 0));
+        $filhos_ids = trim($_POST['idades_filhos']       ?? '');
+        if ($nome !== '') {
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)")
+                ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids]);
+            $_SESSION['msg_sucesso'] = "Convidado <strong>" . htmlspecialchars($nome) . "</strong> adicionado à fila!";
+        } else {
+            $_SESSION['msg_erro'] = "Informe o nome do convidado.";
         }
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
     }
@@ -211,6 +266,9 @@ foreach ($lista_mesas as $m) $total_cap += (int)$m['capacidade'];
 $total_conv   = count($todos);
 $total_livres = $total_cap - $total_alocados;
 
+$categorias_existentes = array_values(array_unique(array_filter(array_map(fn($c) => trim($c['categoria']), $todos))));
+sort($categorias_existentes);
+
 $msg_ok  = $_SESSION['msg_sucesso'] ?? '';
 $msg_err = $_SESSION['msg_erro'] ?? '';
 unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
@@ -220,14 +278,14 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Organizar Mesas — <?= htmlspecialchars($evento['nome']) ?></title>
+  <title>Organizar Mesas — <?= htmlspecialchars($evento['nome']) ?> - Meu Evento PRO</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css">
+  <link rel="stylesheet" href="css/estilo.css?v=8">
 
   <style>
     :root { --radius: 12px; }
-    body  { background: #f1f5f9; }
+    body  { background: var(--bg-app); }
 
     #overlay {
       position: fixed; top: 1.5rem; right: 1.5rem;
@@ -239,10 +297,42 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     #overlay.show { display: flex; }
     #overlay .spinner-border { width: 1.1rem; height: 1.1rem; border-width: 2px; }
 
-    .hdr { background: linear-gradient(135deg, #0f172a 0%, #1a3a5c 100%); border-radius: var(--radius); }
-    .stat { background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12); border-radius: 10px; padding: .8rem 1rem; text-align: center; color: #fff; }
+    .hdr { background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); border-radius: var(--radius); }
+    .stat {
+      background: var(--color-primary-light); border: 1px solid rgba(0,0,0,.08);
+      border-radius: var(--radius); padding: .85rem 1rem; color: var(--color-primary-dark);
+      display: flex; align-items: center; gap: .75rem;
+      transition: box-shadow .2s ease, transform .15s ease;
+    }
+    .stat:hover { box-shadow: 0 6px 16px rgba(0,0,0,.14); transform: translateY(-2px); }
+    .stat-icon {
+      width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(255,255,255,.7); font-size: 1.05rem;
+    }
     .stat .val { font-size: 1.75rem; font-weight: 700; line-height: 1; }
-    .stat .lbl { font-size: .65rem; opacity: .6; text-transform: uppercase; letter-spacing: .05em; margin-top: .3rem; }
+    .stat .lbl { font-size: .65rem; opacity: .7; text-transform: uppercase; letter-spacing: .05em; margin-top: .3rem; }
+
+    @media (min-width: 768px) {
+      .stat { position: relative; justify-content: center; }
+      .stat-icon { position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); }
+      .stat-body { text-align: center; }
+    }
+
+    @media (max-width: 767.98px) {
+      .stat { flex-direction: column; align-items: flex-start; gap: 0; padding: .75rem; }
+      .stat-icon { width: 26px; height: 26px; font-size: .75rem; border-radius: 7px; }
+      .stat-body { width: 100%; text-align: center; }
+      .stat-body .val { margin-top: -1rem; }
+
+      .titulo-mesas-wrap { width: 100%; text-align: center; }
+      .header-actions-mesas { justify-content: center; width: 100%; }
+      .header-actions-mesas .btn-nova-mesa        { order: 1; }
+      .header-actions-mesas .btn-lote-mesas       { order: 2; }
+      .header-actions-mesas .quebra-mesas-mobile  { order: 3; }
+      .header-actions-mesas .btn-add-convidado-topo { order: 4; }
+      .header-actions-mesas .btn-imprimir-mesas   { order: 5; }
+    }
 
     .conv-item { border-left: 4px solid transparent !important; cursor: grab; transition: background .1s, box-shadow .1s; user-select: none; }
     .conv-item:active { cursor: grabbing; }
@@ -297,11 +387,24 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       #col-fila { display: none !important; }
       .mesa-card { break-inside: avoid; page-break-inside: avoid; }
       .scroll-m  { max-height: none !important; overflow: visible !important; }
-      .hdr { background: #1e293b !important; -webkit-print-color-adjust: exact; }
+      .hdr { background: #8b5e3c !important; -webkit-print-color-adjust: exact; }
     }
   </style>
 </head>
 <body>
+
+<nav class="navbar navbar-dark bg-dark shadow-sm no-print">
+  <div class="container-fluid px-3 px-lg-4">
+    <span class="navbar-brand mb-0">
+      <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">
+    </span>
+    <div class="d-flex align-items-center gap-2">
+      <a href="<?= $eh_noivos ? 'noivos.php' : 'gerenciar.php?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-3">
+        <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
+      </a>
+    </div>
+  </div>
+</nav>
 
 <div id="overlay" class="no-print">
   <div class="spinner-border text-primary" role="status"></div>
@@ -334,10 +437,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
        ========================================================= -->
   <div class="hdr p-4 mb-4 no-print">
     <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
-      <div>
-        <a href="gerenciar.php?id=<?= $evento_id ?>" class="btn btn-sm btn-outline-light rounded-pill mb-3 opacity-75">
-          <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
-        </a>
+      <div class="titulo-mesas-wrap">
         <h4 class="fw-bold text-white mb-1">
           <i class="bi bi-grid-3x3-gap-fill text-info me-2"></i> Organização de Mesas
         </h4>
@@ -346,25 +446,57 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         </p>
       </div>
 
-      <div class="d-flex flex-wrap gap-2 align-items-center">
-        <button class="btn btn-sm btn-outline-light rounded-pill opacity-75" onclick="window.print()" title="Imprimir mapa de mesas">
+      <div class="d-flex flex-wrap gap-2 align-items-center header-actions-mesas">
+        <button class="btn btn-sm btn-outline-light rounded-pill opacity-75 btn-imprimir-mesas" onclick="window.print()" title="Imprimir mapa de mesas">
           <i class="bi bi-printer me-1"></i> Imprimir
         </button>
-        <button class="btn btn-sm btn-light rounded-pill text-dark fw-semibold" data-bs-toggle="modal" data-bs-target="#modalLote">
+        <button class="btn btn-sm btn-light rounded-pill text-dark fw-semibold btn-lote-mesas" data-bs-toggle="modal" data-bs-target="#modalLote">
           <i class="bi bi-layers me-1"></i> Criar em Lote
         </button>
-        <button class="btn btn-sm btn-success rounded-pill fw-semibold shadow-sm px-3" data-bs-toggle="modal" data-bs-target="#modalAdd">
+        <button class="btn btn-sm btn-success rounded-pill fw-semibold shadow-sm px-3 btn-nova-mesa" data-bs-toggle="modal" data-bs-target="#modalAdd">
           <i class="bi bi-plus-lg me-1"></i> Nova Mesa
+        </button>
+        <div class="w-100 d-md-none quebra-mesas-mobile"></div>
+        <button class="btn btn-sm btn-info rounded-pill text-dark fw-semibold shadow-sm px-3 btn-add-convidado-topo" data-bs-toggle="modal" data-bs-target="#modalAddConvidado">
+          <i class="bi bi-person-plus-fill me-1"></i> Adicionar Convidado
         </button>
       </div>
     </div>
 
     <!-- Estatísticas -->
+    <?php
+      $cls_sem_mesa = 'text-danger';
+      $cls_livres   = $total_livres < 0 ? 'text-danger' : ($total_livres <= 5 && $total_livres >= 0 ? 'text-warning' : 'text-success');
+    ?>
     <div class="row g-2 mt-3">
-      <div class="col-6 col-sm-3"><div class="stat"><div class="val"><?= $total_conv ?></div><div class="lbl">Convites</div></div></div>
-      <div class="col-6 col-sm-3"><div class="stat"><div class="val text-info"><?= $total_conf ?></div><div class="lbl">Confirmados</div></div></div>
-      <div class="col-6 col-sm-3"><div class="stat"><div class="val <?= count($sem_mesa) > 0 ? 'text-warning' : 'text-success' ?>"><?= count($sem_mesa) ?></div><div class="lbl">Sem Mesa</div></div></div>
-      <div class="col-6 col-sm-3"><div class="stat"><div class="val <?= $total_livres < 0 ? 'text-danger' : ($total_livres <= 5 && $total_livres >= 0 ? 'text-warning' : 'text-success') ?>"><?= $total_livres ?></div><div class="lbl">Cadeiras Livres</div></div></div>
+      <div class="col-6 col-sm-3">
+        <div class="stat">
+          <span class="stat-icon text-primary"><i class="bi bi-envelope-fill"></i></span>
+          <div class="stat-body"><div class="val"><?= $total_conv ?></div><div class="lbl">Convites</div></div>
+        </div>
+      </div>
+      <div class="col-6 col-sm-3">
+        <div class="stat">
+          <span class="stat-icon text-info"><i class="bi bi-check-circle-fill"></i></span>
+          <div class="stat-body"><div class="val text-info"><?= $total_conf ?></div><div class="lbl">Confirmados</div></div>
+        </div>
+      </div>
+      <div class="col-6 col-sm-3">
+        <div class="stat">
+          <span class="stat-icon <?= $cls_sem_mesa ?>"><i class="bi bi-exclamation-triangle-fill"></i></span>
+          <div class="stat-body"><div class="val <?= $cls_sem_mesa ?>"><?= count($sem_mesa) ?></div><div class="lbl">Sem Mesa</div></div>
+        </div>
+      </div>
+      <div class="col-6 col-sm-3">
+        <div class="stat">
+          <span class="stat-icon <?= $cls_livres ?>">
+            <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4 1.5A1.5 1.5 0 0 1 5.5 0h5A1.5 1.5 0 0 1 12 1.5v6a1.5 1.5 0 0 1-1.5 1.5H11v5.5a.5.5 0 0 1-1 0V11H6v3.5a.5.5 0 0 1-1 0V9h-.5A1.5 1.5 0 0 1 3 7.5v-6A1.5 1.5 0 0 1 4 1.5zm1.5-.5a.5.5 0 0 0-.5.5v6a.5.5 0 0 0 .5.5h5a.5.5 0 0 0 .5-.5v-6a.5.5 0 0 0-.5-.5h-5z"/>
+            </svg>
+          </span>
+          <div class="stat-body"><div class="val <?= $cls_livres ?>"><?= $total_livres ?></div><div class="lbl">Cadeiras Livres</div></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -387,7 +519,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
             <input type="text" id="busca" class="form-control rounded-pill" placeholder="Buscar convidado...">
           </div>
 
-          <div class="d-flex gap-1" id="filtros-wrap">
+          <div class="d-flex gap-1 justify-content-center justify-content-lg-start" id="filtros-wrap">
             <button class="btn btn-primary btn-sm rounded-pill active" data-f="todos" style="font-size:.7rem;padding:.25rem .6rem;">Todos</button>
             <button class="btn btn-outline-success btn-sm rounded-pill" data-f="confirmado" style="font-size:.7rem;padding:.25rem .6rem;">✓ Confirm.</button>
             <button class="btn btn-outline-warning btn-sm rounded-pill" data-f="pendente" style="font-size:.7rem;padding:.25rem .6rem;">⏳ Pendente</button>
@@ -657,6 +789,69 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   </div>
 </div>
 
+<!-- Modal: Adicionar Convidado -->
+<div class="modal fade" id="modalAddConvidado" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header border-0 pb-0">
+        <h6 class="modal-title fw-bold"><i class="bi bi-person-plus-fill text-info me-2"></i>Adicionar Convidado</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="POST" class="form-ajax">
+        <input type="hidden" name="adicionar_convidado" value="1">
+        <div class="modal-body py-3">
+          <div class="mb-3">
+            <label class="form-label small fw-semibold text-secondary">Nome do Convidado / Família (Titular)</label>
+            <input type="text" name="nome_convidado" class="form-control rounded-3" required>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold text-secondary">Categoria / Grupo</label>
+              <input type="text" name="categoria_convidado" class="form-control rounded-3" list="lista-categorias-mesas" placeholder="Ex: Padrinhos..." required>
+              <datalist id="lista-categorias-mesas">
+                <?php if (!empty($categorias_existentes)): foreach ($categorias_existentes as $catEx): ?>
+                  <option value="<?= htmlspecialchars($catEx, ENT_QUOTES, 'UTF-8') ?>">
+                <?php endforeach; else: ?>
+                  <option value="Família"><option value="Amigos"><option value="Trabalho">
+                <?php endif; ?>
+              </datalist>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
+              <input type="text" name="telefone_convidado" class="form-control rounded-3" placeholder="(00) 00000-0000">
+            </div>
+          </div>
+          <hr class="my-3 text-secondary opacity-25">
+          <div class="row g-3 mb-3">
+            <div class="col-4">
+              <label class="form-label small fw-semibold text-secondary">Acompanhantes</label>
+              <input type="number" min="0" name="acompanhantes" class="form-control rounded-3" value="0">
+            </div>
+            <div class="col-8">
+              <label class="form-label small fw-semibold text-secondary">Nomes (separados por vírgula)</label>
+              <input type="text" name="nomes_acompanhantes" class="form-control rounded-3" placeholder="Ex: Maria, João...">
+            </div>
+          </div>
+          <div class="row g-3">
+            <div class="col-4">
+              <label class="form-label small fw-semibold text-secondary">Filhos</label>
+              <input type="number" min="0" name="filhos" class="form-control rounded-3" value="0">
+            </div>
+            <div class="col-8">
+              <label class="form-label small fw-semibold text-secondary">Idades (separadas por vírgula)</label>
+              <input type="text" name="idades_filhos" class="form-control rounded-3" placeholder="Ex: 5 anos, 12 anos...">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer border-0 pt-0">
+          <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
+          <button type="submit" class="btn btn-info btn-sm px-4 rounded-pill fw-semibold">Adicionar à Fila</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: Add Mesa -->
 <div class="modal fade" id="modalAdd" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered modal-sm">
@@ -738,6 +933,8 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
 
 <script>
+const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;
+
 document.addEventListener('DOMContentLoaded', function () {
 
   document.querySelectorAll('.toast').forEach(el => bootstrap.Toast.getOrCreateInstance(el).show());
@@ -826,6 +1023,7 @@ document.addEventListener('DOMContentLoaded', function () {
   async function processAjaxAction(formData, actionType = 'full') {
     overlay.classList.add('show');
     formData.append('ajax_html', '1');
+    formData.append('csrf_token', CSRF_TOKEN);
 
     try {
       const resp = await fetch(window.location.href, { method: 'POST', body: formData });
@@ -913,7 +1111,7 @@ document.addEventListener('DOMContentLoaded', function () {
   document.addEventListener('submit', function(e) {
     const form = e.target;
     // Note a adição do 'alternar_confirmacao'
-    const isAction = form.querySelector('[name="adicionar_mesa"], [name="editar_mesa"], [name="criar_multiplas_mesas"], [name="excluir_mesa"], [name="esvaziar_mesa"], [name="remover_da_mesa"], [name="adicionar_convidado_mesa"], [name="alternar_confirmacao"]');
+    const isAction = form.querySelector('[name="adicionar_mesa"], [name="editar_mesa"], [name="criar_multiplas_mesas"], [name="excluir_mesa"], [name="esvaziar_mesa"], [name="remover_da_mesa"], [name="adicionar_convidado_mesa"], [name="adicionar_convidado"], [name="alternar_confirmacao"]');
 
     if (isAction) {
       e.preventDefault();
@@ -982,7 +1180,8 @@ document.addEventListener('DOMContentLoaded', function () {
           const fd = new FormData();
           fd.append('reordenar_mesas_ajax', '1');
           fd.append('ordem_mesas', JSON.stringify(ordem));
-          fetch(window.location.href, { method: 'POST', body: fd }); 
+          fd.append('csrf_token', CSRF_TOKEN);
+          fetch(window.location.href, { method: 'POST', body: fd });
         }
       });
       sortables.push(sg);

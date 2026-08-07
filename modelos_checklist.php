@@ -1,16 +1,39 @@
 <?php
 session_start();
+require_once 'sessao_timeout.inc.php';
+verificar_sessao_ativa();
 
 // Proteção da página: Apenas administradores
 if (!isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'admin') {
-    header("Location: index.php");
+    header("Location: index.php?sessao_expirada=1");
     exit;
 }
 
 require_once 'conexao.php';
 
+/* ============================================================
+   CSRF TOKEN
+   ============================================================ */
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
+function verificar_csrf(): void {
+    $token_post    = $_POST['csrf_token']    ?? '';
+    $token_header  = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    $token_enviado = $token_post !== '' ? $token_post : $token_header;
+    if (!hash_equals($_SESSION['csrf_token'], $token_enviado)) {
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => false, 'msg' => 'Token CSRF inválido.']);
+        exit;
+    }
+}
+
 // --- PROCESSAMENTO DOS FORMULÁRIOS ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+    verificar_csrf();
 
     // 1. CADASTRAR NOVO MODELO
     if (isset($_POST['cadastrar_modelo'])) {
@@ -97,6 +120,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['aba_ativa'] = $original['tipo_padrao'];
                 $_SESSION['etapa_aberta'] = $original['etapa'];
             }
+        } else {
+            $_SESSION['mensagem'] = "Tarefa original não encontrada para duplicar.";
+            $_SESSION['tipo_msg'] = "danger";
         }
         header("Location: " . $_SERVER['PHP_SELF']);
         exit;
@@ -137,10 +163,10 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Modelos de Checklist</title>
+    <title>Modelos de Checklist - Meu Evento PRO</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css">
+    <link rel="stylesheet" href="css/estilo.css?v=8">
     <style>
         .tarefa-row { transition: background-color .15s; }
         .tarefa-row:hover { background-color: #f8f9fa; }
@@ -150,23 +176,59 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
         .table td, .table th { vertical-align: middle; }
         .accordion-button:not(.collapsed) { font-weight: 700; }
         .highlight { background-color: #fff3cd !important; transition: background-color 1s; }
+        .busca-group { max-width: 220px; }
+
+        @media (max-width: 767.98px) {
+            .busca-group { max-width: 100%; }
+        }
+
+        @media (max-width: 575.98px) {
+            .badge.fs-6 { font-size: .75rem !important; }
+            .card-header { padding: .75rem 1rem; }
+            .accordion-button { font-size: .9rem; padding: .6rem .75rem; }
+            .table td, .table th { font-size: .82rem; padding: .5rem .4rem; }
+            .table th { white-space: nowrap; }
+
+            #checklistTabs { flex-wrap: nowrap; }
+            #checklistTabs .nav-item { flex: 1 1 50%; min-width: 0; }
+            #checklistTabs .nav-link {
+                padding: .5rem .35rem; font-size: .78rem;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                display: flex; align-items: center; justify-content: center; gap: .3rem;
+            }
+
+            .cabecalho-checklist-texto h2 { line-height: 1.25; letter-spacing: -.2px; }
+            .cabecalho-checklist-texto p { font-size: .82rem; line-height: 1.4; }
+
+            .badges-tipo-checklist { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+            .badges-tipo-checklist .badge.fs-6 { font-size: .68rem !important; padding: .4rem .55rem; white-space: nowrap; }
+        }
     </style>
 </head>
 <body class="bg-light">
+<nav class="navbar navbar-dark bg-dark shadow-sm">
+  <div class="container">
+    <span class="navbar-brand mb-0">
+      <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">
+    </span>
+    <div class="d-flex align-items-center gap-2">
+      <a href="painel_admin.php" class="btn btn-sm btn-outline-light rounded-3">
+        <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
+      </a>
+    </div>
+  </div>
+</nav>
 
-<div class="container my-5">
+<div class="container my-3 my-md-5">
 
     <!-- Cabeçalho -->
-    <div class="bg-white p-4 rounded shadow-sm mb-4 d-flex align-items-start justify-content-between flex-wrap gap-2">
-        <div>
-            <a href="painel_admin.php" class="btn btn-sm btn-outline-secondary mb-2">
-                <i class="bi bi-arrow-left"></i> Voltar ao Painel
-            </a>
-            <h2 class="mb-0"><i class="bi bi-list-check text-primary"></i> Gerenciar Modelos de Checklist</h2>
+    <div class="bg-white p-3 p-md-4 rounded shadow-sm mb-4 d-flex align-items-start justify-content-between flex-wrap gap-2">
+        <div class="cabecalho-checklist-texto">
+            <h2 class="mb-0 fs-5 fs-md-2"><i class="bi bi-list-check text-primary me-1"></i> Gerenciar Modelos de Checklist</h2>
             <p class="text-muted mb-0 mt-1">Crie e edite as tarefas padrão que poderão ser importadas para os eventos.</p>
         </div>
-        <div class="text-end">
-            <span class="badge bg-success fs-6 me-1"><?= $total_com ?> tarefas COM recepção</span>
+        <div class="d-flex flex-nowrap gap-2 badges-tipo-checklist">
+            <span class="badge bg-success fs-6"><?= $total_com ?> tarefas COM recepção</span>
             <span class="badge bg-secondary fs-6"><?= $total_sem ?> tarefas SEM recepção</span>
         </div>
     </div>
@@ -184,12 +246,13 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
 
         <!-- Formulário de cadastro -->
         <div class="col-md-4">
-            <div class="card shadow-sm sticky-top" style="top: 1rem;">
+            <div class="card shadow-sm sticky-md-top" style="top: 1rem;">
                 <div class="card-header bg-primary text-white fw-bold">
                     <i class="bi bi-plus-circle"></i> Nova Tarefa Padrão
                 </div>
                 <div class="card-body">
                     <form method="POST" action="" id="formCadastrar" novalidate>
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                         <div class="mb-3">
                             <label class="form-label fw-bold">Padrão do Evento <span class="text-danger">*</span></label>
                             <select name="tipo_padrao" class="form-select" required id="selectTipoPadrao">
@@ -225,11 +288,11 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
         <!-- Tabela de tarefas cadastradas -->
         <div class="col-md-8">
             <div class="card shadow-sm">
-                <div class="card-header bg-dark text-white d-flex align-items-center justify-content-between flex-wrap gap-2">
+                <div class="card-header bg-dark text-white d-flex flex-column flex-md-row align-items-stretch align-items-md-center justify-content-between gap-2">
                     <span><i class="bi bi-table"></i> Tarefas Cadastradas</span>
                     <!-- Campo de busca -->
                     <div class="d-flex align-items-center gap-2">
-                        <div class="input-group input-group-sm" style="max-width: 220px;">
+                        <div class="input-group input-group-sm busca-group">
                             <span class="input-group-text bg-secondary border-0 text-white"><i class="bi bi-search"></i></span>
                             <input type="text" id="campoBusca" class="form-control form-control-sm border-0" placeholder="Filtrar tarefas...">
                         </div>
@@ -264,10 +327,13 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
                     <div class="tab-content" id="checklistTabsContent">
 
                         <?php
-                        function renderizarTabela(array $modelos, string $cor, string $id_aba, ?int $etapa_aberta): void {
+                        function renderizarTabela(array $modelos, string $cor, string $id_aba, ?int $etapa_aberta): string {
+                            global $csrf_token;
+                            $modais_html = '';
+
                             if (empty($modelos)) {
                                 echo '<p class="text-muted text-center py-4"><i class="bi bi-inbox fs-4 d-block mb-1"></i>Nenhuma tarefa cadastrada nesta aba.</p>';
-                                return;
+                                return '';
                             }
 
                             $cores_etapa = ['primary', 'success', 'warning', 'danger', 'info', 'dark', 'secondary'];
@@ -293,7 +359,52 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
                                     </h2>
                                     <div id="' . $collapseId . '" class="accordion-collapse collapse ' . ($abrir ? 'show' : '') . '">
                                         <div class="accordion-body p-0">
-                                            <div class="table-responsive">
+
+                                            <!-- Visão mobile: cards empilhados -->
+                                            <div class="d-md-none lista-tarefas">';
+
+                                foreach ($tarefas as $mod) {
+                                    $id          = (int)$mod['id'];
+                                    $tarefa_html = htmlspecialchars($mod['tarefa']);
+                                    $desc_html   = htmlspecialchars($mod['descricao'] ?? '');
+                                    $tipo_padrao = htmlspecialchars($mod['tipo_padrao']);
+                                    $etapa_val   = (int)$mod['etapa'];
+
+                                    echo '
+                                    <div class="tarefa-row p-3 border-bottom" data-tarefa="' . strtolower($tarefa_html) . '" data-desc="' . strtolower($desc_html) . '">
+                                        <div class="fw-semibold">' . $tarefa_html . '</div>
+                                        <div class="desc-cell text-muted small mt-1">' . (empty($desc_html) ? '<em class="text-muted">—</em>' : nl2br($desc_html)) . '</div>
+                                        <div class="d-flex justify-content-end gap-1 flex-wrap mt-2">
+
+                                            <!-- Botão Editar -->
+                                            <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal"
+                                                data-bs-target="#modalEditar' . $id . '" title="Editar tarefa">
+                                                <i class="bi bi-pencil"></i>
+                                            </button>
+
+                                            <!-- Botão Duplicar -->
+                                            <form method="POST" class="d-inline">
+                                                <input type="hidden" name="csrf_token" value="' . htmlspecialchars($csrf_token) . '">
+                                                <input type="hidden" name="id_duplicar" value="' . $id . '">
+                                                <button type="submit" name="duplicar_modelo" class="btn btn-sm btn-outline-info" title="Duplicar tarefa">
+                                                    <i class="bi bi-copy"></i>
+                                                </button>
+                                            </form>
+
+                                            <!-- Botão Excluir (abre modal de confirmação) -->
+                                            <button type="button" class="btn btn-sm btn-outline-danger" title="Excluir tarefa"
+                                                data-bs-toggle="modal" data-bs-target="#modalExcluir' . $id . '">
+                                                <i class="bi bi-trash"></i>
+                                            </button>
+                                        </div>
+                                    </div>';
+                                }
+
+                                echo '
+                                            </div>
+
+                                            <!-- Visão desktop: tabela -->
+                                            <div class="table-responsive d-none d-md-block">
                                                 <table class="table table-hover mb-0">
                                                     <thead class="table-light">
                                                         <tr>
@@ -328,6 +439,7 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
 
                                                 <!-- Botão Duplicar -->
                                                 <form method="POST" class="d-inline">
+                                                    <input type="hidden" name="csrf_token" value="' . htmlspecialchars($csrf_token) . '">
                                                     <input type="hidden" name="id_duplicar" value="' . $id . '">
                                                     <button type="submit" name="duplicar_modelo" class="btn btn-sm btn-outline-info" title="Duplicar tarefa">
                                                         <i class="bi bi-copy"></i>
@@ -341,8 +453,9 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
                                                 </button>
                                             </div>
                                         </td>
-                                    </tr>
+                                    </tr>';
 
+                                    $modais_html .= '
                                     <!-- Modal Editar -->
                                     <div class="modal fade text-start" id="modalEditar' . $id . '" tabindex="-1" aria-hidden="true">
                                         <div class="modal-dialog modal-dialog-centered">
@@ -353,6 +466,7 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
                                                 </div>
                                                 <form method="POST" action="" class="needs-validation" novalidate>
                                                     <div class="modal-body">
+                                                        <input type="hidden" name="csrf_token" value="' . htmlspecialchars($csrf_token) . '">
                                                         <input type="hidden" name="id_editar" value="' . $id . '">
                                                         <div class="mb-3">
                                                             <label class="form-label fw-bold">Padrão <span class="text-danger">*</span></label>
@@ -403,6 +517,7 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
                                                 <div class="modal-footer border-0 justify-content-center gap-2">
                                                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
                                                     <form method="POST" action="">
+                                                        <input type="hidden" name="csrf_token" value="' . htmlspecialchars($csrf_token) . '">
                                                         <input type="hidden" name="id_excluir" value="' . $id . '">
                                                         <input type="hidden" name="aba_retorno" value="' . $tipo_padrao . '">
                                                         <button type="submit" name="excluir_modelo" class="btn btn-danger">
@@ -424,15 +539,21 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
                                 </div>';
                             }
                             echo '</div>';
+
+                            // Retorna (não ecoa) o HTML dos modais: eles precisam ser impressos fora
+                            // do .card (que tem backdrop-filter no CSS global). backdrop-filter cria
+                            // um novo contexto de empilhamento, prendendo o modal atrás do próprio
+                            // backdrop do Bootstrap e deixando-o sem receber cliques.
+                            return $modais_html;
                         }
                         ?>
 
                         <div class="tab-pane fade <?= $aba_ativa === 'com_recepcao' ? 'show active' : '' ?>" id="com-pane" role="tabpanel">
-                            <?php renderizarTabela($modelos_com_recepcao, 'success', 'com_recepcao', $etapa_aberta); ?>
+                            <?php $modais_com_html = renderizarTabela($modelos_com_recepcao, 'success', 'com_recepcao', $etapa_aberta); ?>
                         </div>
 
                         <div class="tab-pane fade <?= $aba_ativa === 'sem_recepcao' ? 'show active' : '' ?>" id="sem-pane" role="tabpanel">
-                            <?php renderizarTabela($modelos_sem_recepcao, 'secondary', 'sem_recepcao', $etapa_aberta); ?>
+                            <?php $modais_sem_html = renderizarTabela($modelos_sem_recepcao, 'secondary', 'sem_recepcao', $etapa_aberta); ?>
                         </div>
 
                     </div>
@@ -442,6 +563,10 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
 
     </div><!-- /row -->
 </div><!-- /container -->
+
+<!-- Modais impressos fora do .card (veja comentário em renderizarTabela) -->
+<?= $modais_com_html ?? '' ?>
+<?= $modais_sem_html ?? '' ?>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>

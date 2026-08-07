@@ -5,12 +5,33 @@
 
 :root {
     /* Paleta de Cores (Definida por nome/função, não por lugar) */
-    --color-primary: #6366f1;
-    --color-primary-dark: #4f46e5;
+    --color-primary: #a9744f;
+    --color-primary-dark: #8b5e3c;
+    --color-primary-light: #f2e4d8;
+    --bg-app: #faf7f4;
     --color-success: #22c55e;
     --color-warning: #f59e0b;
     --color-danger: #dc2626;
-    
+
+    /* Repassa o marrom como cor "primary" do Bootstrap, pra cascatear
+       automaticamente pra componentes que usam var(--bs-primary) direto
+       (acordeão, links, spinners, etc.) sem precisar sobrescrever cada um. */
+    --bs-primary: #a9744f;
+    --bs-primary-rgb: 169, 116, 79;
+    /* Mesma ideia pro "bg-light"/"text-bg-light" do Bootstrap: várias páginas
+       usam <body class="bg-light">, então trocamos o tom cinza padrão por um
+       branco quente pra combinar com o novo fundo claro. */
+    --bs-light: #faf7f4;
+    --bs-light-rgb: 250, 247, 244;
+
+    /* Cores nomeadas usadas em várias páginas (checklist, convidados, barras de progresso).
+       Antes cada página redeclarava essas variáveis no próprio <style>; centralizadas aqui
+       para o estilo.css funcionar sozinho em qualquer tela que o inclua. */
+    --verde: #22c55e;
+    --amarel: #f59e0b;
+    --vermelho: #ef4444;
+    --azul: #3b82f6;
+
     /* Espaçamentos Padronizados (Escalabilidade) */
     --space-xs: 0.25rem;
     --space-sm: 0.5rem;
@@ -26,10 +47,37 @@
     --radius-sm: 8px;
     --radius-md: 12px;
     --radius-lg: 20px;
-    
+
     /* Transições */
     --transition-fast: 0.15s ease;
     --transition-slow: 0.3s ease;
+}
+
+/* Rolagem suave em toda a aplicação (âncoras, campos de busca que abrem seções) */
+html {
+    scroll-behavior: smooth;
+}
+
+/* Respeita quem configurou o sistema para reduzir movimento */
+@media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* Evita o zoom automático que o iOS Safari aplica ao focar um campo
+   com font-size menor que 16px. Isso afeta qualquer input/select/textarea
+   pequeno (form-control-sm do Bootstrap já vem com 14px, e várias páginas
+   têm campos ainda menores nos próprios estilos internos), então a regra
+   precisa de !important para vencer essas classes mais específicas. */
+@media (max-width: 767.98px) {
+    input, select, textarea {
+        font-size: 16px !important;
+    }
 }
 
 /* ============================================================
@@ -37,7 +85,7 @@
    ============================================================ */
 body {
     font-family: var(--bs-font-sans-serif);
-    background-color: var(--bs-body-bg);
+    background-color: var(--bg-app);
     color: var(--bs-body-color);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -129,17 +177,30 @@ body {
     transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .btn-primary {
-    background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+    background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
     border: none;
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
+    box-shadow: 0 4px 12px rgba(169, 116, 79, 0.25);
 }
 .btn-primary:hover {
     transform: translateY(-2px);
-    box-shadow: 0 8px 20px rgba(99, 102, 241, 0.4);
+    box-shadow: 0 8px 20px rgba(169, 116, 79, 0.4);
 }
 .btn-sm {
     padding: 0.4rem 0.8rem;
     font-size: 0.85rem;
+}
+
+/* Mesma leveza/elevação no hover para os demais botões, não só o primary */
+.btn-success:hover, .btn-danger:hover, .btn-warning:hover, .btn-info:hover,
+.btn-dark:hover, .btn-secondary:hover,
+.btn-outline-primary:hover, .btn-outline-success:hover, .btn-outline-danger:hover,
+.btn-outline-warning:hover, .btn-outline-info:hover, .btn-outline-secondary:hover,
+.btn-outline-dark:hover, .btn-outline-light:hover, .btn-light:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+}
+.btn:active {
+    transform: translateY(0);
 }
 
 /* Soft Badges */
@@ -155,7 +216,7 @@ body {
 .bg-warning { background-color: #fef9c3 !important; color: #854d0e !important; }
 .bg-info { background-color: #e0f2fe !important; color: #075985 !important; }
 .bg-secondary { background-color: #f1f5f9 !important; color: #475569 !important; }
-.bg-primary { background-color: #e0e7ff !important; color: #3730a3 !important; }
+.bg-primary { background-color: var(--color-primary-light) !important; color: var(--color-primary-dark) !important; }
 
 /* ============================================================
    6. FORMULÁRIOS, MODAIS E TABELAS
@@ -171,8 +232,8 @@ body {
 }
 .form-control:focus, .form-select:focus {
     background-color: #fff;
-    border-color: #818cf8;
-    box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+    border-color: #c9a181;
+    box-shadow: 0 0 0 4px rgba(169, 116, 79, 0.15);
 }
 
 /* Modais Alto Padrão */
@@ -235,11 +296,11 @@ body {
    8. INTERFACES DE ADMINISTRAÇÃO E EVENTOS
    ============================================================ */
 /* Cabeçalhos e Fundo Gradient */
-.bg-gradient-admin { background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%); color: white; }
-.bg-gradient-evento { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); color: white; }
-.bg-gradient-inspiracoes { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
-.header-topo { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border-radius: var(--radius) var(--radius) 0 0; }
-.card-inspiracoes { background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); }
+.bg-gradient-admin { background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); color: white; }
+.bg-gradient-evento { background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); color: white; }
+.bg-gradient-inspiracoes { background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); color: white; }
+.header-topo { background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); border-radius: var(--radius) var(--radius) 0 0; }
+.card-inspiracoes { background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); }
 
 /* Dashboard Tipografia */
 .dashboard-title { letter-spacing: -0.5px; }
@@ -280,11 +341,11 @@ body {
 
 /* Acordeão de Etapas (Checklist) */
 .etapa-hdr {
-    background: #1e293b; color: #fff; padding: 0.85rem 1.1rem; border-radius: 12px;
+    background: var(--color-primary-dark); color: #fff; padding: 0.85rem 1.1rem; border-radius: 12px;
     cursor: pointer; transition: background 0.2s;
     display: flex; justify-content: space-between; align-items: center; user-select: none;
 }
-.etapa-hdr:hover { background: #253147; }
+.etapa-hdr:hover { background: var(--color-primary); }
 .etapa-hdr[aria-expanded="true"] { border-radius: 12px 12px 0 0; }
 .etapa-body { border-radius: 0 0 12px 12px; }
 .barra-etapa-click { cursor: pointer; transition: background-color 0.2s ease; }
@@ -337,7 +398,7 @@ body {
 .convidado-contato { font-size: 0.7rem; line-height: 1.4; }
 
 /* Mural de Inspirações */
-.text-inspiracoes { color: #764ba2 !important; }
+.text-inspiracoes { color: var(--color-primary-dark) !important; }
 .foto-card {
     transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
     border: 1px solid rgba(0,0,0,0.05) !important;
@@ -427,3 +488,41 @@ body {
 #modalConfirmar {
   z-index: 1075 !important;
 }
+/* ---- TRUNCAR TEXTO DAS ANOTAÇÕES ---- */
+.nota-truncada {
+    display: -webkit-box;
+    -webkit-line-clamp: 2; /* Define quantas linhas vão aparecer minimizadas */
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    transition: all 0.3s ease;
+}
+.nota-expandida {
+    display: block;
+}
+.btn-ler-mais {
+    font-size: 0.75rem;
+    cursor: pointer;
+    user-select: none;
+}
+.btn-ler-mais:hover {
+    text-decoration: underline;
+}
+
+/* ============================================================
+   11. TRANSIÇÕES SUAVES ADICIONAIS (links, menus, listas, tabelas)
+   ============================================================ */
+a { transition: color 0.15s ease, opacity 0.15s ease; }
+.nav-link { transition: color 0.15s ease, opacity 0.15s ease; }
+
+@keyframes dropdownIn {
+    from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.dropdown-menu.show { animation: dropdownIn 0.18s ease both; }
+.dropdown-item { transition: background-color 0.15s ease, color 0.15s ease; }
+
+.table tbody tr { transition: background-color 0.15s ease; }
+
+.list-group-item { transition: background-color 0.2s ease, box-shadow 0.2s ease; }
+
+.form-check-input { transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease; }

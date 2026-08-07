@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Tempo de geração: 09/06/2026 às 04:19
+-- Tempo de geração: 05/08/2026 às 01:55
 -- Versão do servidor: 10.4.32-MariaDB
 -- Versão do PHP: 8.0.30
 
@@ -20,19 +20,8 @@ SET time_zone = "+00:00";
 --
 -- Banco de dados: `sistema_eventos`
 --
-
--- --------------------------------------------------------
-
---
--- Estrutura para tabela `administradores`
---
-
-CREATE TABLE `administradores` (
-  `id` int(11) NOT NULL,
-  `usuario` varchar(50) NOT NULL,
-  `senha` varchar(255) NOT NULL,
-  `ultimo_login` datetime DEFAULT current_timestamp()
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+CREATE DATABASE IF NOT EXISTS `sistema_eventos` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+USE `sistema_eventos`;
 
 -- --------------------------------------------------------
 
@@ -43,9 +32,19 @@ CREATE TABLE `administradores` (
 CREATE TABLE `calendario_anotacoes` (
   `id` int(11) NOT NULL,
   `data_nota` date NOT NULL,
+  `hora_nota` time DEFAULT NULL,
   `anotacao` text NOT NULL,
   `data_cadastro` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Despejando dados para a tabela `calendario_anotacoes`
+--
+
+INSERT INTO `calendario_anotacoes` (`id`, `data_nota`, `hora_nota`, `anotacao`, `data_cadastro`) VALUES
+(10, '2026-06-04', NULL, 'ashdgahsdas\r\ndkajsdkasj\r\nasjdbas', '2026-06-09 15:52:44'),
+(18, '2026-06-25', '12:00:00', 'teste', '2026-06-24 04:31:03'),
+(19, '2026-06-25', '14:00:00', 'casamento, orçamento e contrato apra fazer dlfsdjgbsg\r\n\r\n\r\n\r\n\r\n\r\nsdlfsdlf\r\nsdfsçdlfm\r\n\r\n\r\n\r\n\r\n\r\n\r\nsdflksdnglsg', '2026-06-24 04:31:38');
 
 -- --------------------------------------------------------
 
@@ -63,8 +62,34 @@ CREATE TABLE `checklist` (
   `checado` tinyint(1) DEFAULT 0,
   `observacoes` text DEFAULT NULL,
   `fornecedores_sugeridos` text DEFAULT NULL,
-  `status` varchar(20) DEFAULT 'pendente'
+  `status` varchar(20) DEFAULT 'pendente',
+  `data_prazo` date DEFAULT NULL,
+  `concluido_em` datetime DEFAULT NULL,
+  `concluido_por` varchar(20) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Despejando dados para a tabela `checklist`
+--
+
+INSERT INTO `checklist` (`id`, `evento_id`, `etapa`, `tarefa`, `descricao`, `origem`, `checado`, `observacoes`, `fornecedores_sugeridos`, `status`, `data_prazo`, `concluido_em`, `concluido_por`) VALUES
+(310, 5, 'julho/dezembro 2026', 'Faça sua lista de convidados', 'sdsd', 'Assessoria', 0, NULL, NULL, 'pendente', NULL, NULL, NULL),
+(311, 5, 'julho/dezembro 2026', 'Faça sua lista de convidados', 'Lista de convidados (texto completo omitido no reimport para brevidade).', 'Assessoria', 1, NULL, NULL, 'concluido', NULL, NULL, NULL),
+(312, 5, 'julho/dezembro 2026', 'Crie suas pastas de inspirações para que possamos montar um projetinho personalizado para solicitarmos orçamento da sua decoração', 'Texto completo omitido no reimport para brevidade.', 'Assessoria', 1, NULL, NULL, 'concluido', NULL, NULL, NULL),
+(313, 5, 'dezembro/janeiro 2027', 'Orçando / Contratando o fotógrafo (Atenção ao checklist)', 'Texto completo omitido no reimport para brevidade.', 'Assessoria', 0, NULL, NULL, 'pendente', NULL, NULL, NULL),
+(314, 5, 'fevereiro/junho 2027', 'fotos', 'oi', 'Assessoria', 0, NULL, NULL, 'pendente', NULL, NULL, NULL),
+(315, 5, 'julho/dezembro 2026', 'COMPRA DO VESTIDO', 'tteste', 'Assessoria', 1, NULL, NULL, 'concluido', NULL, NULL, NULL),
+(316, 6, '1', 'Faça sua lista de convidados', 'Texto completo omitido no reimport para brevidade.', 'Assessoria', 0, NULL, NULL, 'pendente', NULL, NULL, NULL),
+(317, 6, '1', 'Crie suas pastas de inspirações para que possamos montar um projetinho personalizado para solicitarmos orçamento da sua decoração', 'Texto completo omitido no reimport para brevidade.', 'Assessoria', 0, NULL, NULL, 'pendente', NULL, NULL, NULL),
+(318, 6, '2', 'Orçando / Contratando o fotógrafo (Atenção ao checklist)', 'Texto completo omitido no reimport para brevidade.', 'Assessoria', 0, NULL, NULL, 'pendente', NULL, NULL, NULL),
+(319, 6, '3', 'fotos', 'oi', 'Assessoria', 0, NULL, NULL, 'pendente', NULL, NULL, NULL),
+(320, 6, '1', 'COMPRA DO VESTIDO', 'tteste', 'Assessoria', 0, NULL, NULL, 'pendente', NULL, NULL, NULL),
+(321, 6, '1', 'Faça sua lista de convidados', 'Texto completo omitido no reimport para brevidade.', 'Assessoria', 0, NULL, NULL, 'pendente', NULL, NULL, NULL),
+(322, 6, '1', 'Crie suas pastas de inspirações para que possamos montar um projetinho personalizado para solicitarmos orçamento da sua decoração', 'Texto completo omitido no reimport para brevidade.', 'Assessoria', 0, NULL, NULL, 'pendente', NULL, NULL, NULL),
+(323, 6, '2', 'Orçando / Contratando o fotógrafo (Atenção ao checklist)', 'Texto completo omitido no reimport para brevidade.', 'Assessoria', 0, NULL, NULL, 'pendente', NULL, NULL, NULL),
+(324, 6, '3', 'fotos', 'oi', 'Assessoria', 0, NULL, NULL, 'pendente', NULL, NULL, NULL),
+(325, 6, '1', 'COMPRA DO VESTIDO', 'tteste', 'Assessoria', 0, NULL, NULL, 'pendente', NULL, NULL, NULL),
+(326, 6, '1', 'Faça sua lista de convidados', 'sdsd', 'Assessoria', 0, NULL, NULL, 'pendente', NULL, NULL, NULL);
 
 -- --------------------------------------------------------
 
@@ -79,8 +104,28 @@ CREATE TABLE `checklist_comentarios` (
   `comentario` text NOT NULL,
   `data_cadastro` timestamp NOT NULL DEFAULT current_timestamp(),
   `etapa_nome` varchar(100) DEFAULT NULL,
-  `data_criacao` datetime DEFAULT current_timestamp()
+  `data_criacao` datetime DEFAULT current_timestamp(),
+  `evento_id` int(11) DEFAULT NULL,
+  `criado_em` timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Despejando dados para a tabela `checklist_comentarios`
+--
+
+INSERT INTO `checklist_comentarios` (`id`, `checklist_id`, `autor`, `comentario`, `data_cadastro`, `etapa_nome`, `data_criacao`, `evento_id`, `criado_em`) VALUES
+(11, NULL, 'Noivos', 'feito', '2026-06-01 19:14:43', '1', '2026-06-01 15:14:43', NULL, '2026-06-24 03:26:57'),
+(13, NULL, 'Assessoria', 'otimo', '2026-06-01 19:38:59', '1', '2026-06-01 15:38:59', NULL, '2026-06-24 03:26:57'),
+(15, NULL, 'Assessoria', 'etapa 1,2 e 3 para os meses de junho e julho', '2026-06-06 04:10:26', '1', '2026-06-06 00:10:26', NULL, '2026-06-24 03:26:57'),
+(16, NULL, 'Assessoria', 'TESTE', '2026-06-07 23:35:29', '1', '2026-06-07 19:35:29', NULL, '2026-06-24 03:26:57'),
+(17, NULL, '', 'TESTE', '2026-06-07 23:39:14', '1', '2026-06-07 19:39:14', NULL, '2026-06-24 03:26:57'),
+(18, NULL, '', 'feito', '2026-06-08 15:36:02', '1', '2026-06-08 11:36:02', NULL, '2026-06-24 03:26:57'),
+(19, 310, 'Noivos', 'quase completo', '2026-06-17 16:02:08', NULL, '2026-06-17 12:02:08', NULL, '2026-06-24 03:26:57'),
+(20, 310, 'Noivos', 'tem mais convidados para fazer', '2026-06-17 16:02:26', NULL, '2026-06-17 12:02:26', NULL, '2026-06-24 03:26:57'),
+(21, 310, '', 'otimo!', '2026-06-24 04:53:17', NULL, '2026-06-24 00:53:17', NULL, '2026-06-24 04:53:17'),
+(22, 310, '', 'feito', '2026-06-24 13:42:32', NULL, '2026-06-24 09:42:32', NULL, '2026-06-24 13:42:32'),
+(23, NULL, '', 'feito', '2026-06-24 13:42:38', 'julho/dezembro 2026', '2026-06-24 09:42:38', 5, '2026-06-24 13:42:38'),
+(24, NULL, 'Noivos', 'feito thaina', '2026-07-29 15:25:08', '1', '2026-07-29 11:25:08', 6, '2026-07-29 15:25:08');
 
 -- --------------------------------------------------------
 
@@ -96,6 +141,18 @@ CREATE TABLE `checklist_modelos` (
   `descricao` text DEFAULT NULL,
   `data_cadastro` timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Despejando dados para a tabela `checklist_modelos`
+--
+
+INSERT INTO `checklist_modelos` (`id`, `tipo_padrao`, `etapa`, `tarefa`, `descricao`, `data_cadastro`) VALUES
+(1, 'com_recepcao', 1, 'Faça sua lista de convidados', 'Texto completo omitido no reimport para brevidade.', '2026-05-28 17:22:26'),
+(2, 'sem_recepcao', 1, 'Faça sua lista de convidados', 'sdsd', '2026-05-28 17:22:31'),
+(7, 'com_recepcao', 1, 'Crie suas pastas de inspirações para que possamos montar um projetinho personalizado para solicitarmos orçamento da sua decoração', 'Texto completo omitido no reimport para brevidade.', '2026-05-28 17:56:04'),
+(8, 'com_recepcao', 2, 'Orçando / Contratando o fotógrafo (Atenção ao checklist)', 'Texto completo omitido no reimport para brevidade.', '2026-05-28 17:56:48'),
+(9, 'com_recepcao', 3, 'fotos', 'oi', '2026-06-01 19:03:28'),
+(10, 'com_recepcao', 1, 'COMPRA DO VESTIDO', 'tteste', '2026-06-17 15:53:19');
 
 -- --------------------------------------------------------
 
@@ -117,6 +174,14 @@ CREATE TABLE `clientes` (
   `ultimo_login` datetime DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+--
+-- Despejando dados para a tabela `clientes`
+--
+
+INSERT INTO `clientes` (`id`, `nome`, `cpf`, `rg`, `contato`, `email`, `telefone`, `endereco`, `data_cadastro`, `senha`, `ultimo_login`) VALUES
+(18, 'EWERTHON WILLAMIS SOUZA DE OLIVEIRA & EWERTHON WILLAMIS SOUZA DE OLIVEIRA', '12312312312', NULL, NULL, 'ewerthon2710@gmail.com', '(95) 98127-4864', NULL, '2026-06-10 13:20:47', '$2y$10$y.SnoTUSZzUUzB60qD3rq.dzNKVbz5GWaFW/hx3scC2rLjdsYFIFe', '2026-06-10 09:20:47'),
+(19, 'teste1 & teste2', '', NULL, NULL, 'teste1@gmail.com', '', NULL, '2026-06-10 13:56:45', '$2y$10$ALQKRjvgPn4A6BGGsnMXQOeGOLiZyZO/GBQM/zWVjK9CLVRZ5dgmW', '2026-06-10 09:56:45');
+
 -- --------------------------------------------------------
 
 --
@@ -130,14 +195,23 @@ CREATE TABLE `convidados` (
   `categoria` varchar(50) DEFAULT 'Outros',
   `acompanhantes` varchar(255) DEFAULT NULL,
   `filhos` varchar(255) DEFAULT NULL,
-  `faixa_etaria` enum('Adulto','Criança','Bebê') NOT NULL DEFAULT 'Adulto',
+  `faixa_etaria` varchar(50) NOT NULL DEFAULT 'Adulto (11+ anos)',
   `telefone` varchar(20) DEFAULT NULL,
   `confirmado` tinyint(1) DEFAULT 0,
   `data_confirmacao` datetime DEFAULT NULL,
   `mesa_id` int(11) DEFAULT NULL,
   `nomes_acompanhantes` varchar(255) DEFAULT NULL,
-  `idades_filhos` varchar(255) DEFAULT NULL
+  `idades_filhos` varchar(255) DEFAULT NULL,
+  `resposta_rsvp` varchar(20) DEFAULT NULL,
+  `mensagem_rsvp` text DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Despejando dados para a tabela `convidados`
+--
+
+INSERT INTO `convidados` (`id`, `evento_id`, `nome`, `categoria`, `acompanhantes`, `filhos`, `faixa_etaria`, `telefone`, `confirmado`, `data_confirmacao`, `mesa_id`, `nomes_acompanhantes`, `idades_filhos`, `resposta_rsvp`, `mensagem_rsvp`) VALUES
+(31, 6, 'ewerthon', 'Outros', NULL, NULL, 'Adulto (11+ anos)', '', 1, '2026-07-30 09:17:52', NULL, NULL, NULL, 'confirmado', NULL);
 
 -- --------------------------------------------------------
 
@@ -149,7 +223,7 @@ CREATE TABLE `eventos` (
   `id` int(11) NOT NULL,
   `cliente_id` int(11) NOT NULL,
   `data_evento` date NOT NULL,
-  `hora_evento` time NOT NULL,
+  `hora_evento` time DEFAULT NULL,
   `tipo_ceremonia` enum('Igreja','Salão') NOT NULL,
   `local_ceremonia` varchar(255) NOT NULL,
   `tem_recepcao` tinyint(1) DEFAULT 0,
@@ -159,6 +233,14 @@ CREATE TABLE `eventos` (
   `tem_festa` tinyint(1) DEFAULT 0,
   `local_festa` varchar(255) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Despejando dados para a tabela `eventos`
+--
+
+INSERT INTO `eventos` (`id`, `cliente_id`, `data_evento`, `hora_evento`, `tipo_ceremonia`, `local_ceremonia`, `tem_recepcao`, `local_recepcao`, `tipo_assessoria`, `local_cerimonia`, `tem_festa`, `local_festa`) VALUES
+(5, 18, '2026-06-25', '20:00:00', 'Igreja', '', 0, NULL, 'Básica', 'Igreja Matriz', 1, 'espaço eventos'),
+(6, 19, '2026-12-24', NULL, 'Igreja', '', 0, NULL, 'Básica', NULL, 0, NULL);
 
 -- --------------------------------------------------------
 
@@ -174,6 +256,16 @@ CREATE TABLE `fornecedores` (
   `contato` varchar(100) DEFAULT NULL,
   `telefone` varchar(20) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Despejando dados para a tabela `fornecedores`
+--
+
+INSERT INTO `fornecedores` (`id`, `nome`, `servico`, `servico_tipo`, `contato`, `telefone`) VALUES
+(1, 'Marcos Fotografia', NULL, 'Fotografia', 'Marcos', '(11) 99999-1111'),
+(2, 'Buffet Requinte', NULL, 'Buffet', 'Cláudia', '(11) 99999-2222'),
+(3, 'DJ Som & Luz', NULL, 'DJ / Iluminação', 'Rodrigo', '(11) 99999-3333'),
+(4, 'fotografos', NULL, 'fotos', 'Sugerido pelos Noivos', NULL);
 
 -- --------------------------------------------------------
 
@@ -192,6 +284,17 @@ CREATE TABLE `fornecedores_evento` (
   `valor` decimal(10,2) DEFAULT 0.00,
   `valor_pago` decimal(10,2) NOT NULL DEFAULT 0.00
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Despejando dados para a tabela `fornecedores_evento`
+--
+
+INSERT INTO `fornecedores_evento` (`id`, `evento_id`, `nome`, `servico`, `contato`, `status`, `data_cadastro`, `valor`, `valor_pago`) VALUES
+(3, 5, 'PICANHAS', 'BUFFET', '', 'Contratado', '2026-06-17 11:57:20', 2000.00, 0.00),
+(4, 5, 'PICANHAS', 'BUFFET', '', 'Orçamento', '2026-06-17 11:57:38', 2000.00, 0.00),
+(5, 5, 'PICANHAS', 'BUFFET', '', 'Contratado', '2026-06-23 23:55:34', 2000.00, 1200.00),
+(10, 6, 'PICANHAS', 'BUFFET', '', 'Contratado', '2026-07-30 11:21:07', 2000.00, 0.00),
+(11, 6, 'fotografos', 'FOTOGRAFO', '', 'Contratado', '2026-07-31 02:15:42', 10000.00, 1500.00);
 
 -- --------------------------------------------------------
 
@@ -223,6 +326,23 @@ CREATE TABLE `mesas` (
   `ordem` int(11) DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+--
+-- Despejando dados para a tabela `mesas`
+--
+
+INSERT INTO `mesas` (`id`, `evento_id`, `nome`, `capacidade`, `ordem`) VALUES
+(2, 1, 'mesa 2', 4, 1),
+(3, 1, 'mesa 3', 5, 2),
+(4, 1, 'Mesa 01', 4, 3),
+(6, 1, 'Mesa 03', 4, 5),
+(7, 1, 'Mesa 04', 4, 6),
+(8, 1, 'Mesa 05', 4, 7),
+(9, 1, 'Mesa 06', 4, 8),
+(10, 1, 'Mesa 07', 4, 9),
+(11, 1, 'Mesa 08', 4, 10),
+(12, 1, 'Mesa 09', 4, 11),
+(13, 6, 'mesa 1', 8, 1);
+
 -- --------------------------------------------------------
 
 --
@@ -235,9 +355,21 @@ CREATE TABLE `musicas_evento` (
   `momento` varchar(100) NOT NULL,
   `titulo` varchar(255) NOT NULL,
   `link` varchar(255) DEFAULT NULL,
-  `status` tinyint(1) DEFAULT 0,
-  `criado_em` timestamp NOT NULL DEFAULT current_timestamp()
+  `status` varchar(20) NOT NULL DEFAULT 'sugestao',
+  `criado_em` timestamp NOT NULL DEFAULT current_timestamp(),
+  `artista` varchar(255) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+--
+-- Despejando dados para a tabela `musicas_evento`
+--
+
+INSERT INTO `musicas_evento` (`id`, `evento_id`, `momento`, `titulo`, `link`, `status`, `criado_em`, `artista`) VALUES
+(1, 1, 'Entrada da Noiva', 'A THOUSAND YEARS', 'https://www.youtube.com/watch?v=J_6Vd17ycEU&list=RDCl-IcfdBRRw&index=3', 'sugestao', '2026-06-07 23:55:50', NULL),
+(2, 5, 'Entrada do Noivo', 'A THOUSAND YEARS', 'https://www.youtube.com/watch?v=J_6Vd17ycEU&list=RDCl-IcfdBRRw&index=3', 'sugestao', '2026-06-17 16:02:43', NULL),
+(3, 5, 'Cerimônia · Entrada dos Padrinhos', 'Radiohead', 'https://www.youtube.com/watch?v=XFkzRNyygfk&list=RDqvwKAyMapy8&index=4', 'sugestao', '2026-06-24 03:53:46', 'creep'),
+(4, 6, 'Cerimônia · Entrada dos Padrinhos', 'A THOUSAND YEARS', 'https://www.youtube.com/watch?v=J_6Vd17ycEU&list=RDCl-IcfdBRRw&index=3', 'confirmada', '2026-07-29 14:03:04', 'creep'),
+(5, 6, 'Entrada da Noiva', 'Radiohead', 'https://www.youtube.com/watch?v=XFkzRNyygfk&list=RDqvwKAyMapy8&index=4', 'confirmada', '2026-07-29 15:23:24', NULL);
 
 -- --------------------------------------------------------
 
@@ -259,6 +391,26 @@ CREATE TABLE `notas_evento` (
 -- --------------------------------------------------------
 
 --
+-- Estrutura para tabela `notificacoes_lidas`
+--
+
+CREATE TABLE `notificacoes_lidas` (
+  `usuario_tipo` varchar(20) NOT NULL,
+  `usuario_id` int(11) NOT NULL,
+  `ultima_visualizacao` datetime NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+--
+-- Despejando dados para a tabela `notificacoes_lidas`
+--
+
+INSERT INTO `notificacoes_lidas` (`usuario_tipo`, `usuario_id`, `ultima_visualizacao`) VALUES
+('admin', 1, '2026-07-30 10:17:33'),
+('assistente', 1, '2026-07-31 03:05:43');
+
+-- --------------------------------------------------------
+
+--
 -- Estrutura para tabela `playlist_evento`
 --
 
@@ -271,6 +423,31 @@ CREATE TABLE `playlist_evento` (
   `origem` enum('Assessoria','Noivos') DEFAULT 'Assessoria',
   `escolhida` tinyint(1) DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Estrutura para tabela `referencias_fornecedores`
+--
+
+CREATE TABLE `referencias_fornecedores` (
+  `id` int(11) NOT NULL,
+  `categoria` varchar(50) NOT NULL,
+  `nome` varchar(150) NOT NULL,
+  `contato` varchar(100) DEFAULT NULL,
+  `email` varchar(150) DEFAULT NULL,
+  `redes_sociais` varchar(255) DEFAULT NULL,
+  `endereco` varchar(255) DEFAULT NULL,
+  `observacoes` text DEFAULT NULL,
+  `criado_em` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+--
+-- Despejando dados para a tabela `referencias_fornecedores`
+--
+
+INSERT INTO `referencias_fornecedores` (`id`, `categoria`, `nome`, `contato`, `email`, `redes_sociais`, `endereco`, `observacoes`, `criado_em`) VALUES
+(5, 'Local de Recepção', 'LEONARDO FERREIRA', '(47) 991152707', '', 'https://www.instagram.com/ecohotel?utm_source=ig_web_button_share_sheet&igsh=ZDNlZDc0MzIxNw==', '', '', '2026-07-30 13:20:07');
 
 -- --------------------------------------------------------
 
@@ -301,22 +478,22 @@ CREATE TABLE `usuarios` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 --
--- Índices para tabelas despejadas
+-- Despejando dados para a tabela `usuarios`
 --
 
+INSERT INTO `usuarios` (`id`, `nome`, `email`, `senha`, `tipo`, `criado_em`) VALUES
+(1, 'RICK SANCHES', 'teste@gmail.com', '$2y$10$p5fBJhfrhmPn2WdJVZAikuUENMj.KV2a3VpQK2xQi4H8sD.p0H6ym', 'assistente', '2026-06-07 21:47:03'),
+(2, 'Administrador', 'admin@meueventopro.com', '$2y$10$5dz4kT44c9KqP10FYyaRqO1GOEuwGle2ptFERlFZg2IrmIdilKFp6', 'admin', '2026-06-07 21:47:03');
+
 --
--- Índices de tabela `administradores`
+-- Índices para tabelas despejadas
 --
-ALTER TABLE `administradores`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `usuario` (`usuario`);
 
 --
 -- Índices de tabela `calendario_anotacoes`
 --
 ALTER TABLE `calendario_anotacoes`
-  ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `data_nota` (`data_nota`);
+  ADD PRIMARY KEY (`id`);
 
 --
 -- Índices de tabela `checklist`
@@ -399,11 +576,23 @@ ALTER TABLE `notas_evento`
   ADD PRIMARY KEY (`id`);
 
 --
+-- Índices de tabela `notificacoes_lidas`
+--
+ALTER TABLE `notificacoes_lidas`
+  ADD PRIMARY KEY (`usuario_tipo`,`usuario_id`);
+
+--
 -- Índices de tabela `playlist_evento`
 --
 ALTER TABLE `playlist_evento`
   ADD PRIMARY KEY (`id`),
   ADD KEY `evento_id` (`evento_id`);
+
+--
+-- Índices de tabela `referencias_fornecedores`
+--
+ALTER TABLE `referencias_fornecedores`
+  ADD PRIMARY KEY (`id`);
 
 --
 -- Índices de tabela `servicos_assessoria`
@@ -424,106 +613,106 @@ ALTER TABLE `usuarios`
 --
 
 --
--- AUTO_INCREMENT de tabela `administradores`
---
-ALTER TABLE `administradores`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
-
---
 -- AUTO_INCREMENT de tabela `calendario_anotacoes`
 --
 ALTER TABLE `calendario_anotacoes`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=22;
 
 --
 -- AUTO_INCREMENT de tabela `checklist`
 --
 ALTER TABLE `checklist`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=328;
 
 --
 -- AUTO_INCREMENT de tabela `checklist_comentarios`
 --
 ALTER TABLE `checklist_comentarios`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=27;
 
 --
 -- AUTO_INCREMENT de tabela `checklist_modelos`
 --
 ALTER TABLE `checklist_modelos`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=11;
 
 --
 -- AUTO_INCREMENT de tabela `clientes`
 --
 ALTER TABLE `clientes`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=22;
 
 --
 -- AUTO_INCREMENT de tabela `convidados`
 --
 ALTER TABLE `convidados`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=36;
 
 --
 -- AUTO_INCREMENT de tabela `eventos`
 --
 ALTER TABLE `eventos`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=9;
 
 --
 -- AUTO_INCREMENT de tabela `fornecedores`
 --
 ALTER TABLE `fornecedores`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=5;
 
 --
 -- AUTO_INCREMENT de tabela `fornecedores_evento`
 --
 ALTER TABLE `fornecedores_evento`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=13;
 
 --
 -- AUTO_INCREMENT de tabela `inspiracoes_fotos`
 --
 ALTER TABLE `inspiracoes_fotos`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
 
 --
 -- AUTO_INCREMENT de tabela `mesas`
 --
 ALTER TABLE `mesas`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=14;
 
 --
 -- AUTO_INCREMENT de tabela `musicas_evento`
 --
 ALTER TABLE `musicas_evento`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=7;
 
 --
 -- AUTO_INCREMENT de tabela `notas_evento`
 --
 ALTER TABLE `notas_evento`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=14;
 
 --
 -- AUTO_INCREMENT de tabela `playlist_evento`
 --
 ALTER TABLE `playlist_evento`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
+
+--
+-- AUTO_INCREMENT de tabela `referencias_fornecedores`
+--
+ALTER TABLE `referencias_fornecedores`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=7;
 
 --
 -- AUTO_INCREMENT de tabela `servicos_assessoria`
 --
 ALTER TABLE `servicos_assessoria`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
 
 --
 -- AUTO_INCREMENT de tabela `usuarios`
 --
 ALTER TABLE `usuarios`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=6;
 
 --
 -- Restrições para tabelas despejadas

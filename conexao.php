@@ -1,8 +1,10 @@
 <?php
-$host = 'localhost';
-$db   = 'sistema_eventos';
-$user = 'root';
-$pass = ''; // Padrão do XAMPP é vazio
+// Usa variáveis de ambiente do Docker quando definidas; caso contrário,
+// cai nos padrões do XAMPP.
+$host = getenv('DB_HOST') ?: 'localhost';
+$db   = getenv('DB_NAME') ?: 'sistema_eventos';
+$user = getenv('DB_USER') ?: 'root';
+$pass = getenv('DB_PASS') ?: ''; // Padrão do XAMPP é vazio
 $charset = 'utf8mb4';
 
 $dsn = "mysql:host=$host;dbname=$db;charset=$charset";

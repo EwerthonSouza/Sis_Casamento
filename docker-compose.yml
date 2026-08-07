@@ -1,0 +1,55 @@
+services:
+  app:
+    build: .
+    container_name: casamento_app
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./:/var/www/html
+    environment:
+      DB_HOST: db
+      DB_NAME: sistema_eventos
+      DB_USER: root
+      DB_PASS: root
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "composer install --no-interaction --no-progress &&
+             chown -R www-data:www-data /var/www/html/uploads &&
+             apache2-foreground"
+
+  db:
+    image: mariadb:10.4
+    container_name: casamento_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: sistema_eventos
+    ports:
+      - "3308:3306"
+    volumes:
+      - casamento_db_data:/var/lib/mysql
+      - ./gerenciar/sistema_eventos.sql:/docker-entrypoint-initdb.d/01-sistema_eventos.sql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: casamento_phpmyadmin
+    restart: unless-stopped
+    ports:
+      - "8082:80"
+    environment:
+      PMA_HOST: db
+      PMA_USER: root
+      PMA_PASSWORD: root
+    depends_on:
+      - db
+
+volumes:
+  casamento_db_data:

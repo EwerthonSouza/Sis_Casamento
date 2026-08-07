@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<!-- Creator: CorelDRAW 2020 (64 Bit) -->
+<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" width="1000px" height="200px" version="1.1" style="shape-rendering:geometricPrecision; text-rendering:geometricPrecision; image-rendering:optimizeQuality; fill-rule:evenodd; clip-rule:evenodd"
+viewBox="0 0 1000 200"
+ xmlns:xlink="http://www.w3.org/1999/xlink"
+ xmlns:xodm="http://www.corel.com/coreldraw/odm/2003">
+ <defs>
+  <style type="text/css">
+   <![CDATA[
+    .str0 {stroke:#F59E0B;stroke-width:4;stroke-miterlimit:22.9256}
+    .str1 {stroke:#FEFEFE;stroke-width:0.9;stroke-miterlimit:22.9256}
+    .fil3 {fill:none}
+    .fil2 {fill:#FEFEFE}
+    .fil1 {fill:white}
+    .fil0 {fill:#F59E0B;fill-rule:nonzero}
+    .fnt2 {font-weight:normal;font-size:29.35px;font-family:'Arial'}
+    .fnt0 {font-weight:bold;font-size:52.16px;font-family:'Arial'}
+    .fnt1 {font-weight:bold;font-size:100px;font-family:'Arial'}
+   ]]>
+  </style>
+ </defs>
+ <g id="Camada_x0020_1">
+  <metadata id="CorelCorpID_0Corel-Layer"/>
+  <g id="_2552947232">
+   <path class="fil0" d="M736.3 31.57l132.41 0c27.69,0 50.15,22.46 50.15,50.15l0 0.01c0,27.69 -22.46,50.15 -50.15,50.15l-132.41 0c-27.7,0 -50.16,-22.46 -50.16,-50.16l0 0.01c0,-27.7 22.46,-50.16 50.16,-50.16z"/>
+   <text x="745.99" y="99.78"  class="fil1 fnt0">P</text>
+   <text x="782.86" y="99.78"  class="fil1 fnt0">R</text>
+   <text x="822.62" y="99.78"  class="fil1 fnt0">O</text>
+  </g>
+  <text x="102.77" y="110.95"  class="fil2 fnt1">Meu Evento</text>
+  <line class="fil3 str0" x1="109.63" y1="131.25" x2="818.37" y2= "130.25" />
+  <text x="165.11" y="160.59"  class="fil2 str1 fnt2">Planejamento inteligente para eventos de sucesso</text>
+ </g>
+</svg>

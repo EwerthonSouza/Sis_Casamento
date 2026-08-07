@@ -1,14 +1,51 @@
 <?php
 session_start();
+require_once 'sessao_timeout.inc.php';
+verificar_sessao_ativa();
 
 if (!isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'noivos') {
-    header("Location: index.php");
+    header("Location: index.php?sessao_expirada=1");
     exit;
 }
 
 require_once 'conexao.php';
+require_once 'notificacoes.inc.php';
 
 $evento_id = (int)$_SESSION['evento_id'];
+
+/* ============================================================
+   CSRF TOKEN
+   ============================================================ */
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
+function verificar_csrf(): void {
+    $token_post    = $_POST['csrf_token']    ?? '';
+    $token_header  = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    $token_enviado = $token_post !== '' ? $token_post : $token_header;
+    if (!hash_equals($_SESSION['csrf_token'], $token_enviado)) {
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => false, 'msg' => 'Token CSRF inválido.']);
+        exit;
+    }
+}
+
+// Link público de confirmação de presença para compartilhar com os convidados
+$link_confirmacao_scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://';
+$link_confirmacao_base   = $link_confirmacao_scheme . $_SERVER['HTTP_HOST'] . rtrim(dirname($_SERVER['PHP_SELF']), '/');
+$link_confirmacao_url    = $link_confirmacao_base . '/confirmar.php?evento=' . $evento_id;
+
+// Garante que a coluna de prazo do checklist existe (mesma migração de gerenciar.php)
+try { $pdo->query("SELECT data_prazo FROM checklist LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN data_prazo DATE NULL"); }
+
+// Colunas de rastreio de conclusão (quem/quando) — usadas pelo sino de notificações do admin
+try { $pdo->query("SELECT concluido_em FROM checklist LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN concluido_em DATETIME NULL"); }
+try { $pdo->query("SELECT concluido_por FROM checklist LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN concluido_por VARCHAR(20) NULL"); }
 
 /* ============================================================
    HELPER: Resposta JSON para AJAX
@@ -17,6 +54,17 @@ function json_out(array $data): void {
     header('Content-Type: application/json');
     echo json_encode($data);
     exit;
+}
+
+/* Retorna [classe_css, texto] do badge de prazo de uma tarefa */
+function badge_prazo(?string $data_prazo, bool $done): array {
+    if (empty($data_prazo)) return ['sem', 'Sem prazo'];
+    if ($done) return ['futuro', date('d/m/Y', strtotime($data_prazo))];
+    $dias = (int)floor((strtotime($data_prazo) - strtotime(date('Y-m-d'))) / 86400);
+    $txt  = date('d/m/Y', strtotime($data_prazo));
+    if ($dias < 0)  return ['atrasada', $txt . ' (atrasada)'];
+    if ($dias <= 3) return ['proximo', $txt];
+    return ['futuro', $txt];
 }
 
 /* ============================================================
@@ -37,6 +85,8 @@ if (!$evento) { die("Casamento não encontrado."); }
    ============================================================ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
+    verificar_csrf();
+
     $ajax = isset($_POST['is_ajax']);
 
     // 1. Toggle tarefa
@@ -44,8 +94,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $id    = (int)$_POST['check_id'];
         $atual = (int)$_POST['status_atual'];
         $novo  = $atual === 1 ? 0 : 1;
-        $pdo->prepare("UPDATE checklist SET checado = ?, status = ? WHERE id = ? AND evento_id = ?")
-            ->execute([$novo, $novo ? 'concluido' : 'pendente', $id, $evento_id]);
+        $pdo->prepare("UPDATE checklist SET checado = ?, status = ?, concluido_em = " . ($novo ? "NOW()" : "NULL") . ", concluido_por = ? WHERE id = ? AND evento_id = ?")
+            ->execute([$novo, $novo ? 'concluido' : 'pendente', $novo ? 'Noivos' : null, $id, $evento_id]);
         if ($ajax) json_out(['ok' => true, 'novo' => $novo]);
         exit;
     }
@@ -68,36 +118,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $etapa = trim($_POST['etapa_nome'] ?? '');
         $texto = trim($_POST['novo_comentario_etapa'] ?? '');
         if ($etapa !== '' && $texto !== '') {
-            $pdo->prepare("INSERT INTO checklist_comentarios (etapa_nome, autor, comentario) VALUES (?, 'Noivos', ?)")
-                ->execute([$etapa, $texto]);
+            $pdo->prepare("INSERT INTO checklist_comentarios (evento_id, etapa_nome, autor, comentario) VALUES (?, ?, 'Noivos', ?)")
+                ->execute([$evento_id, $etapa, $texto]);
             if ($ajax) json_out(['ok' => true, 'autor' => 'Noivos', 'texto' => htmlspecialchars($texto)]);
         }
         if (!$ajax) { header("Location: noivos.php"); exit; }
         exit;
-    }
-
-    // 4. Adicionar convidado
-    if (isset($_POST['adicionar_convidado_noivos'])) {
-        $nome   = trim($_POST['nome_convidado'] ?? '');
-        $fone   = trim($_POST['telefone_convidado'] ?? '');
-        $cat    = trim($_POST['categoria_convidado'] ?? 'Outros');
-        $acomp  = trim($_POST['acompanhantes'] ?? '');
-        $filhos = trim($_POST['filhos'] ?? '');
-        if ($nome !== '') {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado) VALUES (?, ?, ?, ?, ?, ?, 0)")
-                ->execute([$evento_id, $nome, $fone, $cat, $acomp, $filhos]);
-            $newId = (int)$pdo->lastInsertId();
-            if ($ajax) json_out([
-                'ok'    => true,
-                'id'    => $newId,
-                'nome'  => htmlspecialchars($nome),
-                'fone'  => htmlspecialchars($fone),
-                'cat'   => htmlspecialchars($cat),
-                'acomp' => htmlspecialchars($acomp),
-                'filhos'=> htmlspecialchars($filhos),
-            ]);
-        }
-        header("Location: noivos.php"); exit;
     }
 
     // 5. Toggle confirmação do convidado
@@ -122,17 +148,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: noivos.php"); exit;
     }
 
-    // 7. Atualizar valor pago de um fornecedor (AJAX)
+    // 7. Corrigir valor pago de um fornecedor, sobrescrevendo o total (AJAX)
     if (isset($_POST['atualizar_valor_pago'])) {
         $forn_id    = (int)$_POST['fornecedor_id'];
-        $valor_pago = (float)str_replace(['.', ','], ['', '.'], $_POST['valor_pago'] ?? '0');
+        $valor_pago = (float)($_POST['valor_pago'] ?? 0);
 
         $chk = $pdo->prepare("SELECT valor FROM fornecedores_evento WHERE id = ? AND evento_id = ?");
         $chk->execute([$forn_id, $evento_id]);
         $forn = $chk->fetch();
 
         if ($forn) {
-            $valor_pago = min($valor_pago, (float)$forn['valor']);
+            $valor_pago = min(max(0.0, $valor_pago), (float)$forn['valor']);
             $pdo->prepare("UPDATE fornecedores_evento SET valor_pago = ? WHERE id = ? AND evento_id = ?")
                 ->execute([$valor_pago, $forn_id, $evento_id]);
             if ($ajax) json_out([
@@ -147,14 +173,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: noivos.php"); exit;
     }
 
+    // 7b. Adicionar pagamento (soma ao valor já pago) de um fornecedor (AJAX)
+    if (isset($_POST['adicionar_pagamento'])) {
+        $forn_id   = (int)($_POST['fornecedor_id'] ?? 0);
+        $valor_add = (float)($_POST['valor_pago']  ?? 0);
+
+        if ($forn_id > 0 && $valor_add > 0) {
+            $chk = $pdo->prepare("SELECT valor, valor_pago FROM fornecedores_evento WHERE id = ? AND evento_id = ?");
+            $chk->execute([$forn_id, $evento_id]);
+            $forn = $chk->fetch();
+
+            if ($forn) {
+                $novo_pago = min((float)$forn['valor'], (float)($forn['valor_pago'] ?? 0) + $valor_add);
+                $pdo->prepare("UPDATE fornecedores_evento SET valor_pago = ? WHERE id = ? AND evento_id = ?")
+                    ->execute([$novo_pago, $forn_id, $evento_id]);
+                if ($ajax) json_out([
+                    'ok'          => true,
+                    'valor_pago'  => $novo_pago,
+                    'valor_total' => (float)$forn['valor'],
+                    'valor_rest'  => (float)$forn['valor'] - $novo_pago,
+                ]);
+            } else {
+                if ($ajax) json_out(['ok' => false, 'msg' => 'Fornecedor não encontrado.']);
+            }
+        } else {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Informe um valor de pagamento maior que zero.']);
+        }
+        header("Location: noivos.php"); exit;
+    }
+
     // 8. Adicionar Música (Noivos)
     if (isset($_POST['adicionar_musica_noivos'])) {
         $momento = trim($_POST['momento_musica'] ?? '');
         $titulo  = trim($_POST['titulo_musica'] ?? '');
         $link    = trim($_POST['link_musica'] ?? '');
+        if ($link !== '' && !preg_match('#^https?://#i', $link)) {
+            $link = '';
+        }
 
         if ($momento !== '' && $titulo !== '') {
-            $pdo->prepare("INSERT INTO musicas_evento (evento_id, momento, titulo, link, status) VALUES (?, ?, ?, ?, 0)")
+            $pdo->prepare("INSERT INTO musicas_evento (evento_id, momento, titulo, link, status) VALUES (?, ?, ?, ?, 'sugestao')")
                 ->execute([$evento_id, $momento, $titulo, $link]);
             $ret_id = (int)$pdo->lastInsertId();
             if ($ajax) json_out([
@@ -207,13 +265,20 @@ $rs3 = $pdo->prepare("
     SELECT cc.*, ch.tarefa
     FROM checklist_comentarios cc
     LEFT JOIN checklist ch ON cc.checklist_id = ch.id
-    WHERE (ch.evento_id = ? OR cc.etapa_nome IS NOT NULL)
+    WHERE (ch.evento_id = ? OR cc.evento_id = ?)
       AND cc.autor = 'Assessoria'
     ORDER BY cc.data_cadastro DESC
-    LIMIT 5
+    LIMIT 15
 ");
-$rs3->execute([$evento_id]);
+$rs3->execute([$evento_id, $evento_id]);
 $notificacoes = $rs3->fetchAll();
+
+$ultima_vista_noivos = ultima_visualizacao_notificacoes($pdo, 'noivos', (int)($_SESSION['usuario_id'] ?? 0));
+$nao_lidas = 0;
+foreach ($notificacoes as $n) {
+    if (!$ultima_vista_noivos || $n['data_cadastro'] > $ultima_vista_noivos) $nao_lidas++;
+}
+$notificacoes = array_values(array_filter($notificacoes, fn($n) => !$ultima_vista_noivos || $n['data_cadastro'] > $ultima_vista_noivos));
 
 // Fornecedores
 $rs4 = $pdo->prepare("SELECT * FROM fornecedores_evento WHERE evento_id = ? AND status != 'Cancelado' ORDER BY status ASC, servico ASC");
@@ -255,7 +320,8 @@ if (!empty($ids)) {
 }
 
 // FIX N+1 – precarrega comentários de todas as etapas
-$rs6 = $pdo->query("SELECT * FROM checklist_comentarios WHERE etapa_nome IS NOT NULL ORDER BY data_cadastro ASC");
+$rs6 = $pdo->prepare("SELECT * FROM checklist_comentarios WHERE evento_id = ? AND etapa_nome IS NOT NULL ORDER BY data_cadastro ASC");
+$rs6->execute([$evento_id]);
 $coments_etapa = [];
 foreach ($rs6->fetchAll() as $c) { $coments_etapa[$c['etapa_nome']][] = $c; }
 
@@ -273,6 +339,26 @@ foreach ($lista_checklist as $t) {
 }
 $pct_g = $total_g > 0 ? round($conc_g / $total_g * 100) : 0;
 
+// Etapas começam todas fechadas; só abrem quando o usuário clicar.
+$etapa_auto_abrir = null;
+
+// Próximas tarefas (pendentes, ordenadas por prazo — sem prazo por último) e contagem de atrasadas
+$hoje_str = date('Y-m-d');
+$proximas_tarefas = [];
+$total_atrasadas = 0;
+foreach ($lista_checklist as $t) {
+    $done = ($t['status'] === 'concluido' || $t['checado'] == 1);
+    if ($done) continue;
+    if (!empty($t['data_prazo']) && $t['data_prazo'] < $hoje_str) { $total_atrasadas++; }
+    $proximas_tarefas[] = $t;
+}
+usort($proximas_tarefas, function ($a, $b) {
+    $da = $a['data_prazo'] ?: '9999-12-31';
+    $db = $b['data_prazo'] ?: '9999-12-31';
+    return $da <=> $db;
+});
+$proximas_tarefas = array_slice($proximas_tarefas, 0, 5);
+
 // Dias para o evento
 $hoje = (new DateTime())->setTime(0, 0, 0);
 $dev  = (new DateTime($evento['data_evento']))->setTime(0, 0, 0);
@@ -284,10 +370,10 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Nosso Casamento ♡</title>
+  <title>Nosso Casamento ♡ - Meu Evento PRO</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css">
+  <link rel="stylesheet" href="css/estilo.css?v=8">
   <style>
     :root {
       --radius: 16px;
@@ -296,7 +382,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       --azul:   #3b82f6;
       --verm:   #ef4444;
     }
-    body { font-family: 'Inter', system-ui, sans-serif; background: #f1f5f9; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-app); }
 
     /* TOAST */
     #toast-wrap {
@@ -318,12 +404,6 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       to   { opacity: 1; transform: translateX(0); }
     }
 
-    /* HEADER */
-    .header-topo {
-      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-      border-radius: var(--radius) var(--radius) 0 0;
-    }
-
     /* PROGRESS RING */
     .ring-wrap { position: relative; width: 72px; height: 72px; flex-shrink: 0; }
     .ring-wrap svg { transform: rotate(-90deg); }
@@ -339,33 +419,49 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     .barra-fill { height: 100%; background: var(--verde); border-radius: 999px; transition: width .4s; }
 
     /* BARRA PAGO */
-    .barra-pago-wrap { height: 8px; background: #e2e8f0; border-radius: 999px; overflow: hidden; position: relative; }
-    .barra-pago-fill { height: 100%; border-radius: 999px; transition: width .5s ease; }
-
-    /* ACCORDION ETAPA */
-    .etapa-hdr {
-      background: #1e293b; color: #fff;
-      padding: .85rem 1.1rem; border-radius: 12px;
-      cursor: pointer; transition: background .2s;
-      display: flex; justify-content: space-between; align-items: center;
-      user-select: none;
+    .barra-pago-wrap { height: 5px; background: #e2e8f0; border-radius: 999px; overflow: hidden; position: relative; box-shadow: inset 0 1px 2px rgba(0,0,0,.08); }
+    .barra-pago-fill { height: 100%; border-radius: 999px; transition: width .5s ease; position: relative; overflow: hidden; }
+    #barra-pago-global { background: linear-gradient(90deg, #16a34a, #22c55e); box-shadow: 0 0 6px rgba(34,197,94,.5); }
+    .barra-pago-fill::after {
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.6), transparent);
+      background-size: 60% 100%;
+      background-repeat: no-repeat;
+      animation: barraPagoShimmer 1.8s ease-in-out infinite !important;
     }
-    .etapa-hdr:hover { background: #253147; }
+    @keyframes barraPagoShimmer {
+      0%   { background-position: -60% 0; }
+      100% { background-position: 160% 0; }
+    }
+
+    /* ACCORDION ETAPA (cores herdadas de css/estilo.css) */
     .etapa-hdr[aria-expanded="true"] { border-radius: 12px 12px 0 0; }
     .etapa-body { border-radius: 0 0 12px 12px; }
 
-    /* TAREFA CARD */
+    /* Seta chamando atenção para o usuário clicar e abrir a etapa */
+    .chevron-etapa { display: inline-block; animation: chevronBounce 1.6s ease-in-out infinite; }
+    .etapa-hdr[aria-expanded="true"] .chevron-etapa { animation: none; transform: rotate(180deg); }
+    @keyframes chevronBounce {
+      0%, 100% { transform: translateY(0); }
+      50%      { transform: translateY(4px); }
+    }
+
+    /* TAREFA CARD
+       FIX FLICKER: removido o transform: translateX(2px) que causava o loop de
+       hover/unhover quando o mouse ficava perto da borda esquerda do card.
+       Agora apenas a sombra muda no hover, sem mover o elemento. */
     .tarefa-card {
       border-left: 4px solid transparent; border-radius: 10px;
       border-top: none; border-right: none; border-bottom: none;
-      transition: transform .15s, box-shadow .15s;
+      transition: box-shadow .2s;
     }
-    .tarefa-card:hover { transform: translateX(2px); box-shadow: 0 4px 12px rgba(0,0,0,.07); }
+    .tarefa-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,.09); }
     .tarefa-card.done { border-color: var(--verde); }
     .tarefa-card.pend { border-color: var(--amarel); }
 
     /* BOTÃO CHECK */
-    .btn-chk { font-size: 1.4rem; line-height: 1; transition: transform .2s; }
+    .btn-chk { font-size: 1.4rem; line-height: 1; transition: transform .2s; will-change: transform; }
     .btn-chk:hover { transform: scale(1.2); }
 
     /* CONVIDADO ROW */
@@ -434,6 +530,14 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     .btn-salvar-pag:hover { background: #16a34a; }
     .btn-salvar-pag:active { transform: scale(.96); }
 
+    .btn-editar-pago-noivos, .btn-cancelar-edit-noivos {
+      border: none; background: transparent; color: #94a3b8; padding: 0; font-size: .68rem;
+      cursor: pointer; transition: color .15s; line-height: 1;
+    }
+    .btn-editar-pago-noivos:hover  { color: #2563eb; }
+    .btn-cancelar-edit-noivos:hover { color: #dc2626; }
+    .btn-salvar-edit-noivos { padding: .3rem .6rem; }
+
     /* Resumo financeiro global */
     .fin-summary-card {
       border-radius: 12px;
@@ -456,16 +560,17 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 
     /* ---- TRILHA SONORA ---- */
     .btn-musicas-sidebar {
-      background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%);
-      border: 1.5px solid #a5b4fc;
+      background: linear-gradient(135deg, var(--color-primary-light) 0%, #e8d2bd 100%);
+      border: 1.5px solid #d9b997;
       border-radius: var(--radius);
       transition: box-shadow .2s, transform .15s;
+      will-change: transform;
       display: block;
       width: 100%;
       text-align: left;
     }
     .btn-musicas-sidebar:hover {
-      box-shadow: 0 6px 18px rgba(165,180,252,.4);
+      box-shadow: 0 6px 18px rgba(169,116,79,.35);
       transform: translateY(-1px);
     }
     #grid-musicas .musica-card-wrap {
@@ -475,11 +580,122 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       from { opacity: 0; transform: scale(.94) translateY(8px); }
       to   { opacity: 1; transform: scale(1)   translateY(0); }
     }
+
+    /* ---- CHECKLIST — REDESIGN ---- */
+    .selo-etapa {
+      width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-size: .8rem; color: #fff;
+      background: rgba(255,255,255,.15); border: 1.5px solid rgba(255,255,255,.35);
+    }
+    .selo-etapa.feita { background: var(--verde); border-color: var(--verde); }
+    .badge-prazo { font-size: .64rem; font-weight: 700; padding: .22em .6em; border-radius: 999px; white-space: nowrap; }
+    .badge-prazo.sem     { background: #f1f5f9; color: #94a3b8; }
+    .badge-prazo.futuro  { background: #dbeafe; color: #1d4ed8; }
+    .badge-prazo.proximo { background: #fef3c7; color: #b45309; }
+    .badge-prazo.atrasada{ background: #fee2e2; color: #dc2626; }
+    .checklist-toolbar { background: #fff; border-radius: 12px; padding: .75rem 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.06); margin-bottom: 1rem; }
+    .checklist-toolbar .sw { position: relative; flex: 1 1 220px; min-width: 180px; }
+    .checklist-toolbar .sw .bi-search { position: absolute; left: .7rem; top: 50%; transform: translateY(-50%); color: #94a3b8; font-size: .78rem; }
+    .checklist-toolbar .sw input { padding-left: 2rem; font-size: .82rem; }
+    .card-proximas { border-radius: var(--radius); border: 1.5px solid #fecaca !important; background: #fff5f5; margin-bottom: 1rem; }
+    .card-proximas .item-proxima { display: flex; align-items: center; gap: .6rem; padding: .4rem 0; border-bottom: 1px dashed #fecdd3; font-size: .82rem; }
+    .card-proximas .item-proxima:last-child { border-bottom: none; }
+    .tarefa-row-hidden { display: none !important; }
+    .etapa-hidden { display: none !important; }
+
+    /* ---- AJUSTES GERAIS PARA MOBILE (mesmas regras usadas em gerenciar.php) ---- */
+    @media (max-width: 767.98px) {
+      .header-topo { flex-direction: column; align-items: stretch !important; position: relative; border-radius: var(--radius) !important; }
+      .header-actions-noivos { width: 100%; justify-content: space-between; margin-top: .1rem; }
+      .header-actions-noivos .btn-inspiracoes-wrap { order: 1; }
+      .header-actions-noivos .ring-wrap { order: 2; }
+      #dropdown-notificacoes { position: absolute; top: 1rem; right: 1rem; }
+
+      .badges-info-evento { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      .badges-info-evento .badge { font-size: .68rem; padding: .35rem .55rem !important; white-space: nowrap; }
+
+      .fin-summary-val { font-size: .78rem; white-space: nowrap; }
+      .fin-summary-label { font-size: .55rem; }
+
+      .etapa-hdr { flex-wrap: wrap; row-gap: .35rem; }
+      .card-proximas .item-proxima .text-truncate { flex-grow: 1; min-width: 0; }
+
+      .btn-musicas-sidebar .d-flex.justify-content-between {
+        flex-wrap: nowrap; padding: .75rem .6rem !important; gap: .5rem;
+      }
+      .btn-musicas-sidebar .d-flex.align-items-center.gap-3 { min-width: 0; flex: 1 1 auto; }
+      .btn-musicas-sidebar .text-start { min-width: 0; }
+      .btn-musicas-sidebar h6, .btn-musicas-sidebar small {
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block;
+      }
+      .btn-musicas-sidebar .btn {
+        flex-shrink: 0; white-space: nowrap;
+        font-size: .68rem; padding: .3rem .5rem;
+      }
+
+      .checklist-toolbar { padding: .65rem .75rem; }
+      .checklist-toolbar .sw { flex: 1 1 100%; min-width: 100%; }
+      .checklist-toolbar .filtros-check-wrap {
+        width: 100%; justify-content: center; flex-wrap: nowrap;
+      }
+      .checklist-toolbar .filtro-check { font-size: .68rem !important; padding: .35rem .6rem; }
+
+      .anotacoes-etapa-box { padding: .6rem .7rem !important; margin-bottom: .6rem !important; }
+      .anotacoes-etapa-box .fw-bold.text-muted { margin-bottom: .4rem !important; }
+      .anotacoes-etapa-box .lista-coment-etapa { margin-bottom: .4rem !important; }
+      .anotacoes-etapa-box .form-control { padding-top: .3rem; padding-bottom: .3rem; }
+      .anotacoes-etapa-box button { padding-top: .3rem; padding-bottom: .3rem; }
+
+      .tarefa-card .card-body { padding: .6rem .7rem !important; }
+      .tarefa-card .d-flex.align-items-start.gap-3 { gap: .6rem !important; }
+      .tarefa-card h6 { margin-bottom: .3rem !important; }
+      .tarefa-card .mb-2 { margin-bottom: .4rem !important; }
+      .tarefa-card .border-top { padding-top: .4rem !important; }
+      .tarefa-card .lista-coment-tarefa { margin-bottom: .3rem !important; }
+      .tarefa-card .form-control { padding-top: .3rem; padding-bottom: .3rem; }
+      .tarefa-card form button { padding-top: .3rem; padding-bottom: .3rem; }
+    }
   </style>
 </head>
 <body>
 
+<nav class="navbar navbar-dark bg-dark shadow-sm">
+  <div class="container">
+    <span class="navbar-brand mb-0">
+      <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">
+    </span>
+    <div class="d-flex align-items-center gap-2">
+      <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#modalConfirmarSaida">
+        <i class="bi bi-box-arrow-right"></i> <span class="d-none d-sm-inline">Sair</span>
+      </button>
+    </div>
+  </div>
+</nav>
+
 <div id="toast-wrap"></div>
+
+<div class="modal fade" id="modalConfirmarSaida" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content border-0 shadow-lg rounded-4 p-2 text-center">
+      <div class="pt-4 pb-2 px-3">
+        <div class="mx-auto mb-3 rounded-circle bg-danger bg-opacity-10 d-flex align-items-center justify-content-center" style="width:64px;height:64px;">
+          <i class="bi bi-box-arrow-right text-danger fs-3"></i>
+        </div>
+        <h6 class="fw-bold mb-1">Sair do sistema?</h6>
+        <p class="text-muted small mb-0">Você precisará fazer login novamente para acessar o portal.</p>
+      </div>
+      <div class="d-flex gap-2 p-3 pt-2">
+        <button type="button" class="btn btn-light fw-bold flex-fill rounded-pill" data-bs-dismiss="modal">Cancelar</button>
+        <a href="logout.php" class="btn btn-danger fw-bold flex-fill rounded-pill">
+          <i class="bi bi-box-arrow-right me-1"></i> Sair
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal de confirmação de exclusão de convidado -->
 
 <div class="modal fade" id="modalExcluir" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered modal-sm">
@@ -499,16 +715,57 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
   </div>
 </div>
 
+<div class="modal fade" id="modalLinkConfirmacao" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header border-0 bg-light">
+        <h5 class="modal-title fw-bold"><i class="bi bi-envelope-check-fill text-danger me-2"></i> Confirmação de Presença</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body p-4">
+        <p class="text-muted small mb-3">Envie este link para seus convidados. Eles poderão confirmar a presença de toda a família diretamente por ele — sem precisar de login.</p>
+        <div class="input-group mb-2">
+          <input type="text" id="input-link-confirmacao" class="form-control" value="<?= htmlspecialchars($link_confirmacao_url) ?>" readonly>
+          <button class="btn btn-danger fw-bold" type="button" id="btn-copiar-link">
+            <i class="bi bi-clipboard-fill me-1"></i> Copiar
+          </button>
+        </div>
+        <a href="<?= htmlspecialchars($link_confirmacao_url) ?>" target="_blank" class="small text-decoration-none">
+          <i class="bi bi-box-arrow-up-right me-1"></i> Abrir o link em uma nova aba
+        </a>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary btn-sm px-4 rounded-pill fw-bold" data-bs-dismiss="modal">Fechar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FIX: Modal de Conversa/Histórico movido para FORA do bloco <script> -->
+<div class="modal fade" id="modalConversa" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header bg-light border-0">
+        <h5 class="modal-title fw-bold" id="conversa-titulo">Histórico</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body p-4" id="conversa-corpo" style="max-height: 400px; overflow-y: auto;">
+        <!-- Histórico injetado via JS -->
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="container my-4 my-md-5">
 
-  <div class="card border-0 shadow-sm mb-4 overflow-hidden" style="border-radius: var(--radius);">
-    <div class="header-topo p-4 d-flex flex-wrap justify-content-between align-items-start gap-3">
+  <div class="card border-0 shadow-sm mb-4" style="border-radius: var(--radius); backdrop-filter: none; animation: none; transform: none;">
+    <div class="header-topo p-3 p-md-4 d-flex flex-wrap justify-content-between align-items-start gap-3">
       <div>
-        <h2 class="fw-bold mb-1 text-white" style="letter-spacing:-.5px;">
+        <h2 class="fw-bold mb-1 text-white fs-4 fs-md-2" style="letter-spacing:-.5px;">
           <i class="bi bi-rings text-warning me-2"></i> Nosso Casamento
         </h2>
         <p class="text-white-50 mb-3 small">Bem-vindos, <?= htmlspecialchars($evento['nome']) ?>!</p>
-        <div class="d-flex flex-wrap gap-2">
+        <div class="d-flex flex-wrap gap-2 badges-info-evento">
           <span class="badge bg-white bg-opacity-10 text-white px-3 py-2 rounded-pill">
             <i class="bi bi-calendar-event me-1 text-warning"></i>
             <?= date('d/m/Y', strtotime($evento['data_evento'])) ?>
@@ -534,7 +791,39 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
           <?php endif; ?>
         </div>
       </div>
-      <div class="d-flex align-items-center gap-3">
+      <div class="d-flex align-items-center gap-3 header-actions-noivos">
+        <div class="dropdown" id="dropdown-notificacoes">
+          <button class="btn btn-sm btn-outline-light rounded-circle position-relative" type="button" data-bs-toggle="dropdown" aria-expanded="false" style="width:40px;height:40px;">
+            <i class="bi bi-bell-fill"></i>
+            <?php if ($nao_lidas > 0): ?>
+              <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" style="font-size:.62rem;">
+                <?= $nao_lidas > 9 ? '9+' : $nao_lidas ?>
+              </span>
+            <?php endif; ?>
+          </button>
+          <div class="dropdown-menu dropdown-menu-end shadow-lg border-0 p-0" style="width:340px;max-height:420px;overflow-y:auto;">
+            <div class="px-3 py-2 border-bottom bg-light d-flex justify-content-between align-items-center">
+              <span class="fw-bold small text-uppercase text-muted"><i class="bi bi-bell me-1"></i> Notificações da Assessoria</span>
+              <button type="button" id="btn-marcar-lidas" class="btn btn-link btn-sm p-0 text-decoration-none">Marcar lidas</button>
+            </div>
+            <div id="lista-notificacoes">
+            <?php if (empty($notificacoes)): ?>
+              <div class="text-center text-muted p-4 small">
+                <i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.
+              </div>
+            <?php else: foreach ($notificacoes as $n): ?>
+              <div class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom" style="cursor:pointer;">
+                <i class="bi bi-chat-left-text-fill text-primary mt-1"></i>
+                <div class="flex-fill" style="min-width:0;">
+                  <div class="small fw-bold text-dark"><?= htmlspecialchars(!empty($n['etapa_nome']) ? 'Etapa: ' . $n['etapa_nome'] : 'Tarefa: ' . $n['tarefa'], ENT_QUOTES, 'UTF-8') ?></div>
+                  <div class="small text-body"><?= htmlspecialchars($n['comentario'], ENT_QUOTES, 'UTF-8') ?></div>
+                  <div class="text-muted" style="font-size:.7rem;"><?= tempo_relativo($n['data_cadastro']) ?></div>
+                </div>
+              </div>
+            <?php endforeach; endif; ?>
+            </div>
+          </div>
+        </div>
         <?php if ($total_g > 0):
           $r_   = 28;
           $circ = 2 * M_PI * $r_;
@@ -553,18 +842,15 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
           </div>
         </div>
         <?php endif; ?>
-        <div class="d-flex flex-column gap-2">
-          <a href="inspiracoes.php?id=<?= $evento_id ?>&usuario=Noivos" class="btn btn-outline-light btn-sm rounded-3">
+        <div class="d-flex flex-column gap-2 btn-inspiracoes-wrap">
+          <a href="inspiracoes.php?id=<?= $evento_id ?>" class="btn btn-outline-light btn-sm rounded-3">
             <i class="bi bi-stars text-warning"></i> Inspirações
-          </a>
-          <a href="index.php" class="btn btn-sm btn-danger rounded-3" style="background:#ef4444;border:none;">
-            <i class="bi bi-box-arrow-right"></i> Sair
           </a>
         </div>
       </div>
     </div>
-    <div class="bg-white p-3 d-flex flex-wrap justify-content-between align-items-center border-top">
-      <div class="d-flex flex-wrap gap-4">
+    <div class="bg-white p-3 border-top d-none d-md-block" style="border-radius: 0 0 var(--radius) var(--radius);">
+      <div class="d-flex flex-wrap row-gap-2 column-gap-4">
         <div class="d-flex align-items-center gap-2 text-muted small">
           <span class="bg-light rounded-circle p-2 d-flex"><i class="bi bi-envelope-fill text-primary"></i></span>
           <?= htmlspecialchars($evento['email']) ?>
@@ -575,41 +861,14 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
           <?= htmlspecialchars($evento['telefone']) ?>
         </div>
         <?php endif; ?>
+        <div class="d-flex align-items-center gap-2 text-muted small">
+          <span class="bg-light rounded-circle p-2 d-flex"><i class="bi bi-file-earmark-text-fill text-secondary"></i></span>
+          Contrato #<?= str_pad($evento['id'], 4, '0', STR_PAD_LEFT) ?>
+        </div>
       </div>
-      <span class="badge bg-light text-dark border shadow-sm px-3 py-2 rounded-pill" style="font-size:.7rem;">
-        Contrato #<?= str_pad($evento['id'], 4, '0', STR_PAD_LEFT) ?>
-      </span>
     </div>
   </div>
 
-  <?php if ($notificacoes): ?>
-<div class="card border-0 shadow-sm mb-4 overflow-hidden" style="border-radius: var(--radius);">
-  <div class="card-header border-0 bg-primary text-white fw-bold">
-    <i class="bi bi-bell-fill me-2"></i> Novas Notificações
-  </div>
-  <div class="card-body p-2">
-    <?php foreach ($notificacoes as $n): 
-        // Identifica se é tarefa ou etapa para buscar o histórico
-        $tipo = !empty($n['etapa_nome']) ? 'etapa' : 'tarefa';
-        $id_busca = ($tipo === 'etapa') ? $n['etapa_nome'] : $n['checklist_id'];
-    ?>
-    <div class="notificacao-box p-3 mb-2 bg-white rounded-3 border shadow-sm cursor-pointer"
-         onclick="abrirConversa('<?= $tipo ?>', '<?= addslashes($id_busca) ?>', '<?= htmlspecialchars(!empty($n['etapa_nome']) ? 'Etapa: ' . $n['etapa_nome'] : 'Tarefa: ' . $n['tarefa']) ?>')"
-         style="cursor:pointer; border-left: 4px solid var(--azul);">
-      <div class="d-flex justify-content-between">
-        <strong class="text-primary small">
-          <?= htmlspecialchars(!empty($n['etapa_nome']) ? 'Etapa: ' . $n['etapa_nome'] : 'Tarefa: ' . $n['tarefa']) ?>
-        </strong>
-        <small class="text-muted" style="font-size: .7rem;"><?= date('d/m H:i', strtotime($n['data_cadastro'])) ?></small>
-      </div>
-      <div class="text-dark small mt-1" style="font-size: .85rem;">
-        <em>Assessoria:</em> <?= htmlspecialchars($n['comentario']) ?>
-      </div>
-    </div>
-    <?php endforeach; ?>
-  </div>
-</div>
-<?php endif; ?>
 
   <div class="row g-4 align-items-start">
 
@@ -622,6 +881,9 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
           <?php if ($total_g > 0): ?>
           <div class="text-muted small mt-1">
             <span id="label-conc-g"><?= $conc_g ?></span> de <?= $total_g ?> tarefas concluídas
+            <?php if ($total_atrasadas > 0): ?>
+              <span class="badge-prazo atrasada ms-1"><i class="bi bi-exclamation-triangle-fill"></i> <?= $total_atrasadas ?> atrasada<?= $total_atrasadas > 1 ? 's' : '' ?></span>
+            <?php endif; ?>
             <div class="barra mx-auto mt-2" style="max-width:200px;">
               <div class="barra-fill" id="barra-g" style="width:<?= $pct_g ?>%;"></div>
             </div>
@@ -635,7 +897,35 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               <p class="mt-3 mb-0">A assessoria ainda está montando o cronograma.<br>Em breve aparecerá aqui!</p>
             </div>
           <?php else: ?>
-            <div class="d-flex flex-column gap-3">
+
+            <?php if (!empty($proximas_tarefas)): ?>
+            <div class="card border-0 shadow-sm card-proximas p-3">
+              <div class="fw-bold text-danger mb-2" style="font-size:.78rem;text-transform:uppercase;letter-spacing:.03em;">
+                <i class="bi bi-alarm-fill me-1"></i> Próximas Tarefas
+              </div>
+              <?php foreach ($proximas_tarefas as $pt): [$pcls, $ptxt] = badge_prazo($pt['data_prazo'] ?? null, false); ?>
+                <div class="item-proxima">
+                  <span class="badge-prazo <?= $pcls ?>"><?= htmlspecialchars($ptxt) ?></span>
+                  <span class="text-dark text-truncate"><?= htmlspecialchars($pt['tarefa']) ?></span>
+                  <span class="text-muted ms-auto" style="font-size:.7rem;"><?= htmlspecialchars($pt['etapa']) ?></span>
+                </div>
+              <?php endforeach; ?>
+            </div>
+            <?php endif; ?>
+
+            <div class="checklist-toolbar d-flex flex-wrap gap-2 align-items-center">
+              <div class="sw">
+                <i class="bi bi-search"></i>
+                <input type="text" id="buscaChecklist" class="form-control form-control-sm rounded-pill" placeholder="Buscar tarefa...">
+              </div>
+              <div class="d-flex gap-1 filtros-check-wrap">
+                <button class="btn btn-primary btn-sm rounded-pill filtro-check active" data-f="todos" style="font-size:.72rem;">Todas</button>
+                <button class="btn btn-outline-warning btn-sm rounded-pill filtro-check" data-f="pendente" style="font-size:.72rem;">Pendentes</button>
+                <button class="btn btn-outline-success btn-sm rounded-pill filtro-check" data-f="concluido" style="font-size:.72rem;">Concluídas</button>
+              </div>
+            </div>
+
+            <div class="d-flex flex-column gap-3" id="lista-etapas-checklist">
               <?php $idx = 0; foreach ($passos as $etapa => $tarefas): $idx++;
                 $totE  = $prog[$etapa]['total'];
                 $concE = $prog[$etapa]['conc'];
@@ -643,15 +933,16 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                 $ok    = ($totE > 0 && $concE === $totE);
                 $label = is_numeric($etapa) ? 'PASSO ' . str_pad($etapa, 2, '0', STR_PAD_LEFT) : $etapa;
                 $cid   = 'etapa_' . $idx;
+                $auto_abrir = ($etapa === $etapa_auto_abrir);
               ?>
-              <div class="card border-0 shadow-sm overflow-hidden" style="border-radius:12px;">
+              <div class="card border-0 shadow-sm overflow-hidden etapa-wrap" style="border-radius:12px;">
                 <div class="etapa-hdr"
                      data-bs-toggle="collapse"
                      data-bs-target="#<?= $cid ?>"
-                     aria-expanded="false"
+                     aria-expanded="<?= $auto_abrir ? 'true' : 'false' ?>"
                      id="hdr-<?= $cid ?>">
                   <div class="d-flex align-items-center gap-2">
-                    <i class="bi <?= $ok ? 'bi-check-all text-success' : 'bi-folder2-open text-info' ?> fs-5 icone-etapa"></i>
+                    <span class="selo-etapa <?= $ok ? 'feita' : '' ?> icone-etapa"><?= $ok ? '<i class="bi bi-check-lg"></i>' : $idx ?></span>
                     <span class="fw-bold" style="font-size:.88rem;"><?= htmlspecialchars($label) ?></span>
                   </div>
                   <div class="d-flex align-items-center gap-3">
@@ -664,12 +955,12 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                     <span class="badge bg-white bg-opacity-20 text-white rounded-pill px-2">
                       <span class="conc-etapa"><?= $concE ?></span>/<?= $totE ?>
                     </span>
-                    <i class="bi bi-chevron-down text-white-50 small"></i>
+                    <i class="bi bi-chevron-down text-white small chevron-etapa"></i>
                   </div>
                 </div>
-                <div id="<?= $cid ?>" class="collapse">
+                <div id="<?= $cid ?>" class="collapse<?= $auto_abrir ? ' show' : '' ?>">
                   <div class="etapa-body p-3 bg-white">
-                    <div class="p-3 mb-3 bg-light rounded-3 border small">
+                    <div class="p-3 mb-3 bg-light rounded-3 border small anotacoes-etapa-box">
                       <div class="fw-bold text-muted mb-2" style="font-size:.72rem;text-transform:uppercase;">
                         <i class="bi bi-journal-text me-1"></i> Anotações desta Etapa
                       </div>
@@ -683,6 +974,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                         <?php endforeach; ?>
                       </div>
                       <form class="d-flex gap-2 form-ajax-etapa">
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                         <input type="hidden" name="comentario_etapa_noivos" value="1">
                         <input type="hidden" name="etapa_nome" value="<?= htmlspecialchars($etapa) ?>">
                         <input type="text" name="novo_comentario_etapa" class="form-control form-control-sm" placeholder="Nota geral…" required>
@@ -694,7 +986,10 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                       $done = ($t['status'] === 'concluido' || $t['checado'] == 1);
                       $snum = $done ? 1 : 0;
                     ?>
-                    <div class="tarefa-card card border-0 bg-white mb-2 shadow-sm <?= $done ? 'done' : 'pend' ?>">
+                    <?php [$badge_cls, $badge_txt] = badge_prazo($t['data_prazo'] ?? null, $done); ?>
+                    <div class="tarefa-card card border-0 bg-white mb-2 shadow-sm <?= $done ? 'done' : 'pend' ?>"
+                         data-tarefa-nome="<?= strtolower(htmlspecialchars($t['tarefa'])) ?>"
+                         data-tarefa-status="<?= $done ? 'concluido' : 'pendente' ?>">
                       <div class="card-body p-3">
                         <div class="d-flex align-items-start gap-3">
                           <button type="button"
@@ -707,18 +1002,21 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                             <i class="bi <?= $done ? 'bi-check-circle-fill' : 'bi-circle' ?>"></i>
                           </button>
                           <div class="w-100">
-                            <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
-                              <h6 class="fw-bold mb-0 <?= $done ? 'text-muted text-decoration-line-through' : 'text-dark' ?>" style="line-height:1.4;">
+                            <div class="mb-2" style="min-width:0;">
+                              <h6 class="fw-bold mb-1 <?= $done ? 'text-muted text-decoration-line-through' : 'text-dark' ?>" style="line-height:1.4;">
                                 <?= htmlspecialchars($t['tarefa']) ?>
                               </h6>
-                              <?php if (!empty($t['descricao'])): ?>
-                              <button class="btn btn-sm btn-outline-secondary py-0 px-2 rounded-pill flex-shrink-0"
-                                      data-bs-toggle="modal"
-                                      data-bs-target="#modalDesc_<?= $tid ?>"
-                                      style="font-size:.72rem;">
-                                <i class="bi bi-file-text"></i> Ler
-                              </button>
-                              <?php endif; ?>
+                              <div class="d-flex align-items-center gap-2 flex-wrap">
+                                <span class="badge-prazo <?= $badge_cls ?>"><i class="bi bi-calendar-event me-1"></i><?= htmlspecialchars($badge_txt) ?></span>
+                                <?php if (!empty($t['descricao'])): ?>
+                                <button class="btn btn-sm btn-outline-secondary py-0 px-2 rounded-pill"
+                                        data-bs-toggle="modal"
+                                        data-bs-target="#modalDesc_<?= $tid ?>"
+                                        style="font-size:.72rem;">
+                                  <i class="bi bi-file-text"></i> Ler
+                                </button>
+                                <?php endif; ?>
+                              </div>
                             </div>
                             <div class="border-top pt-2">
                               <div class="lista-coment-tarefa mb-2">
@@ -731,6 +1029,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                                 <?php endforeach; ?>
                               </div>
                               <form class="d-flex gap-2 form-ajax-tarefa">
+                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                                 <input type="hidden" name="adicionar_comentario_noivos" value="1">
                                 <input type="hidden" name="check_id" value="<?= $tid ?>">
                                 <input type="text" name="novo_comentario" class="form-control form-control-sm bg-light border-0" placeholder="Comentar…" required>
@@ -765,7 +1064,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
             <div class="d-flex align-items-center gap-3">
               <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0"
                    style="width:44px;height:44px;">
-                <i class="bi bi-music-note-list fs-4" style="color:#4f46e5;"></i>
+                <i class="bi bi-music-note-list fs-4" style="color:var(--color-primary-dark);"></i>
               </div>
               <div class="text-start">
                 <h6 class="mb-0 fw-bold text-dark">Nossa Trilha Sonora</h6>
@@ -775,8 +1074,63 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                 </small>
               </div>
             </div>
-            <span class="btn btn-primary btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:#4f46e5; border:none;">
+            <span class="btn btn-primary btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:var(--color-primary-dark); border:none;">
               Abrir <i class="bi bi-arrow-right ms-1"></i>
+            </span>
+          </div>
+        </button>
+
+        <a href="organizar_mesas.php" class="btn-musicas-sidebar text-decoration-none" style="background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%); border-color: #86efac;">
+          <div class="d-flex justify-content-between align-items-center p-3">
+            <div class="d-flex align-items-center gap-3">
+              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0"
+                   style="width:44px;height:44px;">
+                <i class="bi bi-grid-3x3-gap-fill fs-4" style="color:#16a34a;"></i>
+              </div>
+              <div class="text-start">
+                <h6 class="mb-0 fw-bold text-dark">Organizar Mesas</h6>
+                <small class="text-dark" style="font-size:.78rem;opacity:.6;">Arraste os convidados para as mesas</small>
+              </div>
+            </div>
+            <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:#16a34a; border:none; color:#fff;">
+              Abrir <i class="bi bi-arrow-right ms-1"></i>
+            </span>
+          </div>
+        </a>
+
+        <a href="fornecedores_evento.php" class="btn-musicas-sidebar text-decoration-none" style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border-color: #fcd34d;">
+          <div class="d-flex justify-content-between align-items-center p-3">
+            <div class="d-flex align-items-center gap-3">
+              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0"
+                   style="width:44px;height:44px;">
+                <i class="bi bi-briefcase-fill fs-4" style="color:#b45309;"></i>
+              </div>
+              <div class="text-start">
+                <h6 class="mb-0 fw-bold text-dark">Fornecedores &amp; Orçamentos</h6>
+                <small class="text-dark" style="font-size:.78rem;opacity:.6;">Contratar profissionais e ver valores</small>
+              </div>
+            </div>
+            <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:#b45309; border:none; color:#fff;">
+              Abrir <i class="bi bi-arrow-right ms-1"></i>
+            </span>
+          </div>
+        </a>
+
+        <button type="button" class="btn-musicas-sidebar mt-0 mb-0" style="background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); border-color: #fca5a5;"
+                data-bs-toggle="modal" data-bs-target="#modalLinkConfirmacao">
+          <div class="d-flex justify-content-between align-items-center p-3">
+            <div class="d-flex align-items-center gap-3">
+              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0"
+                   style="width:44px;height:44px;">
+                <i class="bi bi-envelope-check-fill fs-4" style="color:#dc2626;"></i>
+              </div>
+              <div class="text-start">
+                <h6 class="mb-0 fw-bold text-dark">Confirmação de Presença</h6>
+                <small class="text-dark" style="font-size:.78rem;opacity:.6;">Link para enviar aos convidados</small>
+              </div>
+            </div>
+            <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:#dc2626; border:none; color:#fff;">
+              Ver link <i class="bi bi-arrow-right ms-1"></i>
             </span>
           </div>
         </button>
@@ -813,7 +1167,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               <span class="fw-bold text-success" id="pct-pago-label"><?= $pct_pago ?>%</span>
             </div>
             <div class="barra-pago-wrap mb-3">
-              <div class="barra-pago-fill bg-success" id="barra-pago-global" style="width:<?= $pct_pago ?>%;"></div>
+              <div class="barra-pago-fill" id="barra-pago-global" style="width:<?= $pct_pago ?>%;"></div>
             </div>
 
             <?php if ($valor_neg > 0): ?>
@@ -843,7 +1197,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                   $fQuitado   = $fRest <= 0;
                   $barColor   = $fQuitado ? 'bg-success' : ($fPct >= 50 ? 'bg-info' : 'bg-warning');
                 ?>
-                <div class="forn-card" id="forn-<?= $fid ?>">
+                <div class="forn-card" id="forn-<?= $fid ?>" data-pago="<?= $fPago ?>">
                   <div class="d-flex justify-content-between align-items-start mb-1">
                     <div class="fw-bold text-dark" style="font-size:.83rem;line-height:1.3;">
                       <?= htmlspecialchars($f['servico']) ?>
@@ -872,18 +1226,49 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                     </div>
                   </div>
 
+                  <div class="mb-2 d-flex align-items-center gap-1" style="font-size:.72rem;">
+                    <span class="text-muted">Pago:</span>
+                    <span class="fw-bold text-primary forn-pago-valor-txt">R$ <?= number_format($fPago, 2, ',', '.') ?></span>
+                    <button type="button" class="btn-editar-pago-noivos" data-id="<?= $fid ?>" title="Corrigir valor pago">
+                      <i class="bi bi-pencil-fill"></i>
+                    </button>
+                  </div>
+
                   <div class="barra-pago-wrap mb-2">
                     <div class="barra-pago-fill <?= $barColor ?> forn-barra-fill" style="width:<?= $fPct ?>%;"></div>
                   </div>
 
-                  <div class="d-flex align-items-center gap-2 mt-2">
+                  <div class="d-flex align-items-center gap-2 mt-2 forn-add-wrap-noivos">
                     <div class="flex-grow-1">
                       <label style="font-size:.62rem;color:#64748b;text-transform:uppercase;font-weight:700;letter-spacing:.05em;">
-                        Valor já pago (R$)
+                        Adicionar pagamento (R$)
                       </label>
                       <input
                         type="text"
-                        class="valor-pago-input forn-input-pago"
+                        class="valor-pago-input forn-input-add-noivos"
+                        data-id="<?= $fid ?>"
+                        data-total="<?= $fValor ?>"
+                        placeholder="0,00"
+                        inputmode="decimal"
+                      >
+                    </div>
+                    <div class="mt-3">
+                      <button type="button"
+                              class="btn-salvar-pag btn-add-pagamento-noivos"
+                              data-id="<?= $fid ?>">
+                        <i class="bi bi-plus-lg me-1"></i>Somar
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="d-flex align-items-center gap-2 mt-2 forn-edit-wrap-noivos" style="display:none;">
+                    <div class="flex-grow-1">
+                      <label style="font-size:.62rem;color:#64748b;text-transform:uppercase;font-weight:700;letter-spacing:.05em;">
+                        Corrigir valor pago (R$)
+                      </label>
+                      <input
+                        type="text"
+                        class="valor-pago-input forn-input-edit-noivos"
                         data-id="<?= $fid ?>"
                         data-total="<?= $fValor ?>"
                         value="<?= number_format($fPago, 2, ',', '.') ?>"
@@ -891,11 +1276,12 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                         inputmode="decimal"
                       >
                     </div>
-                    <div class="mt-3">
-                      <button type="button"
-                              class="btn-salvar-pag btn-salvar-pagamento"
-                              data-id="<?= $fid ?>">
-                        <i class="bi bi-floppy me-1"></i>Salvar
+                    <div class="mt-3 d-flex gap-1">
+                      <button type="button" class="btn-salvar-pag btn-salvar-edit-noivos" data-id="<?= $fid ?>" title="Salvar correção">
+                        <i class="bi bi-check-lg"></i>
+                      </button>
+                      <button type="button" class="btn-cancelar-edit-noivos" title="Cancelar">
+                        <i class="bi bi-x-lg"></i>
                       </button>
                     </div>
                   </div>
@@ -907,6 +1293,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 
           </div>
         </div>
+
         <div class="card shadow-sm border-0" style="border-radius: var(--radius);">
           <div class="card-header bg-white border-0 pt-4 pb-0 text-center">
             <h5 class="fw-bold mb-0"><i class="bi bi-people-fill text-primary me-2"></i> Convidados</h5>
@@ -933,38 +1320,6 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               </div>
             </div>
 
-            <div class="bg-light border rounded-3 p-3 mb-3">
-              <div class="text-muted fw-bold text-center mb-2" style="font-size:.68rem;text-transform:uppercase;">Adicionar Convidado</div>
-              <form id="form-add-conv">
-                <input type="hidden" name="adicionar_convidado_noivos" value="1">
-                <div class="mb-2">
-                  <input type="text" name="nome_convidado" class="form-control form-control-sm" placeholder="Nome do titular (obrigatório)" required>
-                </div>
-                <div class="mb-2">
-                  <input type="text" name="telefone_convidado" class="form-control form-control-sm" placeholder="WhatsApp / Telefone">
-                </div>
-                <div class="mb-2">
-                  <select name="categoria_convidado" class="form-select form-select-sm text-secondary" required>
-                    <option value="" disabled selected>Grupo?</option>
-                    <option value="Família">Família</option>
-                    <option value="Amigos">Amigos</option>
-                    <option value="Outros">Outros</option>
-                  </select>
-                </div>
-                <div class="row g-2 mb-2">
-                  <div class="col-6">
-                    <input type="text" name="acompanhantes" class="form-control form-control-sm" placeholder="Acompanhante(s)">
-                  </div>
-                  <div class="col-6">
-                    <input type="text" name="filhos" class="form-control form-control-sm" placeholder="Filho(s)">
-                  </div>
-                </div>
-                <button type="submit" id="btn-add-conv" class="btn btn-primary btn-sm w-100 fw-bold">
-                  <i class="bi bi-plus-lg me-1"></i> Incluir na Lista
-                </button>
-              </form>
-            </div>
-
             <button class="btn btn-outline-primary btn-sm w-100 fw-bold rounded-pill shadow-sm collapsed"
                     type="button" data-bs-toggle="collapse" data-bs-target="#colapso-convidados">
               <i class="bi bi-list-ul me-1"></i> Ver Lista Completa
@@ -989,7 +1344,8 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                       <?= $grp ?> (<span class="cnt-grp"><?= count($conv_grupos[$grp]) ?></span>)
                     </div>
                     <?php foreach ($conv_grupos[$grp] as $con):
-                      $cConf = (bool)$con['confirmado']; ?>
+                      $cConf   = (bool)$con['confirmado'];
+                      $recusou = (!$cConf && ($con['resposta_rsvp'] ?? '') === 'recusado'); ?>
                     <div class="conv-row <?= $cConf ? 'conf' : 'pend' ?> p-2 mb-2 bg-light shadow-sm"
                          data-id="<?= $con['id'] ?>"
                          data-conf="<?= (int)$cConf ?>"
@@ -1000,10 +1356,12 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                         </h6>
                         <div class="d-flex align-items-center gap-1 flex-shrink-0">
                           <button type="button" class="btn p-0 border-0 bg-transparent btn-toggle-conv" data-id="<?= $con['id'] ?>">
-                            <span class="badge <?= $cConf ? 'bg-success' : 'bg-warning text-dark' ?> rounded-pill" style="font-size:.6rem;">
+                            <span class="badge <?= $cConf ? 'bg-success' : ($recusou ? 'bg-danger' : 'bg-warning text-dark') ?> rounded-pill" style="font-size:.6rem;">
                               <?= $cConf
                                 ? '<i class="bi bi-check-circle-fill me-1"></i> Confirmado'
-                                : '<i class="bi bi-hourglass-split me-1"></i> Pendente' ?>
+                                : ($recusou
+                                    ? '<i class="bi bi-x-circle-fill me-1"></i> Recusou'
+                                    : '<i class="bi bi-hourglass-split me-1"></i> Pendente') ?>
                             </span>
                           </button>
                           <button type="button" class="btn p-0 border-0 bg-transparent text-danger btn-excluir-conv" data-id="<?= $con['id'] ?>" title="Remover">
@@ -1034,11 +1392,13 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 
           </div>
         </div>
-        </div>
+
+      </div>
     </div>
   </div>
 </div>
 
+<!-- Modais de descrição de tarefas -->
 <?php foreach ($lista_checklist as $t): ?>
   <?php if (!empty($t['descricao'])): ?>
   <div class="modal fade" id="modalDesc_<?= $t['id'] ?>" tabindex="-1" aria-hidden="true">
@@ -1061,14 +1421,15 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
   <?php endif; ?>
 <?php endforeach; ?>
 
+<!-- Modal de Músicas -->
 <div class="modal fade" id="modalMusicas" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
     <div class="modal-content border-0 shadow-lg rounded-4" style="background:#f8fafc;">
-      
+
       <div class="modal-header border-0 px-4 pt-4 pb-2" style="background:transparent;">
         <div class="d-flex align-items-center gap-3">
           <div class="rounded-3 d-flex align-items-center justify-content-center shadow-sm"
-               style="width:42px;height:42px;background:#e0e7ff;border:1.5px solid #a5b4fc;">
+               style="width:42px;height:42px;background:var(--color-primary-light);border:1.5px solid #d9b997;">
             <i class="bi bi-music-note-beamed text-primary fs-5"></i>
           </div>
           <div>
@@ -1086,7 +1447,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               <i class="bi bi-plus-circle-fill text-primary fs-6"></i>
               <span class="fw-bold text-dark small text-uppercase" style="letter-spacing:.06em;">Adicionar Sugestão</span>
             </div>
-            
+
             <form id="form-musica">
               <div class="row g-2 mb-2">
                 <div class="col-md-5">
@@ -1127,7 +1488,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
           <?php else: ?>
             <div class="row g-3" id="grid-musicas">
               <?php foreach ($lista_musicas as $m):
-                $mOk = (int)$m['status'] === 1;
+                $mOk = $m['status'] === 'confirmada';
               ?>
                 <div class="col-12 musica-card-wrap" data-id="<?= $m['id'] ?>">
                   <div class="card border-0 shadow-sm rounded-3 <?= $mOk ? 'border-success border bg-success bg-opacity-10' : 'bg-white' ?>">
@@ -1143,8 +1504,8 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                              <?php endif; ?>
                            </div>
                            <h6 class="mb-0 fw-bold <?= $mOk ? 'text-success' : 'text-dark' ?>" style="font-size:.9rem;"><?= htmlspecialchars($m['titulo']) ?></h6>
-                           <?php if (!empty($m['link'])): ?>
-                             <a href="<?= htmlspecialchars($m['link']) ?>" target="_blank" class="small text-decoration-none mt-1 d-inline-block">
+                           <?php if (!empty($m['link']) && preg_match('#^https?://#i', $m['link'])): ?>
+                             <a href="<?= htmlspecialchars($m['link']) ?>" target="_blank" rel="noopener noreferrer" class="small text-decoration-none mt-1 d-inline-block">
                                <i class="bi bi-link-45deg"></i> Ouvir Referência
                              </a>
                            <?php endif; ?>
@@ -1172,6 +1533,67 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
    ============================================================ */
 const SELF = window.location.href;
 
+/* ---- COPIAR LINK DE CONFIRMAÇÃO ---- */
+document.getElementById('btn-copiar-link')?.addEventListener('click', async function () {
+  const input = document.getElementById('input-link-confirmacao');
+  const btn   = this;
+  const orig  = btn.innerHTML;
+  try {
+    await navigator.clipboard.writeText(input.value);
+  } catch {
+    input.removeAttribute('readonly');
+    input.select();
+    document.execCommand('copy');
+    input.setAttribute('readonly', 'readonly');
+  }
+  btn.innerHTML = '<i class="bi bi-check-lg me-1"></i> Copiado!';
+  setTimeout(() => { btn.innerHTML = orig; }, 1800);
+});
+
+/* ---- BUSCA + FILTRO DO CHECKLIST ---- */
+(function () {
+  const busca = document.getElementById('buscaChecklist');
+  if (!busca) return;
+  let filtroAtivo = 'todos';
+
+  function aplicarFiltroChecklist() {
+    const termo = busca.value.trim().toLowerCase();
+    document.querySelectorAll('#lista-etapas-checklist .etapa-wrap').forEach(etapaEl => {
+      let algumVisivel = false;
+      etapaEl.querySelectorAll('.tarefa-card').forEach(card => {
+        const nome   = card.dataset.tarefaNome || '';
+        const status = card.dataset.tarefaStatus || '';
+        const matchNome   = !termo || nome.includes(termo);
+        const matchStatus = filtroAtivo === 'todos' || status === filtroAtivo;
+        const visivel = matchNome && matchStatus;
+        card.classList.toggle('tarefa-row-hidden', !visivel);
+        if (visivel) algumVisivel = true;
+      });
+      etapaEl.classList.toggle('etapa-hidden', !algumVisivel);
+      if (algumVisivel && (termo || filtroAtivo !== 'todos')) {
+        const collapseEl = etapaEl.querySelector('.collapse');
+        if (collapseEl && !collapseEl.classList.contains('show')) {
+          new bootstrap.Collapse(collapseEl, { toggle: false }).show();
+        }
+      }
+    });
+  }
+
+  busca.addEventListener('input', aplicarFiltroChecklist);
+  document.querySelectorAll('.filtro-check').forEach(btn => {
+    btn.addEventListener('click', function () {
+      filtroAtivo = this.dataset.f;
+      document.querySelectorAll('.filtro-check').forEach(b => {
+        b.classList.remove('active', 'btn-primary', 'btn-warning', 'btn-success');
+        b.classList.add(b.dataset.f === 'pendente' ? 'btn-outline-warning' : b.dataset.f === 'concluido' ? 'btn-outline-success' : 'btn-outline-primary');
+      });
+      this.classList.remove('btn-outline-warning', 'btn-outline-success', 'btn-outline-primary');
+      this.classList.add('active', this.dataset.f === 'pendente' ? 'btn-warning' : this.dataset.f === 'concluido' ? 'btn-success' : 'btn-primary');
+      aplicarFiltroChecklist();
+    });
+  });
+})();
+
 function toast(msg, tipo = 'verde') {
   const wrap = document.getElementById('toast-wrap');
   const el   = document.createElement('div');
@@ -1187,8 +1609,11 @@ function toast(msg, tipo = 'verde') {
   }, 2800);
 }
 
+const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;
+
 async function ajax(obj) {
   obj.is_ajax = '1';
+  obj.csrf_token = CSRF_TOKEN;
   const fd = new FormData();
   Object.entries(obj).forEach(([k, v]) => fd.append(k, v));
   const r = await fetch(SELF, { method: 'POST', body: fd });
@@ -1203,6 +1628,76 @@ function brl(n) {
 /* Converte string de input (pt-BR) para float */
 function parseBrl(s) {
   return parseFloat(String(s).replace(/\./g, '').replace(',', '.')) || 0;
+}
+
+/* Botão "Marcar lidas": some com o badge e limpa a lista exibida */
+document.getElementById('btn-marcar-lidas')?.addEventListener('click', function (e) {
+  e.stopPropagation();
+  const badge = document.querySelector('#dropdown-notificacoes .badge');
+  if (badge) badge.remove();
+  const lista = document.getElementById('lista-notificacoes');
+  if (lista) {
+    lista.innerHTML = '<div class="text-center text-muted p-4 small"><i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.</div>';
+  }
+  fetch('notificacoes_marcar_lidas.php', { method: 'POST' }).catch(() => {});
+});
+
+/* Clicar em uma notificação também marca como lida e a remove da lista */
+document.getElementById('lista-notificacoes')?.addEventListener('click', function (e) {
+  const item = e.target.closest('.notif-item');
+  if (!item) return;
+  const badge = document.querySelector('#dropdown-notificacoes .badge');
+  if (badge) badge.remove();
+  fetch('notificacoes_marcar_lidas.php', { method: 'POST', keepalive: true }).catch(() => {});
+  item.remove();
+  const lista = document.getElementById('lista-notificacoes');
+  if (lista && !lista.querySelector('.notif-item')) {
+    lista.innerHTML = '<div class="text-center text-muted p-4 small"><i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.</div>';
+  }
+});
+
+/* ============================================================
+   ABRIR CONVERSA / HISTÓRICO (FIX: função estava ausente)
+   ============================================================ */
+function abrirConversa(tipo, id, titulo) {
+  const modalEl = document.getElementById('modalConversa');
+  if (!modalEl) return;
+  document.getElementById('conversa-titulo').textContent = titulo;
+  const corpo = document.getElementById('conversa-corpo');
+  corpo.innerHTML = '<div class="text-center py-4"><span class="spinner-border text-primary"></span></div>';
+  const modal = new bootstrap.Modal(modalEl);
+  modal.show();
+
+  // Monta lista de comentários já no DOM para o tipo/id informado
+  let comentarios = [];
+  if (tipo === 'tarefa') {
+    document.querySelectorAll('.lista-coment-tarefa').forEach(lista => {
+      const form = lista.nextElementSibling;
+      if (form && form.querySelector('[name="check_id"]')?.value == id) {
+        lista.querySelectorAll('div').forEach(d => comentarios.push(d.innerHTML));
+      }
+    });
+  } else {
+    document.querySelectorAll('.lista-coment-etapa').forEach(lista => {
+      const hidden = lista.closest('form')?.querySelector('[name="etapa_nome"]');
+      if (!hidden) {
+        // busca pelo form que tem o etapa_nome correto dentro do mesmo bloco
+        const bloco = lista.closest('.p-3');
+        if (bloco) {
+          const f = bloco.querySelector('input[name="etapa_nome"]');
+          if (f && f.value === id) {
+            lista.querySelectorAll('div').forEach(d => comentarios.push(d.innerHTML));
+          }
+        }
+      }
+    });
+  }
+
+  if (comentarios.length === 0) {
+    corpo.innerHTML = '<p class="text-muted text-center py-4 mb-0">Nenhum comentário ainda.</p>';
+  } else {
+    corpo.innerHTML = comentarios.map(c => `<div class="mb-2">${c}</div>`).join('');
+  }
 }
 
 /* ============================================================
@@ -1237,7 +1732,7 @@ document.querySelectorAll('.btn-toggle-tarefa').forEach(btn => {
         titulo.classList.toggle('text-dark', !novo);
       }
 
-      const hdr    = document.getElementById(hdrId);
+      const hdr = document.getElementById(hdrId);
       if (hdr) {
         const concEl = collapso.querySelectorAll('.tarefa-card.done').length;
         const pctE   = etaTot > 0 ? Math.round(concEl / etaTot * 100) : 0;
@@ -1328,53 +1823,136 @@ document.querySelectorAll('.form-ajax-tarefa').forEach(form => {
 });
 
 /* ============================================================
-   CONTROLE DE PAGAMENTO DOS FORNECEDORES (NOVO)
+   CONTROLE DE PAGAMENTO DOS FORNECEDORES
    ============================================================ */
+let totalPagoGeralNoivos = <?= json_encode($valor_pago_total) ?>;
+const totalContratoGeralNoivos = <?= json_encode($valor_cont) ?>;
 
-// Recalcula totais globais na tela após cada alteração
-function recalcularTotaisGlobais() {
-  let totalContrato = 0;
-  let totalPago     = 0;
-
-  document.querySelectorAll('.forn-card').forEach(card => {
-    const input = card.querySelector('.forn-input-pago');
-    const total = parseFloat(input?.dataset.total || 0);
-    const pago  = parseBrl(input?.value || '0');
-    totalContrato += total;
-    totalPago     += Math.min(pago, total);
-  });
-
-  const restante = Math.max(0, totalContrato - totalPago);
-  const pct      = totalContrato > 0 ? Math.round(totalPago / totalContrato * 100) : 0;
+function atualizarChipsGeraisNoivos() {
+  const restante = Math.max(0, totalContratoGeralNoivos - totalPagoGeralNoivos);
+  const pct      = totalContratoGeralNoivos > 0 ? Math.round(totalPagoGeralNoivos / totalContratoGeralNoivos * 100) : 0;
 
   const elPago  = document.getElementById('total-pago-geral');
   const elRest  = document.getElementById('total-rest-geral');
   const elBarra = document.getElementById('barra-pago-global');
   const elPct   = document.getElementById('pct-pago-label');
 
-  if (elPago)  elPago.textContent  = brl(totalPago);
+  if (elPago)  elPago.textContent  = brl(totalPagoGeralNoivos);
   if (elRest)  elRest.textContent  = brl(restante);
   if (elBarra) elBarra.style.width = pct + '%';
   if (elPct)   elPct.textContent   = pct + '%';
 }
 
-// Botões salvar pagamento
-document.querySelectorAll('.btn-salvar-pagamento').forEach(btn => {
+function atualizarCardFornecedorNoivos(card, pago, total) {
+  const rest = Math.max(0, total - pago);
+  const pct  = total > 0 ? Math.round(pago / total * 100) : 0;
+  const quit = rest <= 0;
+
+  const pagoAnterior = parseFloat(card.dataset.pago || 0);
+  totalPagoGeralNoivos += (pago - pagoAnterior);
+  card.dataset.pago = pago;
+
+  const barra  = card.querySelector('.forn-barra-fill');
+  const restEl = card.querySelector('.forn-rest-val');
+  const badge  = card.querySelector('.forn-pago-badge');
+  const pagoTxt = card.querySelector('.forn-pago-valor-txt');
+
+  if (barra) {
+    barra.style.width = pct + '%';
+    barra.className   = 'barra-pago-fill forn-barra-fill ' + (quit ? 'bg-success' : pct >= 50 ? 'bg-info' : 'bg-warning');
+  }
+  if (restEl) {
+    restEl.textContent = brl(rest);
+    restEl.className   = 'fw-bold forn-rest-val ' + (quit ? 'text-success' : 'text-danger');
+  }
+  if (badge) {
+    badge.textContent = quit ? '✓ Quitado' : (pct > 0 ? pct + '% pago' : 'Não iniciado');
+    badge.className   = 'forn-pago-badge ms-2 flex-shrink-0 ' + (quit ? 'bg-success text-white' : 'bg-warning text-dark');
+  }
+  if (pagoTxt) pagoTxt.textContent = 'R$ ' + pago.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+
+  atualizarChipsGeraisNoivos();
+}
+
+/* Somar novo pagamento ao valor já pago */
+document.querySelectorAll('.btn-add-pagamento-noivos').forEach(btn => {
   btn.addEventListener('click', async () => {
     const fid   = btn.dataset.id;
     const card  = document.getElementById('forn-' + fid);
-    const input = card.querySelector('.forn-input-pago');
+    const input = card.querySelector('.forn-input-add-noivos');
+    const total = parseFloat(input.dataset.total || 0);
+    const valor = parseBrl(input.value);
+
+    if (!valor || valor <= 0) { toast('Informe um valor maior que zero.', 'verm'); return; }
+
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    btn.disabled  = true;
+
+    try {
+      const r = await ajax({
+        adicionar_pagamento: '1',
+        fornecedor_id:       fid,
+        valor_pago:          valor.toString(),
+      });
+
+      if (r.ok) {
+        const pago = parseFloat(r.valor_pago);
+        const quit = parseFloat(r.valor_rest) <= 0;
+        atualizarCardFornecedorNoivos(card, pago, total);
+        input.value = '';
+        toast(quit ? 'Pagamento quitado! 🎉' : 'Pagamento adicionado!', quit ? 'verde' : 'info');
+      } else {
+        toast(r.msg || 'Erro ao salvar pagamento.', 'verm');
+      }
+    } catch {
+      toast('Erro de conexão. Tente novamente.', 'verm');
+    }
+
+    btn.innerHTML = orig;
+    btn.disabled  = false;
+  });
+});
+
+/* Alternar para o modo de corrigir o valor pago */
+document.querySelectorAll('.btn-editar-pago-noivos').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const fid       = btn.dataset.id;
+    const card      = document.getElementById('forn-' + fid);
+    const addWrap   = card.querySelector('.forn-add-wrap-noivos');
+    const editWrap  = card.querySelector('.forn-edit-wrap-noivos');
+    const editInput = editWrap.querySelector('.forn-input-edit-noivos');
+    editInput.value = parseFloat(card.dataset.pago || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+    addWrap.style.display  = 'none';
+    editWrap.style.display = 'flex';
+    editInput.focus();
+    editInput.select();
+  });
+});
+
+/* Cancelar a correção */
+document.querySelectorAll('.btn-cancelar-edit-noivos').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const card = btn.closest('.forn-card');
+    card.querySelector('.forn-edit-wrap-noivos').style.display = 'none';
+    card.querySelector('.forn-add-wrap-noivos').style.display  = 'flex';
+  });
+});
+
+/* Salvar a correção (sobrescreve o valor pago) */
+document.querySelectorAll('.btn-salvar-edit-noivos').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const fid   = btn.dataset.id;
+    const card  = document.getElementById('forn-' + fid);
+    const input = card.querySelector('.forn-input-edit-noivos');
     const total = parseFloat(input.dataset.total || 0);
     let   valor = parseBrl(input.value);
 
-    // Valida: não pode ser negativo
     if (valor < 0) { toast('O valor não pode ser negativo.', 'verm'); return; }
 
-    // Avisa se ultrapassar o valor do contrato
     if (valor > total) {
       toast('Valor maior que o contrato! Ajustado para o total.', 'info');
       valor = total;
-      input.value = total.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
     }
 
     const orig = btn.innerHTML;
@@ -1389,34 +1967,11 @@ document.querySelectorAll('.btn-salvar-pagamento').forEach(btn => {
       });
 
       if (r.ok) {
-        const pago   = parseFloat(r.valor_pago);
-        const rest   = Math.max(0, parseFloat(r.valor_rest));
-        const pct    = total > 0 ? Math.round(pago / total * 100) : 0;
-        const quit   = rest <= 0;
-
-        // Atualiza barra individual
-        const barra  = card.querySelector('.forn-barra-fill');
-        const restEl = card.querySelector('.forn-rest-val');
-        const badge  = card.querySelector('.forn-pago-badge');
-
-        if (barra) {
-          barra.style.width = pct + '%';
-          barra.className   = 'barra-pago-fill forn-barra-fill ' + (quit ? 'bg-success' : pct >= 50 ? 'bg-info' : 'bg-warning');
-        }
-        if (restEl) {
-          restEl.textContent = brl(rest);
-          restEl.className   = 'fw-bold forn-rest-val ' + (quit ? 'text-success' : 'text-danger');
-        }
-        if (badge) {
-          badge.textContent = quit ? '✓ Quitado' : (pct > 0 ? pct + '% pago' : 'Não iniciado');
-          badge.className   = 'forn-pago-badge ms-2 flex-shrink-0 ' + (quit ? 'bg-success text-white' : 'bg-warning text-dark');
-        }
-
-        // Atualiza o dataset do input para recálculo correto
-        input.value = pago.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-
-        recalcularTotaisGlobais();
-        toast(quit ? 'Pagamento quitado! 🎉' : 'Pagamento atualizado!', quit ? 'verde' : 'info');
+        const pago = parseFloat(r.valor_pago);
+        atualizarCardFornecedorNoivos(card, pago, total);
+        card.querySelector('.forn-edit-wrap-noivos').style.display = 'none';
+        card.querySelector('.forn-add-wrap-noivos').style.display  = 'flex';
+        toast('Valor corrigido!', 'info');
       } else {
         toast(r.msg || 'Erro ao salvar pagamento.', 'verm');
       }
@@ -1429,17 +1984,15 @@ document.querySelectorAll('.btn-salvar-pagamento').forEach(btn => {
   });
 });
 
-// Máscara de moeda nos inputs de pagamento
-document.querySelectorAll('.forn-input-pago').forEach(input => {
+document.querySelectorAll('.forn-input-add-noivos, .forn-input-edit-noivos').forEach(input => {
   input.addEventListener('blur', () => {
+    if (input.value.trim() === '') return;
     const n = parseBrl(input.value);
     if (!isNaN(n)) {
       input.value = n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
   });
-  input.addEventListener('focus', () => {
-    input.select();
-  });
+  input.addEventListener('focus', () => { input.select(); });
 });
 
 /* ============================================================
@@ -1453,70 +2006,6 @@ function deltaCntStatus(conf, n) {
   const e = document.getElementById(conf ? 'cnt-conf' : 'cnt-pend');
   if (e) e.textContent = +e.textContent + n;
 }
-
-document.getElementById('form-add-conv').addEventListener('submit', async e => {
-  e.preventDefault();
-  const form = e.target;
-  const fd   = new FormData(form);
-  const btn  = document.getElementById('btn-add-conv');
-  const orig = btn.innerHTML;
-  fd.append('is_ajax', '1');
-  btn.disabled  = true;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Salvando…';
-  try {
-    const r = await (await fetch(SELF, { method: 'POST', body: fd })).json();
-    if (r.ok) {
-      const extras = [
-        r.fone   ? `<div><i class="bi bi-whatsapp me-1 text-success"></i>${r.fone}</div>`   : '',
-        r.acomp  ? `<div><i class="bi bi-person-plus me-1"></i>Acomp: ${r.acomp}</div>`      : '',
-        r.filhos ? `<div><i class="bi bi-emoji-smile me-1"></i>Filhos: ${r.filhos}</div>`   : '',
-      ].filter(Boolean).join('');
-      const rowHtml = `
-        <div class="conv-row pend p-2 mb-2 bg-light shadow-sm"
-             data-id="${r.id}" data-conf="0" data-nome="${r.nome.toLowerCase()}">
-          <div class="d-flex justify-content-between align-items-start mb-1">
-            <h6 class="mb-0 small fw-bold text-dark text-truncate pe-2">${r.nome}</h6>
-            <div class="d-flex align-items-center gap-1 flex-shrink-0">
-              <button type="button" class="btn p-0 border-0 bg-transparent btn-toggle-conv" data-id="${r.id}">
-                <span class="badge bg-warning text-dark rounded-pill" style="font-size:.6rem;">
-                  <i class="bi bi-hourglass-split me-1"></i> Pendente
-                </span>
-              </button>
-              <button type="button" class="btn p-0 border-0 bg-transparent text-danger btn-excluir-conv" data-id="${r.id}" title="Remover">
-                <i class="bi bi-trash fs-6"></i>
-              </button>
-            </div>
-          </div>
-          ${extras ? `<div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.5;">${extras}</div>` : ''}
-        </div>`;
-
-      const lista   = document.getElementById('lista-convidados');
-      let   grupoEl = lista.querySelector(`.grupo-sec[data-grupo="${r.cat}"]`);
-      if (!grupoEl) {
-        const icons = { 'Família': 'bi-house-heart-fill', 'Amigos': 'bi-emoji-sunglasses-fill', 'Outros': 'bi-collection-fill' };
-        grupoEl = document.createElement('div');
-        grupoEl.className     = 'grupo-sec';
-        grupoEl.dataset.grupo = r.cat;
-        grupoEl.innerHTML     = `
-          <div class="badge bg-secondary text-white w-100 text-start px-3 py-2 rounded-2 mb-1 mt-2" style="font-size:.72rem;">
-            <i class="bi ${icons[r.cat] || 'bi-collection-fill'} me-1"></i>
-            ${r.cat} (<span class="cnt-grp">0</span>)
-          </div>`;
-        lista.appendChild(grupoEl);
-      }
-      grupoEl.insertAdjacentHTML('beforeend', rowHtml);
-      const cntG = grupoEl.querySelector('.cnt-grp');
-      if (cntG) cntG.textContent = +cntG.textContent + 1;
-      bindConvRow(grupoEl.querySelector('.conv-row:last-child'));
-      deltaCntTotal(1);
-      deltaCntStatus(false, 1);
-      form.reset();
-      toast('Convidado adicionado!');
-    }
-  } catch { toast('Erro ao adicionar convidado.', 'verm'); }
-  btn.disabled  = false;
-  btn.innerHTML = orig;
-});
 
 function bindToggleConv(btn) {
   btn.addEventListener('click', async () => {
@@ -1620,9 +2109,9 @@ function atualizarContadoresMusicas() {
 function bindBotoesMusica() {
   document.querySelectorAll('.btn-excluir-musica').forEach(btn => {
     btn.onclick = () => {
-      const id = btn.dataset.id;
+      const id   = btn.dataset.id;
       const wrap = btn.closest('.musica-card-wrap');
-      if(confirm('Deseja realmente remover esta sugestão de música?')) {
+      if (confirm('Deseja realmente remover esta sugestão de música?')) {
         ajax({ excluir_musica_noivos: '1', musica_id: id }).then(r => {
           if (r.ok) {
             wrap.style.transition = 'opacity .25s, transform .25s';
@@ -1654,7 +2143,7 @@ document.getElementById('form-musica')?.addEventListener('submit', async (e) => 
   const titulo  = document.getElementById('musica-titulo').value.trim();
   const link    = document.getElementById('musica-link').value.trim();
 
-  const btn = document.getElementById('btn-salvar-musica');
+  const btn  = document.getElementById('btn-salvar-musica');
   const orig = btn.innerHTML;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>...';
   btn.disabled = true;
@@ -1709,49 +2198,6 @@ document.getElementById('form-musica')?.addEventListener('submit', async (e) => 
 });
 
 bindBotoesMusica();
-<!-- Modal de Conversa/Histórico -->
-<div class="modal fade" id="modalConversa" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered modal-lg">
-    <div class="modal-content border-0 shadow-lg rounded-4">
-      <div class="modal-header bg-light border-0">
-        <h5 class="modal-title fw-bold" id="conversa-titulo">Histórico</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-      </div>
-      <div class="modal-body p-4" id="conversa-corpo" style="max-height: 400px; overflow-y: auto;">
-        <!-- Histórico injetado via JS -->
-      </div>
-    </div>
-  </div>
-</div>
 </script>
-// Adicione isto junto aos seus scripts JS
-async function abrirConversa(tipo, id_ou_nome, titulo) {
-    const modal = new bootstrap.Modal(document.getElementById('modalConversa'));
-    document.getElementById('conversa-titulo').textContent = titulo;
-    const corpo = document.getElementById('conversa-corpo');
-    corpo.innerHTML = '<div class="text-center py-4"><span class="spinner-border text-primary"></span></div>';
-    modal.show();
-
-    // Faz a chamada para buscar o histórico
-    // Você pode criar uma rota nova ou usar um dos endpoints existentes
-    // Exemplo genérico:
-    try {
-        const response = await fetch(`buscar_historico.php?tipo=${tipo}&id=${encodeURIComponent(id_ou_nome)}`);
-        const dados = await response.json();
-        
-        let html = '<div class="d-flex flex-column gap-3">';
-        dados.forEach(c => {
-            html += `
-                <div class="p-3 rounded-3 ${c.autor === 'Noivos' ? 'bg-primary text-white align-self-end' : 'bg-light align-self-start border'}">
-                    <small style="font-size: .65rem; opacity: .8;">${c.autor}</small>
-                    <div class="mt-1">${c.comentario}</div>
-                </div>`;
-        });
-        html += '</div>';
-        corpo.innerHTML = html;
-    } catch (e) {
-        corpo.innerHTML = '<p class="text-danger">Erro ao carregar histórico.</p>';
-    }
-}
 </body>
 </html>

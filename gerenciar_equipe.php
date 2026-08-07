@@ -1,5 +1,7 @@
 <?php
 session_start();
+require_once 'sessao_timeout.inc.php';
+verificar_sessao_ativa();
 require_once 'conexao.php';
 
 // ============================================================
@@ -31,10 +33,30 @@ if (!isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'admin') 
 $msg_sucesso = '';
 $msg_erro = '';
 
+/* ============================================================
+   CSRF TOKEN
+   ============================================================ */
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrf_token = $_SESSION['csrf_token'];
+
+function verificar_csrf(): void {
+    $token_post    = $_POST['csrf_token']    ?? '';
+    $token_header  = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    $token_enviado = $token_post !== '' ? $token_post : $token_header;
+    if (!hash_equals($_SESSION['csrf_token'], $token_enviado)) {
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => false, 'msg' => 'Token CSRF inválido.']);
+        exit;
+    }
+}
+
 // ============================================================
 // ADICIONAR USUÁRIO
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adicionar_usuario'])) {
+    verificar_csrf();
     $nome  = trim($_POST['nome'] ?? '');
     $email = trim($_POST['email'] ?? '');
     $senha = trim($_POST['senha'] ?? '');
@@ -55,9 +77,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adicionar_usuario']))
 }
 
 // ============================================================
+// ALTERAR SENHA
+// ============================================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['alterar_senha'])) {
+    verificar_csrf();
+    $id_usuario = (int)($_POST['id_usuario'] ?? 0);
+    $nova_senha = trim($_POST['nova_senha'] ?? '');
+
+    if ($id_usuario > 0 && strlen($nova_senha) >= 6) {
+        $senha_hash = password_hash($nova_senha, PASSWORD_BCRYPT);
+        $stmt = $pdo->prepare("UPDATE usuarios SET senha = ? WHERE id = ?");
+        $stmt->execute([$senha_hash, $id_usuario]);
+        $msg_sucesso = "Senha atualizada com sucesso!";
+    } else {
+        $msg_erro = "A senha precisa ter pelo menos 6 caracteres.";
+    }
+}
+
+// ============================================================
 // EXCLUIR USUÁRIO
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['excluir_usuario'])) {
+    verificar_csrf();
     $id_excluir = (int)$_POST['id_usuario'];
     
     try {
@@ -78,30 +119,51 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gerenciar Equipe</title>
+    <title>Gerenciar Equipe - Meu Evento PRO</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="css/estilo.css?v=8">
+    <style>
+        @media (max-width: 767.98px) {
+            .navbar-brand img { height: 26px !important; }
+
+            /* Cabeçalho do card: título e botão "Novo Usuário" empilham e o botão vira largura total */
+            .card-header.d-flex.justify-content-between {
+                flex-direction: column;
+                align-items: stretch !important;
+                gap: 0.75rem;
+            }
+            .card-header.d-flex.justify-content-between > button {
+                width: 100%;
+            }
+
+        }
+    </style>
 </head>
 <body class="bg-light">
 
 <nav class="navbar navbar-dark bg-dark shadow-sm">
     <div class="container">
-        <span class="navbar-brand fw-bold text-primary">
-            <i class="bi bi-people-fill text-warning"></i> Gestão de Equipe
+        <span class="navbar-brand mb-0">
+            <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">
         </span>
-        <a href="painel_admin.php" class="btn btn-sm btn-outline-light">
-            <i class="bi bi-arrow-left"></i> Voltar ao Painel
-        </a>
+        <div class="d-flex align-items-center gap-2">
+            <a href="painel_admin.php" class="btn btn-sm btn-outline-light rounded-3">
+                <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
+            </a>
+        </div>
     </div>
 </nav>
 
 <div class="container my-5">
-    
+
+    <h4 class="fw-bold mb-4"><i class="bi bi-people-fill text-primary me-2"></i>Gestão de Equipe</h4>
+
     <?php if ($msg_sucesso): ?>
-        <div class="alert alert-success fw-bold shadow-sm"><i class="bi bi-check-circle-fill me-2"></i><?= $msg_sucesso ?></div>
+        <div class="alert alert-success fw-bold shadow-sm"><i class="bi bi-check-circle-fill me-2"></i><?= htmlspecialchars($msg_sucesso) ?></div>
     <?php endif; ?>
     <?php if ($msg_erro): ?>
-        <div class="alert alert-danger fw-bold shadow-sm"><i class="bi bi-exclamation-triangle-fill me-2"></i><?= $msg_erro ?></div>
+        <div class="alert alert-danger fw-bold shadow-sm"><i class="bi bi-exclamation-triangle-fill me-2"></i><?= htmlspecialchars($msg_erro) ?></div>
     <?php endif; ?>
 
     <div class="card border-0 shadow-sm rounded-4">
@@ -112,7 +174,8 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER 
             </button>
         </div>
         <div class="card-body p-0">
-            <div class="table-responsive">
+            <!-- Desktop / tablet (>=768px): tabela completa -->
+            <div class="table-responsive d-none d-md-block">
                 <table class="table table-hover align-middle mb-0">
                     <thead class="table-light text-muted small text-uppercase">
                         <tr>
@@ -135,26 +198,98 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER 
                                 <?php endif; ?>
                             </td>
                             <td class="text-center pe-4">
-                                <form method="POST" onsubmit="return confirm('Tem certeza que deseja excluir o acesso de <?= htmlspecialchars($user['nome']) ?>?');">
-                                    <input type="hidden" name="excluir_usuario" value="1">
-                                    <input type="hidden" name="id_usuario" value="<?= $user['id'] ?>">
-                                    <button type="submit" class="btn btn-sm btn-outline-danger" title="Excluir Usuário">
-                                        <i class="bi bi-trash"></i>
+                                <div class="d-flex gap-2 justify-content-center flex-wrap">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" title="Alterar Senha"
+                                            data-bs-toggle="modal" data-bs-target="#modalSenha<?= $user['id'] ?>">
+                                        <i class="bi bi-key-fill"></i>
                                     </button>
-                                </form>
+                                    <form method="POST" class="d-inline" onsubmit="return confirm('Tem certeza que deseja excluir o acesso de <?= htmlspecialchars($user['nome']) ?>?');">
+                                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
+                                        <input type="hidden" name="excluir_usuario" value="1">
+                                        <input type="hidden" name="id_usuario" value="<?= $user['id'] ?>">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger" title="Excluir Usuário">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </form>
+                                </div>
                             </td>
                         </tr>
                         <?php endforeach; ?>
-                        
+
                         <?php if (empty($lista_usuarios)): ?>
                         <tr><td colspan="4" class="text-center py-4 text-muted">Nenhum usuário encontrado. Adicione o primeiro no botão acima!</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
             </div>
+
+            <!-- Mobile (<768px): lista em cards, sem tabela -->
+            <div class="d-md-none">
+                <?php foreach ($lista_usuarios as $user): ?>
+                <div class="p-3 border-bottom">
+                    <div class="d-flex justify-content-between align-items-start gap-2">
+                        <div class="flex-grow-1" style="min-width:0;">
+                            <div class="fw-bold text-dark"><?= htmlspecialchars($user['nome']) ?></div>
+                            <div class="text-muted small text-truncate"><?= htmlspecialchars($user['email']) ?></div>
+                            <div class="mt-2">
+                                <?php if ($user['tipo'] === 'admin'): ?>
+                                    <span class="badge bg-danger bg-opacity-10 text-danger border border-danger px-3 py-1 rounded-pill">Admin</span>
+                                <?php else: ?>
+                                    <span class="badge bg-primary bg-opacity-10 text-primary border border-primary px-3 py-1 rounded-pill">Assistente</span>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                        <div class="d-flex gap-2 flex-shrink-0">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" title="Alterar Senha"
+                                    data-bs-toggle="modal" data-bs-target="#modalSenha<?= $user['id'] ?>">
+                                <i class="bi bi-key-fill"></i>
+                            </button>
+                            <form method="POST" class="d-inline" onsubmit="return confirm('Tem certeza que deseja excluir o acesso de <?= htmlspecialchars($user['nome']) ?>?');">
+                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
+                                <input type="hidden" name="excluir_usuario" value="1">
+                                <input type="hidden" name="id_usuario" value="<?= $user['id'] ?>">
+                                <button type="submit" class="btn btn-sm btn-outline-danger" title="Excluir Usuário">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+
+                <?php if (empty($lista_usuarios)): ?>
+                <div class="text-center py-4 text-muted">Nenhum usuário encontrado. Adicione o primeiro no botão acima!</div>
+                <?php endif; ?>
+            </div>
         </div>
     </div>
 </div>
+
+<?php foreach ($lista_usuarios as $user): ?>
+<div class="modal fade" id="modalSenha<?= $user['id'] ?>" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg rounded-4">
+            <div class="modal-header bg-dark text-white border-0 rounded-top-4">
+                <h5 class="modal-title fw-bold"><i class="bi bi-key-fill text-warning me-2"></i>Alterar Senha de <?= htmlspecialchars($user['nome']) ?></h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
+                <input type="hidden" name="alterar_senha" value="1">
+                <input type="hidden" name="id_usuario" value="<?= $user['id'] ?>">
+                <div class="modal-body p-4">
+                    <label class="form-label fw-bold text-secondary small">Nova Senha</label>
+                    <input type="password" name="nova_senha" class="form-control bg-light" required minlength="6" autocomplete="new-password">
+                </div>
+                <div class="modal-footer border-0 pt-0">
+                    <button type="button" class="btn btn-light rounded-pill px-4" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-success fw-bold rounded-pill px-4 shadow-sm">Salvar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+<?php endforeach; ?>
 
 <div class="modal fade" id="modalAdicionar" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
@@ -164,6 +299,7 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER 
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                 <input type="hidden" name="adicionar_usuario" value="1">
                 <div class="modal-body p-4">
                     <div class="mb-3">
