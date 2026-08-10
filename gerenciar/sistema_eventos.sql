@@ -163,7 +163,7 @@ INSERT INTO `checklist_modelos` (`id`, `tipo_padrao`, `etapa`, `tarefa`, `descri
 CREATE TABLE `clientes` (
   `id` int(11) NOT NULL,
   `nome` varchar(150) NOT NULL,
-  `cpf` varchar(14) NOT NULL,
+  `cpf` varchar(14) DEFAULT NULL,
   `rg` varchar(20) DEFAULT NULL,
   `contato` varchar(20) DEFAULT NULL,
   `email` varchar(100) NOT NULL,
