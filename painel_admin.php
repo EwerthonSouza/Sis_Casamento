@@ -195,11 +195,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($evento_id > 0) {
             try {
                 $pdo->beginTransaction();
+
+                // Descobre o cliente dono do evento e as fotos do mural, antes de apagar tudo
+                $stmt_cli = $pdo->prepare("SELECT cliente_id FROM eventos WHERE id = ?");
+                $stmt_cli->execute([$evento_id]);
+                $cliente_id = $stmt_cli->fetchColumn();
+
+                $stmt_fotos = $pdo->prepare("SELECT nome_imagem FROM inspiracoes_fotos WHERE evento_id = ?");
+                $stmt_fotos->execute([$evento_id]);
+                $fotos_para_apagar = $stmt_fotos->fetchAll(PDO::FETCH_COLUMN);
+
+                // checklist, convidados, inspiracoes_fotos, playlist_evento e
+                // servicos_assessoria já têm ON DELETE CASCADE no banco — mas
+                // mesas, musicas_evento e notas_evento não têm, então precisam
+                // ser apagadas manualmente aqui, senão ficam órfãs.
                 $pdo->prepare("DELETE FROM checklist WHERE evento_id = ?")->execute([$evento_id]);
                 $pdo->prepare("DELETE FROM convidados WHERE evento_id = ?")->execute([$evento_id]);
                 $pdo->prepare("DELETE FROM fornecedores_evento WHERE evento_id = ?")->execute([$evento_id]);
+                $pdo->prepare("DELETE FROM mesas WHERE evento_id = ?")->execute([$evento_id]);
+                $pdo->prepare("DELETE FROM musicas_evento WHERE evento_id = ?")->execute([$evento_id]);
+                $pdo->prepare("DELETE FROM notas_evento WHERE evento_id = ?")->execute([$evento_id]);
                 $pdo->prepare("DELETE FROM eventos WHERE id = ?")->execute([$evento_id]);
+
+                // Só remove o cliente se este era o único evento dele —
+                // um cliente pode ter mais de um casamento cadastrado.
+                if ($cliente_id) {
+                    $stmt_outros = $pdo->prepare("SELECT COUNT(*) FROM eventos WHERE cliente_id = ?");
+                    $stmt_outros->execute([$cliente_id]);
+                    if ((int)$stmt_outros->fetchColumn() === 0) {
+                        $pdo->prepare("DELETE FROM clientes WHERE id = ?")->execute([$cliente_id]);
+                    }
+                }
+
                 $pdo->commit();
+
+                foreach ($fotos_para_apagar as $nome_imagem) {
+                    $caminho = __DIR__ . '/uploads/' . $nome_imagem;
+                    if (is_file($caminho)) { @unlink($caminho); }
+                }
+
                 $_SESSION['msg_sucesso'] = "Evento e todos os seus dados removidos!";
             } catch (Exception $e) {
                 $pdo->rollBack();
@@ -219,37 +253,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nome_noivo       = trim($_POST['nome_noivo'] ?? '');
         $nome_cliente     = $nome_noiva . ' & ' . $nome_noivo;
         $email_cliente    = trim($_POST['email_cliente'] ?? '');
-        $cpf_cliente      = preg_replace('/[^0-9]/', '', trim($_POST['cpf_cliente'] ?? '')); 
+        $cpf_cliente      = preg_replace('/[^0-9]/', '', trim($_POST['cpf_cliente'] ?? ''));
+        $cpf_cliente      = $cpf_cliente !== '' ? $cpf_cliente : null; // NULL em vez de '' — a coluna é UNIQUE e '' duplicada quebra o 2º cadastro sem CPF
         $telefone_cliente = trim($_POST['telefone_cliente'] ?? '');
         $senha_raw        = trim($_POST['senha_cliente'] ?? '');
         $data_evento      = $_POST['data_evento'] ?? '';
         $hora_evento      = !empty($_POST['hora_evento']) ? $_POST['hora_evento'] : null;
         $modelo_checklist = $_POST['modelo_checklist'] ?? '';
 
+        // Impede usar o e-mail de uma conta da equipe (admin/assistente) como
+        // login do casal — evita ambiguidade de identidade entre as duas tabelas.
+        $stmt_email_equipe = $pdo->prepare("SELECT id FROM usuarios WHERE email = ?");
+        $stmt_email_equipe->execute([$email_cliente]);
+        $email_e_da_equipe = (bool)$stmt_email_equipe->fetch();
+
+        if ($email_e_da_equipe) {
+            $_SESSION['msg_erro'] = "Este e-mail já pertence a uma conta da equipe (admin/assistente) e não pode ser usado para o login do casal.";
+            header("Location: painel_admin.php");
+            exit;
+        }
+
         if (!empty($nome_noiva) && !empty($nome_noivo) && !empty($email_cliente) && !empty($data_evento)) {
-            
+
             $senha_raw = empty($senha_raw) ? '123456' : $senha_raw;
             $senha_hash = password_hash($senha_raw, PASSWORD_BCRYPT);
 
-            $cpf_liberado = true;
-            if (!empty($cpf_cliente)) {
-                $stmt_check = $pdo->prepare("
-                    SELECT e.data_evento 
-                    FROM clientes c
-                    INNER JOIN eventos e ON c.id = e.cliente_id
-                    WHERE c.cpf = ?
-                ");
-                $stmt_check->execute([$cpf_cliente]);
-                foreach ($stmt_check->fetchAll(PDO::FETCH_ASSOC) as $ev) {
-                    if ($ev['data_evento'] >= $data_hoje) {
-                        $cpf_liberado = false;
-                        break;
-                    }
+            // Bloqueia duplicidade se o e-mail (sempre) ou o CPF (quando informado)
+            // já tiver um casamento futuro cadastrado — antes só checava por CPF,
+            // então cadastros repetidos com CPF em branco criavam eventos duplicados.
+            $cadastro_liberado = true;
+            $stmt_check = $pdo->prepare("
+                SELECT e.data_evento
+                FROM clientes c
+                INNER JOIN eventos e ON c.id = e.cliente_id
+                WHERE c.email = ? OR (c.cpf IS NOT NULL AND c.cpf = ?)
+            ");
+            $stmt_check->execute([$email_cliente, $cpf_cliente]);
+            foreach ($stmt_check->fetchAll(PDO::FETCH_ASSOC) as $ev) {
+                if ($ev['data_evento'] >= $data_hoje) {
+                    $cadastro_liberado = false;
+                    break;
                 }
             }
 
-            if (!$cpf_liberado) {
-                $_SESSION['msg_erro'] = "Atenção: Já existe um casamento futuro cadastrado para este CPF.";
+            if (!$cadastro_liberado) {
+                $_SESSION['msg_erro'] = "Atenção: Este e-mail (ou CPF) já possui um casamento futuro cadastrado.";
             } else {
                 try {
                     $pdo->beginTransaction();
@@ -1041,43 +1089,43 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Fechar"></button>
             </div>
             <div class="modal-body p-4">
-                <form method="POST" action="" class="needs-validation" novalidate>
+                <form method="POST" action="" class="needs-validation" autocomplete="off" novalidate>
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                     <input type="hidden" name="cadastrar_evento" value="1">
 
                     <h6 class="fw-bold text-success mb-3 border-bottom pb-2">Acesso e Dados dos Noivos</h6>
-                    
+
                     <div class="row g-3 mb-3">
                         <div class="col-md-6">
                             <label class="form-label fw-bold text-secondary small">Nome (Noiva / Cônjuge 1) *</label>
-                            <input type="text" name="nome_noiva" class="form-control bg-light" placeholder="Ex: Ana Maria" required>
+                            <input type="text" name="nome_noiva" class="form-control bg-light" placeholder="Ex: Ana Maria" autocomplete="off" required>
                             <div class="invalid-feedback">O nome é obrigatório.</div>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label fw-bold text-secondary small">Nome (Noivo / Cônjuge 2) *</label>
-                            <input type="text" name="nome_noivo" class="form-control bg-light" placeholder="Ex: Lucas Mendes" required>
+                            <input type="text" name="nome_noivo" class="form-control bg-light" placeholder="Ex: Lucas Mendes" autocomplete="off" required>
                         </div>
                     </div>
 
                     <div class="row g-3 mb-3">
                         <div class="col-md-6">
                             <label class="form-label fw-bold text-secondary small">E-mail de Login *</label>
-                            <input type="email" name="email_cliente" class="form-control bg-light" placeholder="exemplo@email.com" required>
+                            <input type="email" name="email_cliente" class="form-control bg-light" placeholder="exemplo@email.com" autocomplete="off" required>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label fw-bold text-secondary small">WhatsApp / Telefone</label>
-                            <input type="tel" name="telefone_cliente" id="input-telefone" class="form-control bg-light" placeholder="(00) 00000-0000">
+                            <input type="tel" name="telefone_cliente" id="input-telefone" class="form-control bg-light" placeholder="(00) 00000-0000" autocomplete="off">
                         </div>
                     </div>
 
                     <div class="row g-3 mb-4">
                         <div class="col-md-6">
                             <label class="form-label fw-bold text-secondary small">CPF do Contratante</label>
-                            <input type="text" name="cpf_cliente" id="input-cpf" class="form-control bg-light" placeholder="000.000.000-00">
+                            <input type="text" name="cpf_cliente" id="input-cpf" class="form-control bg-light" placeholder="000.000.000-00" autocomplete="off">
                         </div>
                         <div class="col-md-6">
                             <label class="form-label fw-bold text-secondary small">Senha Inicial <span class="text-muted fw-normal">(vazio = 123456)</span></label>
-                            <input type="password" name="senha_cliente" class="form-control bg-light" placeholder="Senha do portal">
+                            <input type="password" name="senha_cliente" class="form-control bg-light" placeholder="Senha do portal" autocomplete="new-password">
                         </div>
                     </div>
 
