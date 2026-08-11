@@ -69,7 +69,12 @@ $pct_g = $total_g > 0 ? round($conc_g / $total_g * 100) : 0;
 
 $conv_grupos = [];
 $total_conf = 0; $total_pend = 0;
+$mesas_por_id = [];
 if (isset($mostrar['convidados'])) {
+    $rsMesas = $pdo->prepare("SELECT id, nome FROM mesas WHERE evento_id = ?");
+    $rsMesas->execute([$evento_id]);
+    foreach ($rsMesas->fetchAll() as $m) { $mesas_por_id[$m['id']] = $m['nome']; }
+
     $rs2 = $pdo->prepare("SELECT * FROM convidados WHERE evento_id = ? ORDER BY nome ASC");
     $rs2->execute([$evento_id]);
     $lista_conv = $rs2->fetchAll();
@@ -215,17 +220,19 @@ ob_start();
 <?php else: foreach ($conv_grupos as $grp => $lista): ?>
   <h3><?= h($grp) ?> (<?= count($lista) ?>)</h3>
   <table>
-    <thead><tr><th style="width:28%">Nome</th><th style="width:18%">Telefone</th><th style="width:12%">Status</th><th style="width:42%">Acompanhantes / Filhos</th></tr></thead>
+    <thead><tr><th style="width:24%">Nome</th><th style="width:15%">Telefone</th><th style="width:11%">Status</th><th style="width:14%">Mesa</th><th style="width:36%">Acompanhantes / Filhos</th></tr></thead>
     <tbody>
     <?php foreach ($lista as $c):
       $extras = [];
       if (($c['acompanhantes'] ?? 0) > 0) { $extras[] = 'Acomp (' . (int)$c['acompanhantes'] . '): ' . ($c['nomes_acompanhantes'] ?: '—'); }
       if (($c['filhos'] ?? 0) > 0) { $extras[] = 'Filhos (' . (int)$c['filhos'] . '): ' . ($c['idades_filhos'] ?: '—'); }
+      $mesa_nome = !empty($c['mesa_id']) ? ($mesas_por_id[$c['mesa_id']] ?? '—') : '—';
     ?>
       <tr>
         <td><?= h($c['nome']) ?></td>
         <td><?= h($c['telefone'] ?? '') ?></td>
         <td><span class="badge <?= $c['confirmado'] ? 'ok' : 'pend' ?>"><?= $c['confirmado'] ? 'Confirmado' : 'Pendente' ?></span></td>
+        <td><?= h($mesa_nome) ?></td>
         <td><?= h(implode(' · ', $extras)) ?></td>
       </tr>
     <?php endforeach; ?>
