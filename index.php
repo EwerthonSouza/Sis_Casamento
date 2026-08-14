@@ -302,10 +302,6 @@ body{
 
         <div class="card-body">
 
-            <h4 class="text-center mb-4 fw-bold">
-                Acessar Sistema
-            </h4>
-
             <?php if($aviso_sessao_expirada): ?>
                 <div class="alert alert-warning text-center">
                     <i class="bi bi-clock-history"></i>

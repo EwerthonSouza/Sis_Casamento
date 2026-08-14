@@ -19,6 +19,31 @@ $tipoColuna = $pdo->query("
 if ($tipoColuna !== 'varchar') {
     $pdo->exec("ALTER TABLE convidados MODIFY COLUMN faixa_etaria VARCHAR(50) NOT NULL DEFAULT 'Adulto (11+ anos)'");
 }
+try { $pdo->query("SELECT foto_casal FROM eventos LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal VARCHAR(255) NULL"); }
+try { $pdo->query("SELECT foto_casal_ativa FROM eventos LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal_ativa TINYINT(1) NOT NULL DEFAULT 0"); }
+try { $pdo->query("SELECT cor_convite FROM eventos LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN cor_convite VARCHAR(7) NULL"); }
+
+/** Clareia (percent > 0) ou escurece (percent < 0) uma cor hex, mantendo o mesmo tom */
+function ajustar_cor(string $hex, float $percent): string {
+    $hex = ltrim($hex, '#');
+    if (strlen($hex) === 3) { $hex = $hex[0] . $hex[0] . $hex[1] . $hex[1] . $hex[2] . $hex[2]; }
+    $r = hexdec(substr($hex, 0, 2));
+    $g = hexdec(substr($hex, 2, 2));
+    $b = hexdec(substr($hex, 4, 2));
+    if ($percent >= 0) {
+        $r += (255 - $r) * $percent;
+        $g += (255 - $g) * $percent;
+        $b += (255 - $b) * $percent;
+    } else {
+        $r *= (1 + $percent);
+        $g *= (1 + $percent);
+        $b *= (1 + $percent);
+    }
+    return sprintf('#%02x%02x%02x', max(0, min(255, round($r))), max(0, min(255, round($g))), max(0, min(255, round($b))));
+}
 
 const FAIXAS_ETARIAS = [
     'Criança de Colo (0-5 anos)',
@@ -71,6 +96,12 @@ $evento = $stmt->fetch();
 if (!$evento) {
     die("<div class='container mt-5 alert alert-danger'>Evento não encontrado.</div>");
 }
+
+$cor_convite_base = (!empty($evento['cor_convite']) && preg_match('/^#[0-9a-fA-F]{6}$/', $evento['cor_convite']))
+    ? $evento['cor_convite'] : '#8b5e3c';
+$cor_convite_1 = ajustar_cor($cor_convite_base, -0.22);
+$cor_convite_2 = $cor_convite_base;
+$cor_convite_3 = ajustar_cor($cor_convite_base, 0.22);
 
 $dias = null;
 if (!empty($evento['data_evento'])) {
@@ -235,9 +266,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </script>
     <style>
         :root {
-            --vinho-1: #6f4a2f;
-            --vinho-2: #8b5e3c;
-            --vinho-3: #a9744f;
+            --vinho-1: <?= $cor_convite_1 ?>;
+            --vinho-2: <?= $cor_convite_2 ?>;
+            --vinho-3: <?= $cor_convite_3 ?>;
         }
         body {
             min-height: 100vh;
@@ -262,6 +293,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             padding: 2.2rem 1.5rem 1.6rem;
         }
         .rsvp-topo .anel { font-size: 2.4rem; opacity: .9; margin-bottom: .4rem; }
+        .rsvp-topo .foto-casal {
+            width: 110px; height: 110px; border-radius: 50%; object-fit: cover;
+            border: 3px solid rgba(255, 255, 255, .6); box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
+            margin-bottom: .8rem;
+        }
         .rsvp-topo h2 { font-weight: 800; margin-bottom: .2rem; letter-spacing: -.5px; }
         .rsvp-topo .data-evento { opacity: .85; font-size: .92rem; }
         .rsvp-topo .contagem {
@@ -320,7 +356,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <div class="container">
     <div class="rsvp-card">
         <div class="rsvp-topo">
-            <div class="anel"><i class="bi bi-rings"></i></div>
+            <?php if (!empty($evento['foto_casal_ativa']) && !empty($evento['foto_casal'])): ?>
+                <img src="uploads/<?= htmlspecialchars($evento['foto_casal'], ENT_QUOTES, 'UTF-8') ?>" alt="Foto do casal" class="foto-casal">
+            <?php else: ?>
+                <div class="anel"><i class="bi bi-rings"></i></div>
+            <?php endif; ?>
             <h2>Confirmação de Presença</h2>
             <div class="data-evento">
                 Casamento de <strong><?= htmlspecialchars($evento['nome_cliente'], ENT_QUOTES, 'UTF-8') ?></strong>

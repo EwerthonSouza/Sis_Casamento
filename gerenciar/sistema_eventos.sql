@@ -231,16 +231,19 @@ CREATE TABLE `eventos` (
   `tipo_assessoria` enum('Básica','Completa') NOT NULL,
   `local_cerimonia` varchar(255) DEFAULT NULL,
   `tem_festa` tinyint(1) DEFAULT 0,
-  `local_festa` varchar(255) DEFAULT NULL
+  `local_festa` varchar(255) DEFAULT NULL,
+  `foto_casal` varchar(255) DEFAULT NULL,
+  `foto_casal_ativa` tinyint(1) NOT NULL DEFAULT 0,
+  `cor_convite` varchar(7) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Despejando dados para a tabela `eventos`
 --
 
-INSERT INTO `eventos` (`id`, `cliente_id`, `data_evento`, `hora_evento`, `tipo_ceremonia`, `local_ceremonia`, `tem_recepcao`, `local_recepcao`, `tipo_assessoria`, `local_cerimonia`, `tem_festa`, `local_festa`) VALUES
-(5, 18, '2026-06-25', '20:00:00', 'Igreja', '', 0, NULL, 'Básica', 'Igreja Matriz', 1, 'espaço eventos'),
-(6, 19, '2026-12-24', NULL, 'Igreja', '', 0, NULL, 'Básica', NULL, 0, NULL);
+INSERT INTO `eventos` (`id`, `cliente_id`, `data_evento`, `hora_evento`, `tipo_ceremonia`, `local_ceremonia`, `tem_recepcao`, `local_recepcao`, `tipo_assessoria`, `local_cerimonia`, `tem_festa`, `local_festa`, `foto_casal`, `foto_casal_ativa`, `cor_convite`) VALUES
+(5, 18, '2026-06-25', '20:00:00', 'Igreja', '', 0, NULL, 'Básica', 'Igreja Matriz', 1, 'espaço eventos', NULL, 0, NULL),
+(6, 19, '2026-12-24', NULL, 'Igreja', '', 0, NULL, 'Básica', NULL, 0, NULL, NULL, 0, NULL);
 
 -- --------------------------------------------------------
 
@@ -305,7 +308,7 @@ INSERT INTO `fornecedores_evento` (`id`, `evento_id`, `nome`, `servico`, `contat
 CREATE TABLE `inspiracoes_fotos` (
   `id` int(11) NOT NULL,
   `evento_id` int(11) NOT NULL,
-  `categoria` enum('Decoração','Buquê','Bolo','Outros') NOT NULL,
+  `categoria` varchar(50) NOT NULL DEFAULT 'Outros',
   `titulo` varchar(100) NOT NULL,
   `nome_imagem` varchar(255) NOT NULL,
   `data_upload` timestamp NOT NULL DEFAULT current_timestamp(),

@@ -68,6 +68,12 @@ catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN concluido_em
 try { $pdo->query("SELECT concluido_por FROM checklist LIMIT 1"); }
 catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN concluido_por VARCHAR(20) NULL"); }
 
+// 1d. Foto do casal exibida no convite (link público de confirmação de presença)
+try { $pdo->query("SELECT foto_casal FROM eventos LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal VARCHAR(255) NULL"); }
+try { $pdo->query("SELECT foto_casal_ativa FROM eventos LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal_ativa TINYINT(1) NOT NULL DEFAULT 0"); }
+
 require_once 'notificacoes.inc.php';
 
 // 2. Colunas de convidados
@@ -407,6 +413,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ->execute([$novo, $id, $evento_id]);
         }
         if ($ajax) json_out(['ok' => true, 'novo' => $novo]);
+        header("Location: gerenciar.php?id=$evento_id"); exit;
+    }
+
+    // 11b. Editar convidado (AJAX)
+    if (isset($_POST['editar_convidado'])) {
+        $id         = (int)($_POST['convidado_id'] ?? 0);
+        $nome       = trim($_POST['nome_convidado']      ?? '');
+        $fone       = trim($_POST['telefone_convidado']  ?? '');
+        $cat        = trim($_POST['categoria_convidado'] ?? '') ?: 'Outros';
+        $acomp_qtd  = max(0, (int)($_POST['acompanhantes']      ?? 0));
+        $acomp_nms  = trim($_POST['nomes_acompanhantes'] ?? '');
+        $filhos_qtd = max(0, (int)($_POST['filhos']             ?? 0));
+        $filhos_ids = trim($_POST['idades_filhos']       ?? '');
+        if ($id > 0 && $nome !== '') {
+            $pdo->prepare("UPDATE convidados SET nome = ?, telefone = ?, categoria = ?, acompanhantes = ?, filhos = ?, nomes_acompanhantes = ?, idades_filhos = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids, $id, $evento_id]);
+            if ($ajax) json_out([
+                'ok'                   => true,
+                'id'                   => $id,
+                'nome'                 => htmlspecialchars($nome, ENT_QUOTES, 'UTF-8'),
+                'categoria'            => htmlspecialchars($cat, ENT_QUOTES, 'UTF-8'),
+                'telefone'             => htmlspecialchars($fone, ENT_QUOTES, 'UTF-8'),
+                'acompanhantes'        => $acomp_qtd,
+                'filhos'               => $filhos_qtd,
+                'nomes_acompanhantes'  => htmlspecialchars($acomp_nms, ENT_QUOTES, 'UTF-8'),
+                'idades_filhos'        => htmlspecialchars($filhos_ids, ENT_QUOTES, 'UTF-8'),
+            ]);
+        } else {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o nome do convidado.']);
+        }
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
@@ -794,6 +830,15 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
       text-overflow: ellipsis;
       display: block;
       max-width: 100%;
+    }
+
+    .foto-casal-header {
+      width: 54px; height: 54px; object-fit: cover; border-radius: 50%;
+      border: 3px solid rgba(255,255,255,.5); box-shadow: 0 4px 14px rgba(0,0,0,.25);
+      flex-shrink: 0;
+    }
+    @media (min-width: 768px) {
+      .foto-casal-header { width: 72px; height: 72px; }
     }
 
     /* ---- LINHA DE BOTÕES DO CABEÇALHO: no mobile o sino fica ao lado do
@@ -1219,38 +1264,43 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
       </div>
 
       <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
-        <div>
-          <div class="text-white-50 small text-uppercase fw-semibold mb-1" style="letter-spacing:.06em;">
-            <i class="bi bi-rings text-warning me-1"></i> Casamento de
-          </div>
-          <h2 class="fw-bold mb-1 text-white nome-noivos-titulo" style="letter-spacing:-.5px;">
-            <?= htmlspecialchars($evento['nome'], ENT_QUOTES, 'UTF-8') ?>
-          </h2>
-          <p class="text-white-50 mb-3 small">Painel de controle do evento</p>
-          <div class="d-flex flex-nowrap gap-2 badges-info-evento">
-            <span class="badge bg-white bg-opacity-10 text-white px-3 py-2 rounded-pill text-nowrap">
-              <i class="bi bi-calendar-event me-1 text-warning"></i>
-              <?= date('d/m/Y', strtotime($evento['data_evento'])) ?>
-            </span>
-            <?php if (!empty($evento['hora_evento'])): ?>
-            <span class="badge bg-white bg-opacity-10 text-white px-3 py-2 rounded-pill text-nowrap">
-              <i class="bi bi-clock me-1 text-warning"></i>
-              <?= date('H:i', strtotime($evento['hora_evento'])) ?>
-            </span>
-            <?php endif; ?>
-            <?php if ($dias > 0): ?>
-              <span class="badge bg-success bg-opacity-25 text-white border border-success border-opacity-25 px-3 py-2 rounded-pill fw-bold text-nowrap">
-                Faltam <?= $dias ?> dias!
+        <div class="d-flex align-items-center gap-3">
+          <?php if (!empty($evento['foto_casal_ativa']) && !empty($evento['foto_casal'])): ?>
+            <img src="uploads/<?= htmlspecialchars($evento['foto_casal'], ENT_QUOTES, 'UTF-8') ?>" alt="Foto do casal" class="foto-casal-header">
+          <?php endif; ?>
+          <div>
+            <div class="text-white-50 small text-uppercase fw-semibold mb-1" style="letter-spacing:.06em;">
+              <i class="bi bi-rings text-warning me-1"></i> Casamento de
+            </div>
+            <h2 class="fw-bold mb-1 text-white nome-noivos-titulo" style="letter-spacing:-.5px;">
+              <?= htmlspecialchars($evento['nome'], ENT_QUOTES, 'UTF-8') ?>
+            </h2>
+            <p class="text-white-50 mb-3 small">Painel de controle do evento</p>
+            <div class="d-flex flex-nowrap gap-2 badges-info-evento">
+              <span class="badge bg-white bg-opacity-10 text-white px-3 py-2 rounded-pill text-nowrap">
+                <i class="bi bi-calendar-event me-1 text-warning"></i>
+                <?= date('d/m/Y', strtotime($evento['data_evento'])) ?>
               </span>
-            <?php elseif ($dias === 0): ?>
-              <span class="badge bg-warning bg-opacity-25 text-warning border border-warning border-opacity-25 px-3 py-2 rounded-pill fw-bold text-nowrap">
-                É Hoje! <i class="bi bi-stars"></i>
+              <?php if (!empty($evento['hora_evento'])): ?>
+              <span class="badge bg-white bg-opacity-10 text-white px-3 py-2 rounded-pill text-nowrap">
+                <i class="bi bi-clock me-1 text-warning"></i>
+                <?= date('H:i', strtotime($evento['hora_evento'])) ?>
               </span>
-            <?php else: ?>
-              <span class="badge bg-secondary bg-opacity-25 text-white border border-secondary border-opacity-25 px-3 py-2 rounded-pill fw-bold text-nowrap">
-                Realizado há <?= abs($dias) ?> dias
-              </span>
-            <?php endif; ?>
+              <?php endif; ?>
+              <?php if ($dias > 0): ?>
+                <span class="badge bg-success bg-opacity-25 text-white border border-success border-opacity-25 px-3 py-2 rounded-pill fw-bold text-nowrap">
+                  Faltam <?= $dias ?> dias!
+                </span>
+              <?php elseif ($dias === 0): ?>
+                <span class="badge bg-warning bg-opacity-25 text-warning border border-warning border-opacity-25 px-3 py-2 rounded-pill fw-bold text-nowrap">
+                  É Hoje! <i class="bi bi-stars"></i>
+                </span>
+              <?php else: ?>
+                <span class="badge bg-secondary bg-opacity-25 text-white border border-secondary border-opacity-25 px-3 py-2 rounded-pill fw-bold text-nowrap">
+                  Realizado há <?= abs($dias) ?> dias
+                </span>
+              <?php endif; ?>
+            </div>
           </div>
         </div>
         <?php if ($total_g > 0):
@@ -1861,6 +1911,18 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
                                 <?= $cConf ? '<i class="bi bi-check-circle-fill me-1"></i> Confirmado' : ($recusou ? '<i class="bi bi-x-circle-fill me-1"></i> Recusou' : '<i class="bi bi-hourglass-split me-1"></i> Pendente') ?>
                               </span>
                             </button>
+                            <button type="button" class="btn p-0 border-0 bg-transparent text-primary btn-edit-conv"
+                                    data-id="<?= $con['id'] ?>"
+                                    data-nome="<?= htmlspecialchars($con['nome'], ENT_QUOTES, 'UTF-8') ?>"
+                                    data-categoria="<?= htmlspecialchars($con['categoria'], ENT_QUOTES, 'UTF-8') ?>"
+                                    data-telefone="<?= htmlspecialchars($con['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                    data-acompanhantes="<?= (int)$con['acompanhantes'] ?>"
+                                    data-nomes-acompanhantes="<?= htmlspecialchars($con['nomes_acompanhantes'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                    data-filhos="<?= (int)$con['filhos'] ?>"
+                                    data-idades-filhos="<?= htmlspecialchars($con['idades_filhos'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                    title="Editar">
+                              <i class="bi bi-pencil fs-6"></i>
+                            </button>
                             <button type="button" class="btn p-0 border-0 bg-transparent text-danger btn-excluir-conv" data-id="<?= $con['id'] ?>" title="Remover">
                               <i class="bi bi-trash fs-6"></i>
                             </button>
@@ -2111,6 +2173,64 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
         <div class="modal-footer border-0 pt-0">
           <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
           <button type="submit" class="btn btn-success btn-sm px-4 rounded-pill fw-bold">Cadastrar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Editar Convidado -->
+<div class="modal fade" id="modalEditConvidado" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header bg-light border-0">
+        <h5 class="modal-title fw-bold"><i class="bi bi-pencil-square text-primary me-2"></i> Editar Convidado</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="form-edit-convidado">
+        <input type="hidden" id="econv-id">
+        <div class="modal-body p-4">
+          <div class="mb-3">
+            <label class="form-label small fw-bold text-secondary">Nome do Convidado / Família (Titular)</label>
+            <input type="text" id="econv-nome" class="form-control" required>
+          </div>
+          <div class="row g-3 mb-4">
+            <div class="col-12 col-md-6">
+              <label class="form-label small fw-bold text-secondary">Categoria / Grupo</label>
+              <input type="text" id="econv-categoria" class="form-control" list="lista-categorias" placeholder="Ex: Padrinhos...">
+            </div>
+            <div class="col-12 col-md-6">
+              <label class="form-label small fw-bold text-secondary">Telefone / WhatsApp</label>
+              <input type="text" id="econv-telefone" class="form-control" placeholder="(00) 00000-0000">
+            </div>
+          </div>
+          <hr class="my-4 text-secondary opacity-25">
+          <h6 class="fw-bold small text-dark mb-3"><i class="bi bi-people-fill text-secondary"></i> Acompanhantes</h6>
+          <div class="row g-3 mb-4">
+            <div class="col-12 col-sm-4">
+              <label class="form-label small text-secondary">Quantidade</label>
+              <input type="number" min="0" id="econv-acompanhantes" class="form-control">
+            </div>
+            <div class="col-12 col-sm-8">
+              <label class="form-label small text-secondary">Nomes (separados por vírgula)</label>
+              <input type="text" id="econv-nomes-acompanhantes" class="form-control" placeholder="Ex: Maria, João...">
+            </div>
+          </div>
+          <h6 class="fw-bold small text-dark mb-3"><i class="bi bi-emoji-smile-fill text-secondary"></i> Filhos</h6>
+          <div class="row g-3">
+            <div class="col-12 col-sm-4">
+              <label class="form-label small text-secondary">Quantidade</label>
+              <input type="number" min="0" id="econv-filhos" class="form-control">
+            </div>
+            <div class="col-12 col-sm-8">
+              <label class="form-label small text-secondary">Idades (separadas por vírgula)</label>
+              <input type="text" id="econv-idades-filhos" class="form-control" placeholder="Ex: 5 anos, 12 anos...">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer border-0 pt-0">
+          <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
+          <button type="submit" id="btn-salvar-edit-convidado" class="btn btn-primary btn-sm px-4 rounded-pill fw-bold">Salvar Alterações</button>
         </div>
       </form>
     </div>
@@ -3178,11 +3298,124 @@ function bindExcluirConv(btn) {
   });
 }
 
-document.querySelectorAll('.conv-row').forEach(row => {
-  const t = row.querySelector('.btn-toggle-conv');
-  const x = row.querySelector('.btn-excluir-conv');
-  if (t) bindToggleConv(t);
-  if (x) bindExcluirConv(x);
+const GRUPO_CONV_ICON = 'bi-tag-fill';
+const modalEditConvEl = document.getElementById('modalEditConvidado');
+const modalEditConv   = modalEditConvEl ? new bootstrap.Modal(modalEditConvEl) : null;
+
+function bindEditConv(btn) {
+  btn.addEventListener('click', () => {
+    document.getElementById('econv-id').value                 = btn.dataset.id;
+    document.getElementById('econv-nome').value                = btn.dataset.nome;
+    document.getElementById('econv-categoria').value           = btn.dataset.categoria;
+    document.getElementById('econv-telefone').value            = btn.dataset.telefone;
+    document.getElementById('econv-acompanhantes').value       = btn.dataset.acompanhantes;
+    document.getElementById('econv-nomes-acompanhantes').value = btn.dataset.nomesAcompanhantes;
+    document.getElementById('econv-filhos').value              = btn.dataset.filhos;
+    document.getElementById('econv-idades-filhos').value       = btn.dataset.idadesFilhos;
+    modalEditConv?.show();
+  });
+}
+
+function bindConvRow(row) {
+  const t  = row.querySelector('.btn-toggle-conv');
+  const x  = row.querySelector('.btn-excluir-conv');
+  const ed = row.querySelector('.btn-edit-conv');
+  if (t)  bindToggleConv(t);
+  if (x)  bindExcluirConv(x);
+  if (ed) bindEditConv(ed);
+}
+
+document.querySelectorAll('.conv-row').forEach(bindConvRow);
+
+document.getElementById('form-edit-convidado')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id   = document.getElementById('econv-id').value;
+  const nome = document.getElementById('econv-nome').value.trim();
+  if (!nome) return;
+
+  const btn  = document.getElementById('btn-salvar-edit-convidado');
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>...';
+  btn.disabled = true;
+
+  try {
+    const r = await ajax({
+      editar_convidado: '1',
+      convidado_id: id,
+      nome_convidado: nome,
+      categoria_convidado: document.getElementById('econv-categoria').value.trim(),
+      telefone_convidado: document.getElementById('econv-telefone').value.trim(),
+      acompanhantes: document.getElementById('econv-acompanhantes').value || 0,
+      nomes_acompanhantes: document.getElementById('econv-nomes-acompanhantes').value.trim(),
+      filhos: document.getElementById('econv-filhos').value || 0,
+      idades_filhos: document.getElementById('econv-idades-filhos').value.trim(),
+    });
+
+    if (r.ok) {
+      const row = document.querySelector(`.conv-row[data-id="${r.id}"]`);
+      if (row) {
+        const oldGrupoEl = row.closest('.grupo-sec');
+        const cat = r.categoria || 'Outros';
+
+        row.dataset.nome = r.nome.toLowerCase();
+        const h6 = row.querySelector('h6');
+        if (h6) { h6.textContent = r.nome; h6.title = r.nome; }
+
+        row.querySelector('.text-muted.border-top')?.remove();
+        const extrasParts = [];
+        if (r.telefone) extrasParts.push(`<div><i class="bi bi-whatsapp me-1 text-success"></i>${r.telefone}</div>`);
+        if (r.acompanhantes > 0) extrasParts.push(`<div><i class="bi bi-person-plus me-1"></i>Acomp (${r.acompanhantes}): ${r.nomes_acompanhantes || '<span class="fst-italic text-black-50">Nomes não informados</span>'}</div>`);
+        if (r.filhos > 0) extrasParts.push(`<div><i class="bi bi-emoji-smile me-1"></i>Filhos (${r.filhos}): ${r.idades_filhos || '<span class="fst-italic text-black-50">Idades não informadas</span>'}</div>`);
+        if (extrasParts.length) {
+          row.insertAdjacentHTML('beforeend', `<div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.4;">${extrasParts.join('')}</div>`);
+        }
+
+        const btnEdit = row.querySelector('.btn-edit-conv');
+        if (btnEdit) {
+          btnEdit.dataset.nome                = r.nome;
+          btnEdit.dataset.categoria           = cat;
+          btnEdit.dataset.telefone            = r.telefone;
+          btnEdit.dataset.acompanhantes       = r.acompanhantes;
+          btnEdit.dataset.nomesAcompanhantes  = r.nomes_acompanhantes;
+          btnEdit.dataset.filhos              = r.filhos;
+          btnEdit.dataset.idadesFilhos        = r.idades_filhos;
+        }
+
+        // Move para o grupo certo, se a categoria mudou
+        if (!oldGrupoEl || oldGrupoEl.dataset.grupo !== cat) {
+          let novoGrupoEl = [...document.querySelectorAll('#lista-convidados .grupo-sec')].find(el => el.dataset.grupo === cat);
+          if (!novoGrupoEl) {
+            document.getElementById('lista-convidados').insertAdjacentHTML('beforeend', `
+              <div class="grupo-sec" data-grupo="${cat}">
+                <div class="badge bg-secondary text-white w-100 text-start px-3 py-2 rounded-2 mb-1 mt-2 sec-badge">
+                  <i class="bi ${GRUPO_CONV_ICON} me-1"></i> ${cat} (<span class="cnt-grp">0</span>)
+                </div>
+              </div>`);
+            novoGrupoEl = [...document.querySelectorAll('#lista-convidados .grupo-sec')].find(el => el.dataset.grupo === cat);
+          }
+          novoGrupoEl.appendChild(row);
+          const novoCnt = novoGrupoEl.querySelector('.cnt-grp');
+          if (novoCnt) novoCnt.textContent = novoGrupoEl.querySelectorAll('.conv-row').length;
+
+          if (oldGrupoEl) {
+            const restantes = oldGrupoEl.querySelectorAll('.conv-row');
+            const oldCnt = oldGrupoEl.querySelector('.cnt-grp');
+            if (oldCnt) oldCnt.textContent = restantes.length;
+            if (restantes.length === 0) oldGrupoEl.remove();
+          }
+        }
+      }
+
+      modalEditConv?.hide();
+      toast('Convidado atualizado!', 'verde');
+    } else {
+      toast(r.msg || 'Erro ao salvar.', 'verm');
+    }
+  } catch {
+    toast('Erro de conexão.', 'verm');
+  }
+  btn.innerHTML = orig;
+  btn.disabled = false;
 });
 
 /* ============================================================

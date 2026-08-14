@@ -137,7 +137,7 @@ $etapa_aberta = $_SESSION['etapa_aberta'] ?? null;
 unset($_SESSION['mensagem'], $_SESSION['tipo_msg'], $_SESSION['aba_ativa'], $_SESSION['etapa_aberta']);
 
 // Buscar e ordenar todos os modelos
-$modelos_cadastrados = $pdo->query("SELECT * FROM checklist_modelos ORDER BY etapa ASC, tarefa ASC")->fetchAll();
+$modelos_cadastrados = $pdo->query("SELECT * FROM checklist_modelos ORDER BY etapa ASC, id ASC")->fetchAll();
 
 // Agrupar
 $modelos_com_recepcao = [];

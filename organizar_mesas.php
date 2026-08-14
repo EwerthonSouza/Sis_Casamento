@@ -211,6 +211,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
     }
 
+    // 7c. Editar Convidado
+    if (isset($_POST['editar_convidado'])) {
+        $cid        = (int)($_POST['convidado_id'] ?? 0);
+        $nome       = trim($_POST['nome_convidado']      ?? '');
+        $fone       = trim($_POST['telefone_convidado']  ?? '');
+        $cat        = trim($_POST['categoria_convidado'] ?? 'Outros');
+        $acomp_qtd  = max(0, (int)($_POST['acompanhantes']      ?? 0));
+        $acomp_nms  = trim($_POST['nomes_acompanhantes'] ?? '');
+        $filhos_qtd = max(0, (int)($_POST['filhos']             ?? 0));
+        $filhos_ids = trim($_POST['idades_filhos']       ?? '');
+        if ($cid > 0 && $nome !== '') {
+            $pdo->prepare("UPDATE convidados SET nome = ?, telefone = ?, categoria = ?, acompanhantes = ?, filhos = ?, nomes_acompanhantes = ?, idades_filhos = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids, $cid, $evento_id]);
+            $_SESSION['msg_sucesso'] = "Convidado <strong>" . htmlspecialchars($nome) . "</strong> atualizado!";
+        } else {
+            $_SESSION['msg_erro'] = "Informe o nome do convidado.";
+        }
+        if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
+    }
+
+    // 7d. Excluir Convidado
+    if (isset($_POST['excluir_convidado'])) {
+        $cid = (int)($_POST['convidado_id'] ?? 0);
+        $st  = $pdo->prepare("SELECT nome FROM convidados WHERE id = ? AND evento_id = ?");
+        $st->execute([$cid, $evento_id]);
+        $nn  = $st->fetchColumn() ?: 'Convidado';
+        $pdo->prepare("DELETE FROM convidados WHERE id = ? AND evento_id = ?")->execute([$cid, $evento_id]);
+        $_SESSION['msg_sucesso'] = "Convidado <strong>" . htmlspecialchars($nn) . "</strong> removido.";
+        if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
+    }
+
     // 8. Alternar Confirmação (Marcar/Desmarcar Presença)
     if (isset($_POST['alternar_confirmacao'])) {
         $cid = (int)$_POST['convidado_id'];
@@ -241,7 +272,7 @@ $stmtM->execute([$evento_id]);
 $lista_mesas = $stmtM->fetchAll(PDO::FETCH_ASSOC);
 
 $stmtC = $pdo->prepare("
-    SELECT id, nome, categoria, acompanhantes, filhos, confirmado,
+    SELECT id, nome, telefone, categoria, acompanhantes, filhos, confirmado,
            mesa_id, nomes_acompanhantes, idades_filhos
     FROM convidados WHERE evento_id = ? ORDER BY nome ASC
 ");
@@ -380,6 +411,18 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     .btn-acao-convidado { transition: opacity 0.15s, transform 0.1s; }
     .btn-acao-convidado:hover { opacity: 0.7; transform: scale(1.1); }
     .btn-acao-convidado:active { transform: scale(0.95); }
+
+    /* Botões de ação (editar/excluir) do convidado — chip circular com hover destacado */
+    .conv-actions { background: #f8fafc; border-radius: 999px; padding: 2px 4px; }
+    .btn-icon-conv {
+      width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: transparent; line-height: 1; transition: background .15s, transform .1s;
+    }
+    .btn-icon-conv i { font-size: .66rem; }
+    .btn-icon-conv.text-primary:hover { background: rgba(13,110,253,.14); transform: scale(1.08); }
+    .btn-icon-conv.text-danger:hover  { background: rgba(220,53,69,.14);  transform: scale(1.08); }
+    .btn-icon-conv:active { transform: scale(0.92); }
 
     @media print {
       .no-print { display: none !important; }
@@ -549,9 +592,33 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                     <span class="fw-semibold small text-dark text-truncate" title="<?= htmlspecialchars($c['nome']) ?>">
                       <?= htmlspecialchars($c['nome']) ?>
                     </span>
-                    <span class="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 rounded-pill flex-shrink-0" style="font-size:.62rem;">
-                      <i class="bi bi-person-fill"></i> <?= $c['lugares'] ?>
-                    </span>
+                    <div class="d-flex align-items-center gap-2 flex-shrink-0 no-print">
+                      <span class="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 rounded-pill" style="font-size:.62rem;">
+                        <i class="bi bi-person-fill"></i> <?= $c['lugares'] ?>
+                      </span>
+                      <div class="d-flex align-items-center gap-1 conv-actions">
+                        <button type="button" class="btn-icon-conv text-primary btn-edit-convidado"
+                                title="Editar convidado"
+                                data-id="<?= $c['id'] ?>"
+                                data-nome="<?= htmlspecialchars($c['nome'], ENT_QUOTES, 'UTF-8') ?>"
+                                data-telefone="<?= htmlspecialchars($c['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                data-categoria="<?= htmlspecialchars($c['categoria'], ENT_QUOTES, 'UTF-8') ?>"
+                                data-acompanhantes="<?= (int)$c['acompanhantes'] ?>"
+                                data-nomes-acompanhantes="<?= htmlspecialchars($c['nomes_acompanhantes'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                data-filhos="<?= (int)$c['filhos'] ?>"
+                                data-idades-filhos="<?= htmlspecialchars($c['idades_filhos'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                data-bs-toggle="modal" data-bs-target="#modalEditConvidado">
+                          <i class="bi bi-pencil-fill"></i>
+                        </button>
+                        <form method="POST" class="m-0 form-excluir-convidado">
+                          <input type="hidden" name="excluir_convidado" value="1">
+                          <input type="hidden" name="convidado_id" value="<?= $c['id'] ?>">
+                          <button type="submit" class="btn-icon-conv text-danger" title="Excluir convidado">
+                            <i class="bi bi-trash-fill"></i>
+                          </button>
+                        </form>
+                      </div>
+                    </div>
                   </div>
 
                   <?php if (!empty($c['nomes_acompanhantes']) || !empty($c['idades_filhos'])): ?>
@@ -722,6 +789,30 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                         </button>
                       </form>
 
+                      <!-- Botões Editar / Excluir -->
+                      <div class="d-flex align-items-center gap-1 conv-actions">
+                        <button type="button" class="btn-icon-conv text-primary btn-edit-convidado"
+                                title="Editar convidado"
+                                data-id="<?= $cm['id'] ?>"
+                                data-nome="<?= htmlspecialchars($cm['nome'], ENT_QUOTES, 'UTF-8') ?>"
+                                data-telefone="<?= htmlspecialchars($cm['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                data-categoria="<?= htmlspecialchars($cm['categoria'], ENT_QUOTES, 'UTF-8') ?>"
+                                data-acompanhantes="<?= (int)$cm['acompanhantes'] ?>"
+                                data-nomes-acompanhantes="<?= htmlspecialchars($cm['nomes_acompanhantes'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                data-filhos="<?= (int)$cm['filhos'] ?>"
+                                data-idades-filhos="<?= htmlspecialchars($cm['idades_filhos'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                data-bs-toggle="modal" data-bs-target="#modalEditConvidado">
+                          <i class="bi bi-pencil-fill"></i>
+                        </button>
+                        <form method="POST" class="m-0 form-excluir-convidado">
+                          <input type="hidden" name="excluir_convidado" value="1">
+                          <input type="hidden" name="convidado_id" value="<?= $cm['id'] ?>">
+                          <button type="submit" class="btn-icon-conv text-danger" title="Excluir convidado">
+                            <i class="bi bi-trash-fill"></i>
+                          </button>
+                        </form>
+                      </div>
+
                       <!-- Botão Remover -->
                       <form method="POST" class="m-0 form-remover">
                         <input type="hidden" name="remover_da_mesa" value="1">
@@ -852,6 +943,63 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   </div>
 </div>
 
+<!-- Modal: Editar Convidado -->
+<div class="modal fade" id="modalEditConvidado" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header border-0 pb-0">
+        <h6 class="modal-title fw-bold"><i class="bi bi-pencil-fill text-primary me-2"></i>Editar Convidado</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="POST" class="form-ajax">
+        <input type="hidden" name="editar_convidado" value="1">
+        <input type="hidden" name="convidado_id" id="ec-id">
+        <div class="modal-body py-3">
+          <div class="mb-3">
+            <label class="form-label small fw-semibold text-secondary">Nome do Convidado / Família (Titular)</label>
+            <input type="text" name="nome_convidado" id="ec-nome" class="form-control rounded-3" required>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold text-secondary">Categoria / Grupo</label>
+              <input type="text" name="categoria_convidado" id="ec-categoria" class="form-control rounded-3" list="lista-categorias-mesas" placeholder="Ex: Padrinhos..." required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
+              <input type="text" name="telefone_convidado" id="ec-telefone" class="form-control rounded-3" placeholder="(00) 00000-0000">
+            </div>
+          </div>
+          <hr class="my-3 text-secondary opacity-25">
+          <div class="row g-3 mb-3">
+            <div class="col-4">
+              <label class="form-label small fw-semibold text-secondary">Acompanhantes</label>
+              <input type="number" min="0" name="acompanhantes" id="ec-acompanhantes" class="form-control rounded-3">
+            </div>
+            <div class="col-8">
+              <label class="form-label small fw-semibold text-secondary">Nomes (separados por vírgula)</label>
+              <input type="text" name="nomes_acompanhantes" id="ec-nomes-acompanhantes" class="form-control rounded-3" placeholder="Ex: Maria, João...">
+            </div>
+          </div>
+          <div class="row g-3">
+            <div class="col-4">
+              <label class="form-label small fw-semibold text-secondary">Filhos</label>
+              <input type="number" min="0" name="filhos" id="ec-filhos" class="form-control rounded-3">
+            </div>
+            <div class="col-8">
+              <label class="form-label small fw-semibold text-secondary">Idades (separadas por vírgula)</label>
+              <input type="text" name="idades_filhos" id="ec-idades-filhos" class="form-control rounded-3" placeholder="Ex: 5 anos, 12 anos...">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer border-0 pt-0">
+          <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
+          <button type="submit" class="btn btn-primary btn-sm px-4 rounded-pill fw-semibold">Salvar Alterações</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: Add Mesa -->
 <div class="modal fade" id="modalAdd" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered modal-sm">
@@ -949,6 +1097,19 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('e-cap').value  = btnEdit.dataset.cap;
     }
     
+    // Botão Editar Convidado
+    const btnEditConv = e.target.closest('.btn-edit-convidado');
+    if (btnEditConv) {
+      document.getElementById('ec-id').value                  = btnEditConv.dataset.id;
+      document.getElementById('ec-nome').value                = btnEditConv.dataset.nome;
+      document.getElementById('ec-categoria').value            = btnEditConv.dataset.categoria;
+      document.getElementById('ec-telefone').value             = btnEditConv.dataset.telefone;
+      document.getElementById('ec-acompanhantes').value        = btnEditConv.dataset.acompanhantes;
+      document.getElementById('ec-nomes-acompanhantes').value  = btnEditConv.dataset.nomesAcompanhantes;
+      document.getElementById('ec-filhos').value                = btnEditConv.dataset.filhos;
+      document.getElementById('ec-idades-filhos').value         = btnEditConv.dataset.idadesFilhos;
+    }
+
     // Botão Adicionar Convidado na Mesa
     const btnAddGuest = e.target.closest('.btn-add-guest');
     if (btnAddGuest) {
@@ -1111,7 +1272,7 @@ document.addEventListener('DOMContentLoaded', function () {
   document.addEventListener('submit', function(e) {
     const form = e.target;
     // Note a adição do 'alternar_confirmacao'
-    const isAction = form.querySelector('[name="adicionar_mesa"], [name="editar_mesa"], [name="criar_multiplas_mesas"], [name="excluir_mesa"], [name="esvaziar_mesa"], [name="remover_da_mesa"], [name="adicionar_convidado_mesa"], [name="adicionar_convidado"], [name="alternar_confirmacao"]');
+    const isAction = form.querySelector('[name="adicionar_mesa"], [name="editar_mesa"], [name="criar_multiplas_mesas"], [name="excluir_mesa"], [name="esvaziar_mesa"], [name="remover_da_mesa"], [name="adicionar_convidado_mesa"], [name="adicionar_convidado"], [name="editar_convidado"], [name="excluir_convidado"], [name="alternar_confirmacao"]');
 
     if (isAction) {
       e.preventDefault();
@@ -1121,6 +1282,9 @@ document.addEventListener('DOMContentLoaded', function () {
       }
       if (form.querySelector('[name="esvaziar_mesa"]')) {
         if (!confirm('Deseja realmente esvaziar esta mesa? Todos os convidados voltarão para a fila.')) return;
+      }
+      if (form.querySelector('[name="excluir_convidado"]')) {
+        if (!confirm('Tem certeza que quer excluir este convidado? Essa ação não pode ser desfeita.')) return;
       }
 
       const modalNode = form.closest('.modal');

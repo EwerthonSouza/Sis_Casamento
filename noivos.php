@@ -47,6 +47,16 @@ catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN concluido_em
 try { $pdo->query("SELECT concluido_por FROM checklist LIMIT 1"); }
 catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN concluido_por VARCHAR(20) NULL"); }
 
+// Foto do casal exibida no convite (link público de confirmação de presença)
+try { $pdo->query("SELECT foto_casal FROM eventos LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal VARCHAR(255) NULL"); }
+try { $pdo->query("SELECT foto_casal_ativa FROM eventos LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal_ativa TINYINT(1) NOT NULL DEFAULT 0"); }
+
+// Cor de fundo da página do convite (link público de confirmação de presença)
+try { $pdo->query("SELECT cor_convite FROM eventos LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN cor_convite VARCHAR(7) NULL"); }
+
 /* ============================================================
    HELPER: Resposta JSON para AJAX
    ============================================================ */
@@ -148,6 +158,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: noivos.php"); exit;
     }
 
+    // 6b. Adicionar convidado (Noivos)
+    if (isset($_POST['adicionar_convidado_noivos'])) {
+        $nome       = trim($_POST['nome_convidado']      ?? '');
+        $fone       = trim($_POST['telefone_convidado']  ?? '');
+        $cat        = trim($_POST['categoria_convidado'] ?? '') ?: 'Outros';
+        $acomp_qtd  = max(0, (int)($_POST['acompanhantes']      ?? 0));
+        $acomp_nms  = trim($_POST['nomes_acompanhantes'] ?? '');
+        $filhos_qtd = max(0, (int)($_POST['filhos']             ?? 0));
+        $filhos_ids = trim($_POST['idades_filhos']       ?? '');
+        if ($nome !== '') {
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)")
+                ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids]);
+            if ($ajax) json_out([
+                'ok'                   => true,
+                'id'                   => (int)$pdo->lastInsertId(),
+                'nome'                 => htmlspecialchars($nome),
+                'categoria'            => htmlspecialchars($cat),
+                'telefone'             => htmlspecialchars($fone),
+                'acompanhantes'        => $acomp_qtd,
+                'filhos'               => $filhos_qtd,
+                'nomes_acompanhantes'  => htmlspecialchars($acomp_nms),
+                'idades_filhos'        => htmlspecialchars($filhos_ids),
+            ]);
+        } else {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o nome do convidado.']);
+        }
+        header("Location: noivos.php"); exit;
+    }
+
+    // 6c. Editar convidado (Noivos)
+    if (isset($_POST['editar_convidado_noivos'])) {
+        $id         = (int)($_POST['convidado_id'] ?? 0);
+        $nome       = trim($_POST['nome_convidado']      ?? '');
+        $fone       = trim($_POST['telefone_convidado']  ?? '');
+        $cat        = trim($_POST['categoria_convidado'] ?? '') ?: 'Outros';
+        $acomp_qtd  = max(0, (int)($_POST['acompanhantes']      ?? 0));
+        $acomp_nms  = trim($_POST['nomes_acompanhantes'] ?? '');
+        $filhos_qtd = max(0, (int)($_POST['filhos']             ?? 0));
+        $filhos_ids = trim($_POST['idades_filhos']       ?? '');
+        if ($id > 0 && $nome !== '') {
+            $pdo->prepare("UPDATE convidados SET nome = ?, telefone = ?, categoria = ?, acompanhantes = ?, filhos = ?, nomes_acompanhantes = ?, idades_filhos = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids, $id, $evento_id]);
+            if ($ajax) json_out([
+                'ok'                   => true,
+                'id'                   => $id,
+                'nome'                 => htmlspecialchars($nome),
+                'categoria'            => htmlspecialchars($cat),
+                'telefone'             => htmlspecialchars($fone),
+                'acompanhantes'        => $acomp_qtd,
+                'filhos'               => $filhos_qtd,
+                'nomes_acompanhantes'  => htmlspecialchars($acomp_nms),
+                'idades_filhos'        => htmlspecialchars($filhos_ids),
+            ]);
+        } else {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o nome do convidado.']);
+        }
+        header("Location: noivos.php"); exit;
+    }
+
     // 7. Corrigir valor pago de um fornecedor, sobrescrevendo o total (AJAX)
     if (isset($_POST['atualizar_valor_pago'])) {
         $forn_id    = (int)$_POST['fornecedor_id'];
@@ -235,6 +304,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($ajax) json_out(['ok' => true]);
         header("Location: noivos.php"); exit;
     }
+
+    // 10. Salvar / (re)ativar ou desativar a foto do casal exibida no convite
+    if (isset($_POST['salvar_foto_casal'])) {
+        $ativa = ($_POST['foto_ativa'] ?? '0') === '1';
+
+        if (!$ativa) {
+            $pdo->prepare("UPDATE eventos SET foto_casal_ativa = 0 WHERE id = ?")->execute([$evento_id]);
+            if ($ajax) json_out(['ok' => true, 'ativa' => 0]);
+            header("Location: noivos.php"); exit;
+        }
+
+        $tem_arquivo_novo = isset($_FILES['foto_casal_arquivo']) && $_FILES['foto_casal_arquivo']['error'] === UPLOAD_ERR_OK;
+
+        if ($tem_arquivo_novo) {
+            $tmpPath   = $_FILES['foto_casal_arquivo']['tmp_name'];
+            $ext       = strtolower(pathinfo($_FILES['foto_casal_arquivo']['name'], PATHINFO_EXTENSION));
+            $permitido = ['jpg', 'jpeg', 'png', 'webp'];
+
+            if (!in_array($ext, $permitido) || @getimagesize($tmpPath) === false) {
+                if ($ajax) json_out(['ok' => false, 'msg' => 'Envie uma imagem JPG, PNG ou WEBP válida.']);
+            } else {
+                $novo_nome = 'casal_' . $evento_id . '_' . time() . '.' . $ext;
+                if (move_uploaded_file($tmpPath, './uploads/' . $novo_nome)) {
+                    if (!empty($evento['foto_casal'])) {
+                        $antigo = './uploads/' . $evento['foto_casal'];
+                        if (is_file($antigo)) @unlink($antigo);
+                    }
+                    $pdo->prepare("UPDATE eventos SET foto_casal = ?, foto_casal_ativa = 1 WHERE id = ?")
+                        ->execute([$novo_nome, $evento_id]);
+                    if ($ajax) json_out(['ok' => true, 'ativa' => 1, 'foto_url' => 'uploads/' . $novo_nome]);
+                } else {
+                    if ($ajax) json_out(['ok' => false, 'msg' => 'Falha ao salvar o arquivo no servidor.']);
+                }
+            }
+        } elseif (!empty($evento['foto_casal'])) {
+            $pdo->prepare("UPDATE eventos SET foto_casal_ativa = 1 WHERE id = ?")->execute([$evento_id]);
+            if ($ajax) json_out(['ok' => true, 'ativa' => 1, 'foto_url' => 'uploads/' . $evento['foto_casal']]);
+        } else {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Anexe uma foto para ativar essa opção.']);
+        }
+        header("Location: noivos.php"); exit;
+    }
+
+    // 11. Remover a foto do casal
+    if (isset($_POST['remover_foto_casal'])) {
+        if (!empty($evento['foto_casal'])) {
+            $arq = './uploads/' . $evento['foto_casal'];
+            if (is_file($arq)) @unlink($arq);
+        }
+        $pdo->prepare("UPDATE eventos SET foto_casal = NULL, foto_casal_ativa = 0 WHERE id = ?")->execute([$evento_id]);
+        if ($ajax) json_out(['ok' => true]);
+        header("Location: noivos.php"); exit;
+    }
+
+    // 12. Salvar a cor de fundo da página do convite
+    if (isset($_POST['salvar_cor_convite'])) {
+        $cor = trim($_POST['cor'] ?? '');
+        if (preg_match('/^#[0-9a-fA-F]{6}$/', $cor)) {
+            $pdo->prepare("UPDATE eventos SET cor_convite = ? WHERE id = ?")->execute([$cor, $evento_id]);
+            if ($ajax) json_out(['ok' => true, 'cor' => $cor]);
+        } else {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Cor inválida.']);
+        }
+        header("Location: noivos.php"); exit;
+    }
 }
 
 /* ============================================================
@@ -259,6 +393,18 @@ foreach ($lista_convidados as $c) {
     if (!array_key_exists($cat, $conv_grupos)) $conv_grupos[$cat] = [];
     $conv_grupos[$cat][] = $c;
 }
+
+// Categorias fixas primeiro (Família, Amigos, Outros), depois quaisquer categorias
+// customizadas (ex: cadastradas em Organizar Mesas), em ordem alfabética.
+$grupos_fixos  = ['Família', 'Amigos', 'Outros'];
+$grupos_extras = array_diff(array_keys($conv_grupos), $grupos_fixos);
+sort($grupos_extras, SORT_FLAG_CASE | SORT_STRING);
+$ordem_grupos = array_merge($grupos_fixos, $grupos_extras);
+
+$categorias_existentes = array_values(array_unique(array_filter(array_map(
+    fn($c) => trim($c['categoria'] ?? ''), $lista_convidados
+))));
+sort($categorias_existentes, SORT_FLAG_CASE | SORT_STRING);
 
 // Notificações da assessoria
 $rs3 = $pdo->prepare("
@@ -404,6 +550,35 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       to   { opacity: 1; transform: translateX(0); }
     }
 
+    /* SWATCHES DE COR DO CONVITE */
+    #paleta-cor-convite {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 4px 4px 6px;
+      margin: -4px -4px 0;
+      -webkit-overflow-scrolling: touch;
+    }
+    #paleta-cor-convite::-webkit-scrollbar { height: 4px; }
+    .swatch-cor {
+      width: clamp(24px, 7vw, 32px); height: clamp(24px, 7vw, 32px);
+      border-radius: 50%; border: 2px solid #fff;
+      box-shadow: 0 0 0 1px #e2e8f0; cursor: pointer; padding: 0; flex-shrink: 0;
+      transition: transform .12s, box-shadow .12s;
+    }
+    .swatch-cor:hover { transform: scale(1.08); }
+    .swatch-cor.selecionada { box-shadow: 0 0 0 1px #fff, 0 0 0 3px #0f172a; }
+    .swatch-custom {
+      display: flex; align-items: center; justify-content: center;
+      background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red);
+      color: #fff; font-size: .75rem; text-shadow: 0 1px 2px rgba(0,0,0,.4);
+      position: relative; overflow: hidden;
+    }
+    .swatch-custom input[type="color"] {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      opacity: 0; cursor: pointer; border: none; padding: 0;
+    }
+
     /* PROGRESS RING */
     .ring-wrap { position: relative; width: 72px; height: 72px; flex-shrink: 0; }
     .ring-wrap svg { transform: rotate(-90deg); }
@@ -445,6 +620,13 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     @keyframes chevronBounce {
       0%, 100% { transform: translateY(0); }
       50%      { transform: translateY(4px); }
+    }
+
+    /* Dica sutil chamando atenção para o toque no status "Pendente" */
+    .dica-status-conv i.bi-hand-index-thumb-fill { display: inline-block; animation: dicaTap 1.8s ease-in-out infinite; }
+    @keyframes dicaTap {
+      0%, 100% { transform: translateY(0) rotate(0deg); }
+      50%      { transform: translateY(2px) rotate(-8deg); }
     }
 
     /* TAREFA CARD
@@ -715,6 +897,123 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
   </div>
 </div>
 
+<!-- Modal: Adicionar Convidado -->
+<div class="modal fade" id="modalAddConvidado" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header border-0 pb-0">
+        <h6 class="modal-title fw-bold"><i class="bi bi-person-plus-fill text-primary me-2"></i>Adicionar Convidado</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="form-convidado">
+        <div class="modal-body py-3">
+          <div class="mb-3">
+            <label class="form-label small fw-semibold text-secondary">Nome do Convidado / Família</label>
+            <input type="text" id="conv-nome" class="form-control rounded-3" required>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold text-secondary">Categoria / Grupo</label>
+              <input type="text" id="conv-categoria" class="form-control rounded-3" list="lista-categorias-noivos" placeholder="Ex: Família, Amigos...">
+              <datalist id="lista-categorias-noivos">
+                <option value="Família"><option value="Amigos"><option value="Outros">
+                <?php foreach ($categorias_existentes as $catEx): if (in_array($catEx, ['Família', 'Amigos', 'Outros'])) continue; ?>
+                  <option value="<?= htmlspecialchars($catEx, ENT_QUOTES, 'UTF-8') ?>">
+                <?php endforeach; ?>
+              </datalist>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
+              <input type="text" id="conv-telefone" class="form-control rounded-3" placeholder="(00) 00000-0000">
+            </div>
+          </div>
+          <hr class="my-3 text-secondary opacity-25">
+          <div class="row g-3 mb-3">
+            <div class="col-4">
+              <label class="form-label small fw-semibold text-secondary">Acompanhantes</label>
+              <input type="number" min="0" id="conv-acompanhantes" class="form-control rounded-3" value="0">
+            </div>
+            <div class="col-8">
+              <label class="form-label small fw-semibold text-secondary">Nomes (separados por vírgula)</label>
+              <input type="text" id="conv-nomes-acompanhantes" class="form-control rounded-3" placeholder="Ex: Maria, João...">
+            </div>
+          </div>
+          <div class="row g-3">
+            <div class="col-4">
+              <label class="form-label small fw-semibold text-secondary">Filhos</label>
+              <input type="number" min="0" id="conv-filhos" class="form-control rounded-3" value="0">
+            </div>
+            <div class="col-8">
+              <label class="form-label small fw-semibold text-secondary">Idades (separadas por vírgula)</label>
+              <input type="text" id="conv-idades-filhos" class="form-control rounded-3" placeholder="Ex: 5 anos, 12 anos...">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer border-0 pt-0">
+          <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
+          <button type="submit" id="btn-salvar-convidado" class="btn btn-primary btn-sm px-4 rounded-pill fw-semibold">Adicionar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Editar Convidado -->
+<div class="modal fade" id="modalEditConvidado" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header border-0 pb-0">
+        <h6 class="modal-title fw-bold"><i class="bi bi-pencil-fill text-primary me-2"></i>Editar Convidado</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="form-edit-convidado">
+        <input type="hidden" id="econv-id">
+        <div class="modal-body py-3">
+          <div class="mb-3">
+            <label class="form-label small fw-semibold text-secondary">Nome do Convidado / Família</label>
+            <input type="text" id="econv-nome" class="form-control rounded-3" required>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold text-secondary">Categoria / Grupo</label>
+              <input type="text" id="econv-categoria" class="form-control rounded-3" list="lista-categorias-noivos" placeholder="Ex: Família, Amigos...">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
+              <input type="text" id="econv-telefone" class="form-control rounded-3" placeholder="(00) 00000-0000">
+            </div>
+          </div>
+          <hr class="my-3 text-secondary opacity-25">
+          <div class="row g-3 mb-3">
+            <div class="col-4">
+              <label class="form-label small fw-semibold text-secondary">Acompanhantes</label>
+              <input type="number" min="0" id="econv-acompanhantes" class="form-control rounded-3">
+            </div>
+            <div class="col-8">
+              <label class="form-label small fw-semibold text-secondary">Nomes (separados por vírgula)</label>
+              <input type="text" id="econv-nomes-acompanhantes" class="form-control rounded-3" placeholder="Ex: Maria, João...">
+            </div>
+          </div>
+          <div class="row g-3">
+            <div class="col-4">
+              <label class="form-label small fw-semibold text-secondary">Filhos</label>
+              <input type="number" min="0" id="econv-filhos" class="form-control rounded-3">
+            </div>
+            <div class="col-8">
+              <label class="form-label small fw-semibold text-secondary">Idades (separadas por vírgula)</label>
+              <input type="text" id="econv-idades-filhos" class="form-control rounded-3" placeholder="Ex: 5 anos, 12 anos...">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer border-0 pt-0">
+          <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
+          <button type="submit" id="btn-salvar-edit-convidado" class="btn btn-primary btn-sm px-4 rounded-pill fw-semibold">Salvar Alterações</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <div class="modal fade" id="modalLinkConfirmacao" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content border-0 shadow-lg rounded-4">
@@ -733,6 +1032,79 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
         <a href="<?= htmlspecialchars($link_confirmacao_url) ?>" target="_blank" class="small text-decoration-none">
           <i class="bi bi-box-arrow-up-right me-1"></i> Abrir o link em uma nova aba
         </a>
+
+        <hr class="my-3">
+
+        <div class="card border-0 rounded-4 p-3" style="background:#fef2f2;border:1.5px solid #fecaca !important;">
+          <div class="d-flex justify-content-between align-items-start gap-3">
+            <div class="d-flex align-items-start gap-2">
+              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0" style="width:38px;height:38px;">
+                <i class="bi bi-image-fill text-danger"></i>
+              </div>
+              <div>
+                <label class="form-check-label fw-bold small text-dark mb-0" for="switch-foto-convite">Foto do casal no convite</label>
+                <p class="text-muted mb-0" style="font-size:.76rem;line-height:1.4;">Quando ativada, a foto aparece no topo da página que o convidado vê ao abrir o link.</p>
+              </div>
+            </div>
+            <div class="form-check form-switch mb-0 flex-shrink-0">
+              <input class="form-check-input" type="checkbox" role="switch" id="switch-foto-convite"
+                     style="width:2.6em;height:1.4em;" <?= !empty($evento['foto_casal_ativa']) ? 'checked' : '' ?>>
+            </div>
+          </div>
+
+          <div id="area-foto-convite" class="mt-3 pt-3 border-top" style="border-color:#fecaca !important; <?= !empty($evento['foto_casal_ativa']) ? '' : 'display:none;' ?>">
+            <div class="text-center mb-3">
+              <img id="preview-foto-convite"
+                   src="<?= !empty($evento['foto_casal']) ? 'uploads/' . htmlspecialchars($evento['foto_casal']) : '' ?>"
+                   class="rounded-circle shadow-sm <?= empty($evento['foto_casal']) ? 'd-none' : '' ?>"
+                   style="width:96px;height:96px;object-fit:cover;border:3px solid #fff;">
+            </div>
+            <label class="form-label small fw-semibold text-secondary mb-1">Escolher imagem</label>
+            <input type="file" id="input-foto-convite" accept="image/png, image/jpeg, image/webp" class="form-control form-control-sm mb-3 bg-white">
+            <div class="d-flex gap-2">
+              <button type="button" id="btn-salvar-foto-convite" class="btn btn-danger btn-sm rounded-pill px-3 fw-bold flex-grow-1">
+                <i class="bi bi-check-lg me-1"></i> Salvar Foto
+              </button>
+              <button type="button" id="btn-remover-foto-convite" class="btn btn-outline-secondary btn-sm rounded-pill px-3 <?= empty($evento['foto_casal']) ? 'd-none' : '' ?>">
+                <i class="bi bi-trash me-1"></i> Remover
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <?php $cor_convite_atual = !empty($evento['cor_convite']) ? $evento['cor_convite'] : '#8b5e3c'; ?>
+        <div class="card border-0 rounded-4 p-3 mt-3" style="background:#f8fafc;border:1.5px solid #e2e8f0 !important;">
+          <div class="d-flex align-items-start gap-2 mb-3">
+            <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0" style="width:38px;height:38px;">
+              <i class="bi bi-palette-fill" style="color:<?= htmlspecialchars($cor_convite_atual, ENT_QUOTES, 'UTF-8') ?>;"></i>
+            </div>
+            <div>
+              <div class="fw-bold small text-dark">Cor da página do convite</div>
+              <p class="text-muted mb-0" style="font-size:.76rem;line-height:1.4;">Escolha o tom de fundo que os convidados vão ver ao abrir o link.</p>
+            </div>
+          </div>
+
+          <div class="d-flex gap-2 mb-3" id="paleta-cor-convite">
+            <button type="button" class="swatch-cor" data-cor="#8b5e3c" style="background:#8b5e3c;" title="Marrom (padrão)"></button>
+            <button type="button" class="swatch-cor" data-cor="#7a1f2b" style="background:#7a1f2b;" title="Bordô"></button>
+            <button type="button" class="swatch-cor" data-cor="#b76e79" style="background:#b76e79;" title="Rosé"></button>
+            <button type="button" class="swatch-cor" data-cor="#4a5d43" style="background:#4a5d43;" title="Verde Oliva"></button>
+            <button type="button" class="swatch-cor" data-cor="#25314c" style="background:#25314c;" title="Azul Marinho"></button>
+            <button type="button" class="swatch-cor" data-cor="#a9812f" style="background:#a9812f;" title="Dourado"></button>
+            <button type="button" class="swatch-cor" data-cor="#2b2b2b" style="background:#2b2b2b;" title="Preto Elegante"></button>
+            <label class="swatch-cor swatch-custom" title="Cor personalizada">
+              <i class="bi bi-eyedropper"></i>
+              <input type="color" id="input-cor-personalizada" value="<?= htmlspecialchars($cor_convite_atual, ENT_QUOTES, 'UTF-8') ?>">
+            </label>
+          </div>
+
+          <div class="d-flex align-items-center gap-2">
+            <div id="preview-cor-convite" class="rounded-3 flex-grow-1" style="height:34px;"></div>
+            <button type="button" id="btn-salvar-cor-convite" class="btn btn-dark btn-sm rounded-pill px-3 fw-bold flex-shrink-0">
+              <i class="bi bi-check-lg me-1"></i> Salvar
+            </button>
+          </div>
+        </div>
       </div>
       <div class="modal-footer border-0 pt-0">
         <button type="button" class="btn btn-secondary btn-sm px-4 rounded-pill fw-bold" data-bs-dismiss="modal">Fechar</button>
@@ -1320,6 +1692,11 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               </div>
             </div>
 
+            <button class="btn btn-primary btn-sm w-100 fw-bold rounded-pill shadow-sm mb-2"
+                    type="button" data-bs-toggle="modal" data-bs-target="#modalAddConvidado">
+              <i class="bi bi-person-plus-fill me-1"></i> Adicionar Convidado
+            </button>
+
             <button class="btn btn-outline-primary btn-sm w-100 fw-bold rounded-pill shadow-sm collapsed"
                     type="button" data-bs-toggle="collapse" data-bs-target="#colapso-convidados">
               <i class="bi bi-list-ul me-1"></i> Ver Lista Completa
@@ -1327,6 +1704,13 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
             </button>
 
             <div class="collapse mt-2" id="colapso-convidados">
+              <div class="d-flex align-items-center gap-1 justify-content-center text-muted mb-2 dica-status-conv" style="font-size:.68rem;">
+                <i class="bi bi-hand-index-thumb-fill text-warning"></i>
+                <span>Toque em
+                  <span class="badge bg-warning text-dark rounded-pill" style="font-size:.6rem;"><i class="bi bi-hourglass-split me-1"></i>Pendente</span>
+                  para confirmar a presença
+                </span>
+              </div>
               <input type="search"
                      id="busca-conv"
                      class="form-control form-control-sm rounded-pill mb-2"
@@ -1336,12 +1720,12 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                   <p class="text-center text-muted small py-4 mb-0">Nenhum convidado adicionado.</p>
                 <?php else: ?>
                   <?php $grp_icons = ['Família' => 'bi-house-heart-fill', 'Amigos' => 'bi-emoji-sunglasses-fill', 'Outros' => 'bi-collection-fill'];
-                  foreach (['Família', 'Amigos', 'Outros'] as $grp):
+                  foreach ($ordem_grupos as $grp):
                     if (empty($conv_grupos[$grp])) continue; ?>
-                  <div class="grupo-sec" data-grupo="<?= $grp ?>">
+                  <div class="grupo-sec" data-grupo="<?= htmlspecialchars($grp) ?>">
                     <div class="badge bg-secondary text-white w-100 text-start px-3 py-2 rounded-2 mb-1 mt-2" style="font-size:.72rem;">
-                      <i class="bi <?= $grp_icons[$grp] ?> me-1"></i>
-                      <?= $grp ?> (<span class="cnt-grp"><?= count($conv_grupos[$grp]) ?></span>)
+                      <i class="bi <?= $grp_icons[$grp] ?? 'bi-tag-fill' ?> me-1"></i>
+                      <?= htmlspecialchars($grp) ?> (<span class="cnt-grp"><?= count($conv_grupos[$grp]) ?></span>)
                     </div>
                     <?php foreach ($conv_grupos[$grp] as $con):
                       $cConf   = (bool)$con['confirmado'];
@@ -1363,6 +1747,18 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                                     ? '<i class="bi bi-x-circle-fill me-1"></i> Recusou'
                                     : '<i class="bi bi-hourglass-split me-1"></i> Pendente') ?>
                             </span>
+                          </button>
+                          <button type="button" class="btn p-0 border-0 bg-transparent text-primary btn-edit-conv"
+                                  data-id="<?= $con['id'] ?>"
+                                  data-nome="<?= htmlspecialchars($con['nome'], ENT_QUOTES, 'UTF-8') ?>"
+                                  data-categoria="<?= htmlspecialchars($con['categoria'], ENT_QUOTES, 'UTF-8') ?>"
+                                  data-telefone="<?= htmlspecialchars($con['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                  data-acompanhantes="<?= (int)$con['acompanhantes'] ?>"
+                                  data-nomes-acompanhantes="<?= htmlspecialchars($con['nomes_acompanhantes'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                  data-filhos="<?= (int)$con['filhos'] ?>"
+                                  data-idades-filhos="<?= htmlspecialchars($con['idades_filhos'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                  title="Editar">
+                            <i class="bi bi-pencil fs-6"></i>
                           </button>
                           <button type="button" class="btn p-0 border-0 bg-transparent text-danger btn-excluir-conv" data-id="<?= $con['id'] ?>" title="Remover">
                             <i class="bi bi-trash fs-6"></i>
@@ -1619,6 +2015,132 @@ async function ajax(obj) {
   const r = await fetch(SELF, { method: 'POST', body: fd });
   return r.json();
 }
+
+/* ============================================================
+   FOTO DO CASAL NO CONVITE
+   ============================================================ */
+const switchFotoConvite = document.getElementById('switch-foto-convite');
+const areaFotoConvite   = document.getElementById('area-foto-convite');
+
+switchFotoConvite?.addEventListener('change', () => {
+  areaFotoConvite.style.display = switchFotoConvite.checked ? '' : 'none';
+});
+
+document.getElementById('btn-salvar-foto-convite')?.addEventListener('click', async function () {
+  const btn      = this;
+  const orig     = btn.innerHTML;
+  const input    = document.getElementById('input-foto-convite');
+  const preview  = document.getElementById('preview-foto-convite');
+  const btnRemover = document.getElementById('btn-remover-foto-convite');
+  const arquivo  = input.files[0];
+
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Salvando...';
+  btn.disabled  = true;
+
+  try {
+    const payload = { salvar_foto_casal: '1', foto_ativa: switchFotoConvite.checked ? '1' : '0' };
+    if (arquivo) payload.foto_casal_arquivo = arquivo;
+
+    const r = await ajax(payload);
+    if (r.ok) {
+      if (r.foto_url) {
+        preview.src = r.foto_url + '?t=' + Date.now();
+        preview.classList.remove('d-none');
+        btnRemover.classList.remove('d-none');
+        input.value = '';
+      }
+      toast(r.ativa ? 'Foto ativada no convite!' : 'Foto desativada no convite.', 'verde');
+    } else {
+      toast(r.msg || 'Erro ao salvar a foto.', 'verm');
+    }
+  } catch {
+    toast('Erro de conexão.', 'verm');
+  }
+  btn.innerHTML = orig;
+  btn.disabled  = false;
+});
+
+document.getElementById('btn-remover-foto-convite')?.addEventListener('click', async function () {
+  if (!confirm('Remover a foto do casal do convite?')) return;
+  const btn = this;
+  try {
+    const r = await ajax({ remover_foto_casal: '1' });
+    if (r.ok) {
+      document.getElementById('preview-foto-convite').classList.add('d-none');
+      document.getElementById('preview-foto-convite').src = '';
+      btn.classList.add('d-none');
+      switchFotoConvite.checked = false;
+      areaFotoConvite.style.display = 'none';
+      toast('Foto removida.', 'verm');
+    } else {
+      toast(r.msg || 'Erro ao remover a foto.', 'verm');
+    }
+  } catch {
+    toast('Erro de conexão.', 'verm');
+  }
+});
+
+/* ============================================================
+   COR DA PÁGINA DO CONVITE
+   ============================================================ */
+function ajustarCor(hex, percent) {
+  hex = hex.replace('#', '');
+  let r = parseInt(hex.substr(0, 2), 16), g = parseInt(hex.substr(2, 2), 16), b = parseInt(hex.substr(4, 2), 16);
+  if (percent >= 0) {
+    r = r + (255 - r) * percent; g = g + (255 - g) * percent; b = b + (255 - b) * percent;
+  } else {
+    r = r * (1 + percent); g = g * (1 + percent); b = b * (1 + percent);
+  }
+  const toHex = v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  return '#' + toHex(r) + toHex(g) + toHex(b);
+}
+
+let corConviteSelecionada = document.getElementById('input-cor-personalizada')?.value || '#8b5e3c';
+
+function atualizarPreviewCor(hex) {
+  corConviteSelecionada = hex;
+  const c1 = ajustarCor(hex, -0.22);
+  const c3 = ajustarCor(hex, 0.22);
+  const preview = document.getElementById('preview-cor-convite');
+  if (preview) preview.style.background = `linear-gradient(135deg, ${c1} 0%, ${hex} 50%, ${c3} 100%)`;
+
+  document.querySelectorAll('.swatch-cor[data-cor]').forEach(sw => {
+    sw.classList.toggle('selecionada', sw.dataset.cor.toLowerCase() === hex.toLowerCase());
+  });
+}
+
+document.querySelectorAll('.swatch-cor[data-cor]').forEach(sw => {
+  sw.addEventListener('click', () => {
+    document.getElementById('input-cor-personalizada').value = sw.dataset.cor;
+    atualizarPreviewCor(sw.dataset.cor);
+  });
+});
+
+document.getElementById('input-cor-personalizada')?.addEventListener('input', function () {
+  atualizarPreviewCor(this.value);
+});
+
+atualizarPreviewCor(corConviteSelecionada);
+
+document.getElementById('btn-salvar-cor-convite')?.addEventListener('click', async function () {
+  const btn  = this;
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>...';
+  btn.disabled  = true;
+
+  try {
+    const r = await ajax({ salvar_cor_convite: '1', cor: corConviteSelecionada });
+    if (r.ok) {
+      toast('Cor do convite atualizada!', 'verde');
+    } else {
+      toast(r.msg || 'Erro ao salvar a cor.', 'verm');
+    }
+  } catch {
+    toast('Erro de conexão.', 'verm');
+  }
+  btn.innerHTML = orig;
+  btn.disabled  = false;
+});
 
 /* Formata número como moeda BR */
 function brl(n) {
@@ -2076,9 +2598,27 @@ document.getElementById('btnConfExcluir').addEventListener('click', async () => 
   } catch { toast('Erro ao remover convidado.', 'verm'); }
 });
 
+const modalEditConv = new bootstrap.Modal(document.getElementById('modalEditConvidado'));
+
+function bindEditConv(btn) {
+  btn.addEventListener('click', () => {
+    document.getElementById('econv-id').value                 = btn.dataset.id;
+    document.getElementById('econv-nome').value                = btn.dataset.nome;
+    document.getElementById('econv-categoria').value           = btn.dataset.categoria;
+    document.getElementById('econv-telefone').value            = btn.dataset.telefone;
+    document.getElementById('econv-acompanhantes').value       = btn.dataset.acompanhantes;
+    document.getElementById('econv-nomes-acompanhantes').value = btn.dataset.nomesAcompanhantes;
+    document.getElementById('econv-filhos').value              = btn.dataset.filhos;
+    document.getElementById('econv-idades-filhos').value       = btn.dataset.idadesFilhos;
+    modalEditConv.show();
+  });
+}
+
 function bindConvRow(row) {
   const t = row.querySelector('.btn-toggle-conv');
   const x = row.querySelector('.btn-excluir-conv');
+  const ed = row.querySelector('.btn-edit-conv');
+  if (ed) bindEditConv(ed);
   if (t) bindToggleConv(t);
   if (x) bindExcluirConv(x);
 }
@@ -2094,6 +2634,193 @@ document.getElementById('busca-conv').addEventListener('input', function () {
     const temVisivel = [...sec.querySelectorAll('.conv-row')].some(r => r.style.display !== 'none');
     sec.style.display = temVisivel ? '' : 'none';
   });
+});
+
+const GRUPO_ICONS = { 'Família': 'bi-house-heart-fill', 'Amigos': 'bi-emoji-sunglasses-fill', 'Outros': 'bi-collection-fill' };
+
+function montarLinhaConvidado(r) {
+  const extrasParts = [];
+  if (r.telefone) extrasParts.push(`<div><i class="bi bi-whatsapp me-1 text-success"></i>${r.telefone}</div>`);
+  if (r.acompanhantes > 0) extrasParts.push(`<div><i class="bi bi-person-plus me-1"></i>Acomp: ${r.acompanhantes}</div>`);
+  if (r.filhos > 0) extrasParts.push(`<div><i class="bi bi-emoji-smile me-1"></i>Filhos: ${r.filhos}</div>`);
+  const extrasHtml = extrasParts.length
+    ? `<div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.5;">${extrasParts.join('')}</div>`
+    : '';
+
+  return `
+    <div class="conv-row pend p-2 mb-2 bg-light shadow-sm" data-id="${r.id}" data-conf="0" data-nome="${r.nome.toLowerCase()}">
+      <div class="d-flex justify-content-between align-items-start mb-1">
+        <h6 class="mb-0 small fw-bold text-dark text-truncate pe-2" title="${r.nome}">${r.nome}</h6>
+        <div class="d-flex align-items-center gap-1 flex-shrink-0">
+          <button type="button" class="btn p-0 border-0 bg-transparent btn-toggle-conv" data-id="${r.id}">
+            <span class="badge bg-warning text-dark rounded-pill" style="font-size:.6rem;"><i class="bi bi-hourglass-split me-1"></i> Pendente</span>
+          </button>
+          <button type="button" class="btn p-0 border-0 bg-transparent text-primary btn-edit-conv"
+                  data-id="${r.id}" data-nome="${r.nome}" data-categoria="${r.categoria}" data-telefone="${r.telefone}"
+                  data-acompanhantes="${r.acompanhantes}" data-nomes-acompanhantes="${r.nomes_acompanhantes}"
+                  data-filhos="${r.filhos}" data-idades-filhos="${r.idades_filhos}" title="Editar">
+            <i class="bi bi-pencil fs-6"></i>
+          </button>
+          <button type="button" class="btn p-0 border-0 bg-transparent text-danger btn-excluir-conv" data-id="${r.id}" title="Remover">
+            <i class="bi bi-trash fs-6"></i>
+          </button>
+        </div>
+      </div>
+      ${extrasHtml}
+    </div>`;
+}
+
+document.getElementById('form-convidado').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const nome = document.getElementById('conv-nome').value.trim();
+  if (!nome) return;
+
+  const btn  = document.getElementById('btn-salvar-convidado');
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>...';
+  btn.disabled = true;
+
+  try {
+    const r = await ajax({
+      adicionar_convidado_noivos: '1',
+      nome_convidado: nome,
+      categoria_convidado: document.getElementById('conv-categoria').value.trim(),
+      telefone_convidado: document.getElementById('conv-telefone').value.trim(),
+      acompanhantes: document.getElementById('conv-acompanhantes').value || 0,
+      nomes_acompanhantes: document.getElementById('conv-nomes-acompanhantes').value.trim(),
+      filhos: document.getElementById('conv-filhos').value || 0,
+      idades_filhos: document.getElementById('conv-idades-filhos').value.trim(),
+    });
+
+    if (r.ok) {
+      document.querySelector('#lista-convidados > p.text-center.text-muted')?.remove();
+
+      const cat = r.categoria || 'Outros';
+      let grupoEl = [...document.querySelectorAll('#lista-convidados .grupo-sec')].find(el => el.dataset.grupo === cat);
+      if (!grupoEl) {
+        const icone = GRUPO_ICONS[cat] || 'bi-tag-fill';
+        document.getElementById('lista-convidados').insertAdjacentHTML('beforeend', `
+          <div class="grupo-sec" data-grupo="${cat}">
+            <div class="badge bg-secondary text-white w-100 text-start px-3 py-2 rounded-2 mb-1 mt-2" style="font-size:.72rem;">
+              <i class="bi ${icone} me-1"></i> ${cat} (<span class="cnt-grp">0</span>)
+            </div>
+          </div>`);
+        grupoEl = [...document.querySelectorAll('#lista-convidados .grupo-sec')].find(el => el.dataset.grupo === cat);
+      }
+
+      grupoEl.insertAdjacentHTML('beforeend', montarLinhaConvidado(r));
+      const cntG = grupoEl.querySelector('.cnt-grp');
+      if (cntG) cntG.textContent = grupoEl.querySelectorAll('.conv-row').length;
+
+      const novaRow = grupoEl.querySelector(`.conv-row[data-id="${r.id}"]`);
+      if (novaRow) bindConvRow(novaRow);
+
+      deltaCntTotal(1);
+      deltaCntStatus(false, 1);
+
+      document.getElementById('form-convidado').reset();
+      bootstrap.Modal.getInstance(document.getElementById('modalAddConvidado'))?.hide();
+      toast('Convidado adicionado!', 'verde');
+    } else {
+      toast(r.msg || 'Erro ao salvar.', 'verm');
+    }
+  } catch {
+    toast('Erro de conexão.', 'verm');
+  }
+  btn.innerHTML = orig;
+  btn.disabled = false;
+});
+
+document.getElementById('form-edit-convidado').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id   = document.getElementById('econv-id').value;
+  const nome = document.getElementById('econv-nome').value.trim();
+  if (!nome) return;
+
+  const btn  = document.getElementById('btn-salvar-edit-convidado');
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>...';
+  btn.disabled = true;
+
+  try {
+    const r = await ajax({
+      editar_convidado_noivos: '1',
+      convidado_id: id,
+      nome_convidado: nome,
+      categoria_convidado: document.getElementById('econv-categoria').value.trim(),
+      telefone_convidado: document.getElementById('econv-telefone').value.trim(),
+      acompanhantes: document.getElementById('econv-acompanhantes').value || 0,
+      nomes_acompanhantes: document.getElementById('econv-nomes-acompanhantes').value.trim(),
+      filhos: document.getElementById('econv-filhos').value || 0,
+      idades_filhos: document.getElementById('econv-idades-filhos').value.trim(),
+    });
+
+    if (r.ok) {
+      const row = document.querySelector(`.conv-row[data-id="${r.id}"]`);
+      if (row) {
+        const oldGrupoEl = row.closest('.grupo-sec');
+        const cat = r.categoria || 'Outros';
+
+        row.dataset.nome = r.nome.toLowerCase();
+        const h6 = row.querySelector('h6');
+        if (h6) { h6.textContent = r.nome; h6.title = r.nome; }
+
+        row.querySelector('.text-muted.border-top')?.remove();
+        const extrasParts = [];
+        if (r.telefone) extrasParts.push(`<div><i class="bi bi-whatsapp me-1 text-success"></i>${r.telefone}</div>`);
+        if (r.acompanhantes > 0) extrasParts.push(`<div><i class="bi bi-person-plus me-1"></i>Acomp: ${r.acompanhantes}</div>`);
+        if (r.filhos > 0) extrasParts.push(`<div><i class="bi bi-emoji-smile me-1"></i>Filhos: ${r.filhos}</div>`);
+        if (extrasParts.length) {
+          row.insertAdjacentHTML('beforeend', `<div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.5;">${extrasParts.join('')}</div>`);
+        }
+
+        const btnEdit = row.querySelector('.btn-edit-conv');
+        if (btnEdit) {
+          btnEdit.dataset.nome                = r.nome;
+          btnEdit.dataset.categoria           = cat;
+          btnEdit.dataset.telefone            = r.telefone;
+          btnEdit.dataset.acompanhantes       = r.acompanhantes;
+          btnEdit.dataset.nomesAcompanhantes  = r.nomes_acompanhantes;
+          btnEdit.dataset.filhos              = r.filhos;
+          btnEdit.dataset.idadesFilhos        = r.idades_filhos;
+        }
+
+        // Move para o grupo certo, se a categoria mudou
+        if (!oldGrupoEl || oldGrupoEl.dataset.grupo !== cat) {
+          let novoGrupoEl = [...document.querySelectorAll('#lista-convidados .grupo-sec')].find(el => el.dataset.grupo === cat);
+          if (!novoGrupoEl) {
+            const icone = GRUPO_ICONS[cat] || 'bi-tag-fill';
+            document.getElementById('lista-convidados').insertAdjacentHTML('beforeend', `
+              <div class="grupo-sec" data-grupo="${cat}">
+                <div class="badge bg-secondary text-white w-100 text-start px-3 py-2 rounded-2 mb-1 mt-2" style="font-size:.72rem;">
+                  <i class="bi ${icone} me-1"></i> ${cat} (<span class="cnt-grp">0</span>)
+                </div>
+              </div>`);
+            novoGrupoEl = [...document.querySelectorAll('#lista-convidados .grupo-sec')].find(el => el.dataset.grupo === cat);
+          }
+          novoGrupoEl.appendChild(row);
+          const novoCnt = novoGrupoEl.querySelector('.cnt-grp');
+          if (novoCnt) novoCnt.textContent = novoGrupoEl.querySelectorAll('.conv-row').length;
+
+          if (oldGrupoEl) {
+            const restantes = oldGrupoEl.querySelectorAll('.conv-row');
+            const oldCnt = oldGrupoEl.querySelector('.cnt-grp');
+            if (oldCnt) oldCnt.textContent = restantes.length;
+            if (restantes.length === 0) oldGrupoEl.remove();
+          }
+        }
+      }
+
+      modalEditConv.hide();
+      toast('Convidado atualizado!', 'verde');
+    } else {
+      toast(r.msg || 'Erro ao salvar.', 'verm');
+    }
+  } catch {
+    toast('Erro de conexão.', 'verm');
+  }
+  btn.innerHTML = orig;
+  btn.disabled = false;
 });
 
 /* ============================================================
