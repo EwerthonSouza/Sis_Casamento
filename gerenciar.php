@@ -396,9 +396,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $acomp_nms  = trim($_POST['nomes_acompanhantes']  ?? '');
         $filhos_qtd = max(0, (int)($_POST['filhos']              ?? 0));
         $filhos_ids = trim($_POST['idades_filhos']        ?? '');
+        $confirmado = ($_POST['status_convidado'] ?? 'pendente') === 'confirmado' ? 1 : 0;
         if ($nome !== '') {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)")
-                ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids]);
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $confirmado, $acomp_nms, $filhos_ids]);
             $_SESSION['msg_sucesso'] = "Convidado adicionado!";
         }
         header("Location: gerenciar.php?id=$evento_id"); exit;
@@ -2167,6 +2168,17 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
             <div class="col-12 col-sm-8">
               <label class="form-label small text-secondary">Idades (separadas por vírgula)</label>
               <input type="text" name="idades_filhos" class="form-control" placeholder="Ex: 5 anos, 12 anos...">
+            </div>
+          </div>
+          <hr class="my-4 text-secondary opacity-25">
+          <div>
+            <label class="form-label small fw-bold text-secondary d-block">Status de Confirmação</label>
+            <div class="btn-group w-100" role="group">
+              <input type="radio" class="btn-check" name="status_convidado" id="ga-status-pendente" value="pendente" checked>
+              <label class="btn btn-outline-warning btn-sm" for="ga-status-pendente"><i class="bi bi-hourglass-split"></i> Pendente</label>
+
+              <input type="radio" class="btn-check" name="status_convidado" id="ga-status-confirmado" value="confirmado">
+              <label class="btn btn-outline-success btn-sm" for="ga-status-confirmado"><i class="bi bi-check-circle"></i> Confirmado</label>
             </div>
           </div>
         </div>

@@ -783,6 +783,11 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                                 <span class="badge bg-secondary ms-1"><?= count($casamentos_realizados) ?></span>
                             </button>
                         </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="buscar-tab" data-bs-toggle="tab" data-bs-target="#buscar" type="button" role="tab">
+                                <i class="bi bi-search me-1"></i> Buscar Noivos
+                            </button>
+                        </li>
                     </ul>
                 </div>
                 
@@ -967,6 +972,98 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                                     </tbody>
                                 </table>
                             </div>
+                        </div>
+
+                        <div class="tab-pane fade p-3" id="buscar" role="tabpanel">
+
+                            <div class="mb-3">
+                                <div class="input-group">
+                                    <span class="input-group-text bg-white border-end-0"><i class="bi bi-search text-muted"></i></span>
+                                    <input type="text" id="busca-noivos" class="form-control border-start-0 ps-0" placeholder="Buscar por nome, e-mail ou telefone...">
+                                </div>
+                            </div>
+
+                            <?php if (empty($lista_casamentos)): ?>
+                                <p class="text-center text-muted py-5"><i class="bi bi-inbox fs-3 d-block mb-2"></i>Nenhum casal cadastrado.</p>
+                            <?php else: ?>
+
+                            <p class="text-center text-muted py-5 busca-noivos-vazio" style="display:none;"><i class="bi bi-search fs-3 d-block mb-2"></i>Nenhum casal encontrado.</p>
+
+                            <!-- Visão mobile: cards empilhados -->
+                            <div class="d-md-none">
+                                <?php foreach ($lista_casamentos as $cas):
+                                    $realizado = $cas['data_evento'] < $data_hoje;
+                                    $termo_busca = mb_strtolower($cas['nome_noivos'] . ' ' . $cas['email_noivos'] . ' ' . ($cas['telefone_noivos'] ?? ''), 'UTF-8');
+                                ?>
+                                <div class="border rounded-3 p-3 mb-2 linha-busca-noivos" data-search="<?= htmlspecialchars($termo_busca, ENT_QUOTES, 'UTF-8') ?>">
+                                    <div class="d-flex justify-content-between align-items-start gap-2">
+                                        <span class="text-dark fw-bold fs-6 d-block mb-1"><?= htmlspecialchars($cas['nome_noivos']) ?></span>
+                                        <span class="badge <?= $realizado ? 'bg-secondary' : 'bg-primary' ?> bg-opacity-75 flex-shrink-0"><?= $realizado ? 'Realizado' : 'Futuro' ?></span>
+                                    </div>
+                                    <div class="text-muted" style="font-size: 0.8rem;">
+                                        <i class="bi bi-envelope"></i> <?= htmlspecialchars($cas['email_noivos']) ?><br>
+                                        <?php if (!empty($cas['telefone_noivos'])): ?>
+                                            <i class="bi bi-whatsapp text-success"></i> <?= htmlspecialchars($cas['telefone_noivos']) ?><br>
+                                        <?php endif; ?>
+                                        <i class="bi bi-calendar3"></i> <?= date('d/m/Y', strtotime($cas['data_evento'])) ?>
+                                    </div>
+                                    <div class="d-flex justify-content-center flex-wrap gap-1 mt-2">
+                                        <button type="button" class="btn btn-sm btn-light border fw-bold text-warning btn-abrir-modal-senha" data-cliente-id="<?= (int)$cas['cliente_id'] ?>" data-bs-toggle="modal" data-bs-target="#modalResetSenha" title="Resetar Senha"><i class="bi bi-key"></i></button>
+                                        <button type="button" class="btn btn-sm btn-light border fw-bold text-primary btn-abrir-modal-cadastro" data-cliente-id="<?= (int)$cas['cliente_id'] ?>" data-nome="<?= htmlspecialchars($cas['nome_noivos'], ENT_QUOTES, 'UTF-8') ?>" data-email="<?= htmlspecialchars($cas['email_noivos'], ENT_QUOTES, 'UTF-8') ?>" data-telefone="<?= htmlspecialchars($cas['telefone_noivos'] ?? '', ENT_QUOTES, 'UTF-8') ?>" data-bs-toggle="modal" data-bs-target="#modalEditarCadastro" title="Editar Cadastro"><i class="bi bi-pencil-square"></i></button>
+                                        <a href="gerenciar.php?id=<?= (int)$cas['evento_id'] ?>" class="btn btn-sm btn-primary shadow-sm" title="Gerenciar"><i class="bi bi-gear-fill"></i></a>
+                                        <a href="relatorio_pdf.php?id=<?= (int)$cas['evento_id'] ?>&secoes=todos" target="_blank" class="btn btn-sm btn-outline-danger shadow-sm" title="Exportar PDF"><i class="bi bi-file-earmark-pdf-fill"></i></a>
+                                    </div>
+                                </div>
+                                <?php endforeach; ?>
+                            </div>
+
+                            <!-- Visão desktop: tabela -->
+                            <div class="table-responsive d-none d-md-block">
+                                <table class="table table-hover align-middle mb-0 small">
+                                    <thead class="table-light text-muted">
+                                        <tr>
+                                            <th>Casal & Contatos</th>
+                                            <th width="15%">Status</th>
+                                            <th width="20%">Data</th>
+                                            <th width="20%" class="text-center">Ações</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                    <?php foreach ($lista_casamentos as $cas):
+                                        $realizado = $cas['data_evento'] < $data_hoje;
+                                        $termo_busca = mb_strtolower($cas['nome_noivos'] . ' ' . $cas['email_noivos'] . ' ' . ($cas['telefone_noivos'] ?? ''), 'UTF-8');
+                                    ?>
+                                    <tr class="linha-busca-noivos" data-search="<?= htmlspecialchars($termo_busca, ENT_QUOTES, 'UTF-8') ?>">
+                                        <td>
+                                            <span class="text-dark fw-bold fs-6"><?= htmlspecialchars($cas['nome_noivos']) ?></span><br>
+                                            <div class="text-muted mt-1" style="font-size: 0.8rem;">
+                                                <i class="bi bi-envelope"></i> <?= htmlspecialchars($cas['email_noivos']) ?><br>
+                                                <?php if (!empty($cas['telefone_noivos'])): ?>
+                                                    <i class="bi bi-whatsapp text-success"></i> <?= htmlspecialchars($cas['telefone_noivos']) ?>
+                                                <?php endif; ?>
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <span class="badge <?= $realizado ? 'bg-secondary' : 'bg-primary' ?> bg-opacity-75"><?= $realizado ? 'Realizado' : 'Futuro' ?></span>
+                                        </td>
+                                        <td>
+                                            <i class="bi bi-calendar3 me-1"></i> <?= date('d/m/Y', strtotime($cas['data_evento'])) ?>
+                                        </td>
+                                        <td class="text-center">
+                                            <div class="d-flex justify-content-center gap-1">
+                                                <button type="button" class="btn btn-sm btn-light border fw-bold text-warning btn-abrir-modal-senha" data-cliente-id="<?= (int)$cas['cliente_id'] ?>" data-bs-toggle="modal" data-bs-target="#modalResetSenha" title="Resetar Senha"><i class="bi bi-key"></i></button>
+                                                <button type="button" class="btn btn-sm btn-light border fw-bold text-primary btn-abrir-modal-cadastro" data-cliente-id="<?= (int)$cas['cliente_id'] ?>" data-nome="<?= htmlspecialchars($cas['nome_noivos'], ENT_QUOTES, 'UTF-8') ?>" data-email="<?= htmlspecialchars($cas['email_noivos'], ENT_QUOTES, 'UTF-8') ?>" data-telefone="<?= htmlspecialchars($cas['telefone_noivos'] ?? '', ENT_QUOTES, 'UTF-8') ?>" data-bs-toggle="modal" data-bs-target="#modalEditarCadastro" title="Editar Cadastro"><i class="bi bi-pencil-square"></i></button>
+                                                <a href="gerenciar.php?id=<?= (int)$cas['evento_id'] ?>" class="btn btn-sm btn-primary shadow-sm" title="Gerenciar"><i class="bi bi-gear-fill"></i></a>
+                                                <a href="relatorio_pdf.php?id=<?= (int)$cas['evento_id'] ?>&secoes=todos" target="_blank" class="btn btn-sm btn-outline-danger shadow-sm" title="Exportar PDF"><i class="bi bi-file-earmark-pdf-fill"></i></a>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <?php endif; ?>
                         </div>
 
                     </div>
@@ -1335,6 +1432,23 @@ document.addEventListener('DOMContentLoaded', function () {
     // Inicializa Toasts do Bootstrap
     const toastElList = document.querySelectorAll('.toast');
     [...toastElList].map(toastEl => new bootstrap.Toast(toastEl));
+
+    // Aba "Buscar Noivos": filtra por nome, e-mail ou telefone
+    const buscaNoivos = document.getElementById('busca-noivos');
+    if (buscaNoivos) {
+        buscaNoivos.addEventListener('input', function () {
+            const termo = this.value.toLowerCase().trim();
+            let visiveis = 0;
+            document.querySelectorAll('.linha-busca-noivos').forEach(function (el) {
+                const encontrado = !termo || el.dataset.search.includes(termo);
+                el.style.display = encontrado ? '' : 'none';
+                if (encontrado) visiveis++;
+            });
+            document.querySelectorAll('.busca-noivos-vazio').forEach(function (el) {
+                el.style.display = visiveis === 0 ? '' : 'none';
+            });
+        });
+    }
 
     // Botão "Marcar lidas": some com o badge e limpa a lista exibida
     document.getElementById('btn-marcar-lidas')?.addEventListener('click', function (e) {
