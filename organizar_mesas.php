@@ -192,7 +192,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
     }
 
-    // 7b. Adicionar Convidado (novo, vai direto pra fila de espera)
+    // 7b. Adicionar Convidado (novo; vai pra fila de espera, ou direto pra mesa se mesa_id vier preenchido)
     if (isset($_POST['adicionar_convidado'])) {
         $nome       = trim($_POST['nome_convidado']      ?? '');
         $fone       = trim($_POST['telefone_convidado']  ?? '');
@@ -201,10 +201,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $acomp_nms  = trim($_POST['nomes_acompanhantes'] ?? '');
         $filhos_qtd = max(0, (int)($_POST['filhos']             ?? 0));
         $filhos_ids = trim($_POST['idades_filhos']       ?? '');
+
+        $mesa_destino = null;
+        $mid_novo = (int)($_POST['mesa_id'] ?? 0);
+        if ($mid_novo > 0) {
+            $stMesa = $pdo->prepare("SELECT nome FROM mesas WHERE id = ? AND evento_id = ?");
+            $stMesa->execute([$mid_novo, $evento_id]);
+            $nomeMesa = $stMesa->fetchColumn();
+            if ($nomeMesa !== false) $mesa_destino = $mid_novo;
+        }
+
         if ($nome !== '') {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)")
-                ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids]);
-            $_SESSION['msg_sucesso'] = "Convidado <strong>" . htmlspecialchars($nome) . "</strong> adicionado à fila!";
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos, mesa_id) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)")
+                ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids, $mesa_destino]);
+            $_SESSION['msg_sucesso'] = $mesa_destino
+                ? "Convidado <strong>" . htmlspecialchars($nome) . "</strong> cadastrado e adicionado à <strong>" . htmlspecialchars($nomeMesa) . "</strong>!"
+                : "Convidado <strong>" . htmlspecialchars($nome) . "</strong> adicionado à fila!";
         } else {
             $_SESSION['msg_erro'] = "Informe o nome do convidado.";
         }
@@ -870,6 +882,9 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
               <i class="bi bi-exclamation-triangle"></i> Não há mais convidados na fila de espera.
             </div>
           </div>
+          <button type="button" id="btn-novo-convidado-mesa" class="btn btn-link btn-sm px-0 mt-2 text-decoration-none fw-semibold">
+            <i class="bi bi-person-plus-fill me-1"></i>Cadastrar novo convidado
+          </button>
         </div>
         <div class="modal-footer border-0 pt-0">
           <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
@@ -890,7 +905,9 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       </div>
       <form method="POST" class="form-ajax">
         <input type="hidden" name="adicionar_convidado" value="1">
+        <input type="hidden" name="mesa_id" id="ac-mesa-id" value="">
         <div class="modal-body py-3">
+          <div id="ac-mesa-hint" class="alert alert-success py-2 px-3 small mb-3" style="display:none;"></div>
           <div class="mb-3">
             <label class="form-label small fw-semibold text-secondary">Nome do Convidado / Família (Titular)</label>
             <input type="text" name="nome_convidado" class="form-control rounded-3" required>
@@ -1147,6 +1164,35 @@ document.addEventListener('DOMContentLoaded', function () {
         select.disabled = false;
         warning.style.display = 'none';
       }
+    }
+
+    // Botão "Cadastrar novo convidado" dentro do modal Adicionar à Mesa
+    const btnNovoConvidadoMesa = e.target.closest('#btn-novo-convidado-mesa');
+    if (btnNovoConvidadoMesa) {
+      const mesaId   = document.getElementById('add-guest-mid').value;
+      const mesaNome = document.getElementById('add-guest-mesa-nome').textContent;
+
+      document.getElementById('ac-mesa-id').value = mesaId;
+      const hint = document.getElementById('ac-mesa-hint');
+      hint.textContent = 'Este convidado será cadastrado direto na ' + mesaNome + '.';
+      hint.style.display = 'block';
+
+      const modalAddGuestEl     = document.getElementById('modalAddGuest');
+      const modalAddConvidadoEl = document.getElementById('modalAddConvidado');
+
+      modalAddGuestEl.addEventListener('hidden.bs.modal', function handler() {
+        modalAddGuestEl.removeEventListener('hidden.bs.modal', handler);
+        bootstrap.Modal.getOrCreateInstance(modalAddConvidadoEl).show();
+      });
+      bootstrap.Modal.getInstance(modalAddGuestEl).hide();
+    }
+
+    // Botão "Adicionar Convidado" do topo: garante que o cadastro vá pra fila (sem mesa pré-selecionada)
+    const btnAddConvidadoTopo = e.target.closest('.btn-add-convidado-topo');
+    if (btnAddConvidadoTopo) {
+      document.getElementById('ac-mesa-id').value = '';
+      const hint = document.getElementById('ac-mesa-hint');
+      hint.style.display = 'none';
     }
   });
 
