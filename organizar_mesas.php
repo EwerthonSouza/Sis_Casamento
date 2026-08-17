@@ -201,6 +201,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $acomp_nms  = trim($_POST['nomes_acompanhantes'] ?? '');
         $filhos_qtd = max(0, (int)($_POST['filhos']             ?? 0));
         $filhos_ids = trim($_POST['idades_filhos']       ?? '');
+        $confirmado = ($_POST['status_convidado'] ?? 'pendente') === 'confirmado' ? 1 : 0;
 
         $mesa_destino = null;
         $mid_novo = (int)($_POST['mesa_id'] ?? 0);
@@ -212,8 +213,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         if ($nome !== '') {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos, mesa_id) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)")
-                ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids, $mesa_destino]);
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos, mesa_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $confirmado, $acomp_nms, $filhos_ids, $mesa_destino]);
             $_SESSION['msg_sucesso'] = $mesa_destino
                 ? "Convidado <strong>" . htmlspecialchars($nome) . "</strong> cadastrado e adicionado à <strong>" . htmlspecialchars($nomeMesa) . "</strong>!"
                 : "Convidado <strong>" . htmlspecialchars($nome) . "</strong> adicionado à fila!";
@@ -948,6 +949,17 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
             <div class="col-8">
               <label class="form-label small fw-semibold text-secondary">Idades (separadas por vírgula)</label>
               <input type="text" name="idades_filhos" class="form-control rounded-3" placeholder="Ex: 5 anos, 12 anos...">
+            </div>
+          </div>
+          <hr class="my-3 text-secondary opacity-25">
+          <div>
+            <label class="form-label small fw-semibold text-secondary d-block">Status de Confirmação</label>
+            <div class="btn-group w-100" role="group">
+              <input type="radio" class="btn-check" name="status_convidado" id="om-status-pendente" value="pendente" checked>
+              <label class="btn btn-outline-warning btn-sm" for="om-status-pendente"><i class="bi bi-hourglass-split"></i> Pendente</label>
+
+              <input type="radio" class="btn-check" name="status_convidado" id="om-status-confirmado" value="confirmado">
+              <label class="btn btn-outline-success btn-sm" for="om-status-confirmado"><i class="bi bi-check-circle"></i> Confirmado</label>
             </div>
           </div>
         </div>

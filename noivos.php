@@ -167,9 +167,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $acomp_nms  = trim($_POST['nomes_acompanhantes'] ?? '');
         $filhos_qtd = max(0, (int)($_POST['filhos']             ?? 0));
         $filhos_ids = trim($_POST['idades_filhos']       ?? '');
+        $confirmado = ($_POST['status_convidado'] ?? 'pendente') === 'confirmado' ? 1 : 0;
         if ($nome !== '') {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)")
-                ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids]);
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $confirmado, $acomp_nms, $filhos_ids]);
             if ($ajax) json_out([
                 'ok'                   => true,
                 'id'                   => (int)$pdo->lastInsertId(),
@@ -180,6 +181,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'filhos'               => $filhos_qtd,
                 'nomes_acompanhantes'  => htmlspecialchars($acomp_nms),
                 'idades_filhos'        => htmlspecialchars($filhos_ids),
+                'confirmado'           => $confirmado,
             ]);
         } else {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o nome do convidado.']);
@@ -946,6 +948,17 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
             <div class="col-8">
               <label class="form-label small fw-semibold text-secondary">Idades (separadas por vírgula)</label>
               <input type="text" id="conv-idades-filhos" class="form-control rounded-3" placeholder="Ex: 5 anos, 12 anos...">
+            </div>
+          </div>
+          <hr class="my-3 text-secondary opacity-25">
+          <div>
+            <label class="form-label small fw-semibold text-secondary d-block">Status de Confirmação</label>
+            <div class="btn-group w-100" role="group">
+              <input type="radio" class="btn-check" name="conv-status" id="conv-status-pendente" value="pendente" checked>
+              <label class="btn btn-outline-warning btn-sm" for="conv-status-pendente"><i class="bi bi-hourglass-split"></i> Pendente</label>
+
+              <input type="radio" class="btn-check" name="conv-status" id="conv-status-confirmado" value="confirmado">
+              <label class="btn btn-outline-success btn-sm" for="conv-status-confirmado"><i class="bi bi-check-circle"></i> Confirmado</label>
             </div>
           </div>
         </div>
@@ -2647,13 +2660,14 @@ function montarLinhaConvidado(r) {
     ? `<div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.5;">${extrasParts.join('')}</div>`
     : '';
 
+  const conf = r.confirmado === 1;
   return `
-    <div class="conv-row pend p-2 mb-2 bg-light shadow-sm" data-id="${r.id}" data-conf="0" data-nome="${r.nome.toLowerCase()}">
+    <div class="conv-row ${conf ? 'conf' : 'pend'} p-2 mb-2 bg-light shadow-sm" data-id="${r.id}" data-conf="${conf ? '1' : '0'}" data-nome="${r.nome.toLowerCase()}">
       <div class="d-flex justify-content-between align-items-start mb-1">
         <h6 class="mb-0 small fw-bold text-dark text-truncate pe-2" title="${r.nome}">${r.nome}</h6>
         <div class="d-flex align-items-center gap-1 flex-shrink-0">
           <button type="button" class="btn p-0 border-0 bg-transparent btn-toggle-conv" data-id="${r.id}">
-            <span class="badge bg-warning text-dark rounded-pill" style="font-size:.6rem;"><i class="bi bi-hourglass-split me-1"></i> Pendente</span>
+            <span class="badge ${conf ? 'bg-success' : 'bg-warning text-dark'} rounded-pill" style="font-size:.6rem;">${conf ? '<i class="bi bi-check-circle-fill me-1"></i> Confirmado' : '<i class="bi bi-hourglass-split me-1"></i> Pendente'}</span>
           </button>
           <button type="button" class="btn p-0 border-0 bg-transparent text-primary btn-edit-conv"
                   data-id="${r.id}" data-nome="${r.nome}" data-categoria="${r.categoria}" data-telefone="${r.telefone}"
@@ -2690,6 +2704,7 @@ document.getElementById('form-convidado').addEventListener('submit', async (e) =
       nomes_acompanhantes: document.getElementById('conv-nomes-acompanhantes').value.trim(),
       filhos: document.getElementById('conv-filhos').value || 0,
       idades_filhos: document.getElementById('conv-idades-filhos').value.trim(),
+      status_convidado: document.querySelector('input[name="conv-status"]:checked').value,
     });
 
     if (r.ok) {
@@ -2716,7 +2731,7 @@ document.getElementById('form-convidado').addEventListener('submit', async (e) =
       if (novaRow) bindConvRow(novaRow);
 
       deltaCntTotal(1);
-      deltaCntStatus(false, 1);
+      deltaCntStatus(r.confirmado === 1, 1);
 
       document.getElementById('form-convidado').reset();
       bootstrap.Modal.getInstance(document.getElementById('modalAddConvidado'))?.hide();
