@@ -376,6 +376,32 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       .header-actions-mesas .quebra-mesas-mobile  { order: 3; }
       .header-actions-mesas .btn-add-convidado-topo { order: 4; }
       .header-actions-mesas .btn-imprimir-mesas   { order: 5; }
+
+      /* Evita que o cabeçalho do card de mesa (título + ícones) estoure a largura da tela */
+      .mesa-card .card-header .d-flex.justify-content-between.align-items-center {
+        flex-wrap: wrap;
+        row-gap: .4rem;
+      }
+      .mesa-card .card-header h6 {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .mesa-card .card-header .d-flex.gap-1.flex-shrink-0.no-print {
+        gap: .1rem !important;
+      }
+      .mesa-card .card-header .btn.btn-sm.p-1 { padding: .2rem !important; }
+      .mesa-card .card-header .btn.btn-sm.p-1 i { font-size: .85rem; }
+    }
+
+    @media (max-width: 575.98px) {
+      html, body { overflow-x: hidden; }
+      .mesa-card .card-header .d-flex.justify-content-between.align-items-center h6 {
+        flex: 1 1 100%;
+      }
+      .mesa-card .card-header .d-flex.gap-1.flex-shrink-0.no-print {
+        flex: 1 1 100%;
+        justify-content: flex-end;
+      }
     }
 
     .conv-item { border-left: 4px solid transparent !important; cursor: grab; transition: background .1s, box-shadow .1s; user-select: none; }
