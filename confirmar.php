@@ -89,6 +89,31 @@ function buscarConvidadoPorNome(PDO $pdo, int $evento_id, string $nome, string $
     return null;
 }
 
+/**
+ * Segunda linha de defesa contra duplicatas: quando não há vaga pendente (o convidado
+ * já respondeu antes), procura um registro deste evento com o MESMO nome e MESMO
+ * telefone que já respondeu — sinal forte de que é a mesma pessoa reenviando o
+ * formulário (duplo clique, nova aba/aparelho, cache limpo antes de salvar o id local).
+ * Exige telefone não vazio e batendo exatamente, pra nunca juntar duas pessoas
+ * diferentes que só coincidem no nome.
+ */
+function buscarConvidadoJaRespondido(PDO $pdo, int $evento_id, string $nome, string $telefone, array $idsExcluir): ?int {
+    if ($telefone === '') return null;
+
+    $sql    = "SELECT id FROM convidados WHERE evento_id = ? AND resposta_rsvp IS NOT NULL AND LOWER(TRIM(nome)) = LOWER(TRIM(?)) AND TRIM(telefone) = ?";
+    $params = [$evento_id, $nome, $telefone];
+    if (!empty($idsExcluir)) {
+        $ph = implode(',', array_fill(0, count($idsExcluir), '?'));
+        $sql .= " AND id NOT IN ($ph)";
+        $params = array_merge($params, $idsExcluir);
+    }
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $candidatos = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    return count($candidatos) === 1 ? (int)$candidatos[0]['id'] : null;
+}
+
 $stmt = $pdo->prepare("SELECT e.*, c.nome AS nome_cliente FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
 $stmt->execute([$evento_id]);
 $evento = $stmt->fetch();
@@ -155,6 +180,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // desambiguado por telefone) antes de criar um registro novo.
                 if (!$atualizou) {
                     $idExistente = buscarConvidadoPorNome($pdo, $evento_id, $nome, $tel, $ids_mantidos);
+                    if ($idExistente !== null) {
+                        $pdo->prepare("UPDATE convidados SET nome = ?, faixa_etaria = ?, telefone = ?, confirmado = 1, resposta_rsvp = 'confirmado', mensagem_rsvp = NULL, data_confirmacao = NOW() WHERE id = ? AND evento_id = ?")
+                            ->execute([$nome, $faixa, $tel, $idExistente, $evento_id]);
+                        $ids_mantidos[]   = $idExistente;
+                        $resposta_dados[] = ['id' => $idExistente, 'nome' => $nome, 'faixa_etaria' => $faixa, 'telefone' => $tel];
+                        $atualizou = true;
+                    }
+                }
+
+                // Ainda sem casar: talvez já tenha respondido antes (mesmo nome e telefone) e
+                // esteja reenviando o formulário — evita criar mais uma linha duplicada.
+                if (!$atualizou && $tel !== '') {
+                    $idExistente = buscarConvidadoJaRespondido($pdo, $evento_id, $nome, $tel, $ids_mantidos);
                     if ($idExistente !== null) {
                         $pdo->prepare("UPDATE convidados SET nome = ?, faixa_etaria = ?, telefone = ?, confirmado = 1, resposta_rsvp = 'confirmado', mensagem_rsvp = NULL, data_confirmacao = NOW() WHERE id = ? AND evento_id = ?")
                             ->execute([$nome, $faixa, $tel, $idExistente, $evento_id]);
@@ -642,11 +680,22 @@ function aplicarEdicao(salvo) {
 }
 
 /* ---- Ao enviar, garante que os ids antigos vão junto (mesmo sem passar por "alterar") ---- */
-document.getElementById('form-confirmar').addEventListener('submit', () => {
+/* Trava o botão de envio pra evitar duplo clique/reenvio criando registros duplicados. */
+function travarEnvio(form) {
+    const btn = form.querySelector('button[type="submit"]');
+    if (btn) {
+        btn.disabled = true;
+        btn.dataset.textoOriginal = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Enviando...';
+    }
+}
+document.getElementById('form-confirmar').addEventListener('submit', function (e) {
     document.getElementById('ids-todos-anteriores-conf').value = idsAnterioresGlobal.join(',');
+    travarEnvio(this);
 });
-document.getElementById('form-recusar').addEventListener('submit', () => {
+document.getElementById('form-recusar').addEventListener('submit', function (e) {
     document.getElementById('ids-todos-anteriores-rec').value = idsAnterioresGlobal.join(',');
+    travarEnvio(this);
 });
 
 /* ---- Estado inicial da página ---- */
