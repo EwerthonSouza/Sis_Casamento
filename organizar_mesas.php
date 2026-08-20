@@ -463,6 +463,8 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     .btn-icon-conv.text-danger:hover  { background: rgba(220,53,69,.14);  transform: scale(1.08); }
     .btn-icon-conv:active { transform: scale(0.92); }
 
+    .print-mapa-mesas { display: none; }
+
     @media print {
       .no-print { display: none !important; }
       body  { background: white !important; }
@@ -470,6 +472,31 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       .mesa-card { break-inside: avoid; page-break-inside: avoid; }
       .scroll-m  { max-height: none !important; overflow: visible !important; }
       .hdr { background: #8b5e3c !important; -webkit-print-color-adjust: exact; }
+
+      /* Layout dedicado de impressão/PDF: simples e robusto (motor nativo do navegador,
+         sem depender de bibliotecas externas), mostrando mesa, cadeiras e convidados. */
+      .print-mapa-mesas { display: block !important; font-family: Arial, sans-serif; color: #111; }
+      .print-mapa-mesas .pm-titulo { text-align: center; margin-bottom: 18px; }
+      .print-mapa-mesas .pm-titulo h2 { margin: 0; font-size: 20px; font-weight: 700; }
+      .print-mapa-mesas .pm-titulo p { margin: 4px 0 0; color: #555; font-size: 12px; }
+      .print-mapa-mesas .pm-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+      .print-mapa-mesas .pm-card {
+        flex: 0 0 calc(50% - 5px);
+        box-sizing: border-box;
+        border: 1px solid #ddd;
+        border-top: 3px solid #94a3b8;
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin-bottom: 10px;
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+      .print-mapa-mesas .pm-card-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 6px; }
+      .print-mapa-mesas .pm-card-head strong { font-size: 13px; }
+      .print-mapa-mesas .pm-card-head span { font-size: 11px; color: #555; white-space: nowrap; }
+      .print-mapa-mesas ul { margin: 0; padding-left: 14px; font-size: 11px; line-height: 1.6; }
+      .print-mapa-mesas .pm-vazia { font-size: 11px; color: #94a3b8; }
+      .print-mapa-mesas .pm-detalhe { font-size: 10px; color: #666; line-height: 1.4; margin-left: 4px; }
     }
   </style>
 </head>
@@ -512,7 +539,51 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   <?php endif; ?>
 </div>
 
-<div class="container-fluid px-3 px-lg-4 py-4">
+<!-- =========================================================
+     LAYOUT DE IMPRESSÃO / PDF (dedicado, só visível ao imprimir)
+     ========================================================= -->
+<div class="print-mapa-mesas">
+  <div class="pm-titulo">
+    <h2><?= htmlspecialchars($evento['nome']) ?></h2>
+    <p>Mapa de Mesas &bull; <?= date('d/m/Y', strtotime($evento['data_evento'])) ?></p>
+  </div>
+  <div class="pm-grid">
+    <?php foreach ($lista_mesas as $m):
+      $mid  = $m['id'];
+      $cap  = (int)$m['capacidade'];
+      $cvs  = $na_mesa[$mid] ?? [];
+      $ocup = 0;
+      foreach ($cvs as $cm) $ocup += $cm['lugares'];
+      $cor = $ocup === 0 ? '#94a3b8' : ($ocup > $cap ? '#ef4444' : ($ocup >= $cap ? '#f59e0b' : '#10b981'));
+    ?>
+    <div class="pm-card" style="border-top-color: <?= $cor ?>;">
+      <div class="pm-card-head">
+        <strong><?= htmlspecialchars($m['nome']) ?></strong>
+        <span><?= $ocup ?> / <?= $cap ?> lugares</span>
+      </div>
+      <?php if (empty($cvs)): ?>
+        <div class="pm-vazia">Mesa vazia</div>
+      <?php else: ?>
+        <ul>
+          <?php foreach ($cvs as $cm): ?>
+            <li>
+              <?= $cm['confirmado'] ? '&check;' : '&#9203;' ?> <?= htmlspecialchars($cm['nome']) ?><?= $cm['lugares'] > 1 ? ' (' . $cm['lugares'] . ' lug.)' : '' ?>
+              <?php if (!empty($cm['nomes_acompanhantes'])): ?>
+                <div class="pm-detalhe">+ <?= htmlspecialchars($cm['nomes_acompanhantes']) ?></div>
+              <?php endif; ?>
+              <?php if (!empty($cm['idades_filhos'])): ?>
+                <div class="pm-detalhe">Filhos: <?= htmlspecialchars($cm['idades_filhos']) ?></div>
+              <?php endif; ?>
+            </li>
+          <?php endforeach; ?>
+        </ul>
+      <?php endif; ?>
+    </div>
+    <?php endforeach; ?>
+  </div>
+</div>
+
+<div class="container-fluid px-3 px-lg-4 py-4 no-print">
 
   <!-- =========================================================
        CABEÇALHO
@@ -529,8 +600,8 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       </div>
 
       <div class="d-flex flex-wrap gap-2 align-items-center header-actions-mesas">
-        <button class="btn btn-sm btn-outline-light rounded-pill opacity-75 btn-imprimir-mesas" onclick="window.print()" title="Imprimir mapa de mesas">
-          <i class="bi bi-printer me-1"></i> Imprimir
+        <button class="btn btn-sm btn-outline-light rounded-pill opacity-75 btn-imprimir-mesas" onclick="window.print()" title="Imprimir ou salvar como PDF">
+          <i class="bi bi-file-earmark-pdf me-1"></i> Exportar PDF
         </button>
         <button class="btn btn-sm btn-light rounded-pill text-dark fw-semibold btn-lote-mesas" data-bs-toggle="modal" data-bs-target="#modalLote">
           <i class="bi bi-layers me-1"></i> Criar em Lote
@@ -1284,6 +1355,12 @@ document.addEventListener('DOMContentLoaded', function () {
       const cBadge = document.getElementById('badge-qtd');
       const nBadge = doc.getElementById('badge-qtd');
       if (cBadge && nBadge) cBadge.innerHTML = nBadge.innerHTML;
+
+      // Mantém o layout de impressão/PDF (renderizado pelo PHP) sincronizado, já que ele
+      // não é tocado pelas atualizações abaixo e ficaria desatualizado até um reload.
+      const cPrint = document.querySelector('.print-mapa-mesas');
+      const nPrint = doc.querySelector('.print-mapa-mesas');
+      if (cPrint && nPrint) cPrint.innerHTML = nPrint.innerHTML;
 
       if (actionType === 'silent') {
         document.querySelectorAll('.mesa-col').forEach(col => {
