@@ -290,7 +290,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <title>Confirmação de Presença<?= !empty($evento['nome_cliente']) ? ' — ' . htmlspecialchars($evento['nome_cliente'], ENT_QUOTES, 'UTF-8') : '' ?> - Meu Evento PRO</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-    <link rel="stylesheet" href="css/estilo.css?v=8">
+    <link rel="stylesheet" href="css/estilo.css?v=13">
     <script>
         // Decide qual "view" mostrar antes da página pintar, evitando flash de conteúdo errado.
         (function () {

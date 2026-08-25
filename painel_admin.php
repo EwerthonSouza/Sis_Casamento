@@ -482,7 +482,7 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
     <title>Painel da Assessoria - Meu Evento PRO</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=8">
+    <link rel="stylesheet" href="css/estilo.css?v=13">
     <style>
         .navbar .container.flex-nowrap { flex-wrap: nowrap; }
         .logo-nav-admin { height: 40px; flex-shrink: 0; }
@@ -770,7 +770,7 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
         <div class="col-xl-7 col-lg-12">
             <div class="card border-0 shadow-sm rounded-4 h-100">
                 <div class="card-header bg-white border-bottom pt-3 pb-0">
-                    <ul class="nav nav-tabs border-0" id="eventoTabs" role="tablist">
+                    <ul class="nav nav-tabs border-0 flex-nowrap" id="eventoTabs" role="tablist">
                         <li class="nav-item" role="presentation">
                             <button class="nav-link active" id="futuros-tab" data-bs-toggle="tab" data-bs-target="#futuros" type="button" role="tab">
                                 <i class="bi bi-calendar-event me-1"></i> Próximos 
@@ -780,12 +780,16 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                         <li class="nav-item" role="presentation">
                             <button class="nav-link" id="historico-tab" data-bs-toggle="tab" data-bs-target="#historico" type="button" role="tab">
                                 <i class="bi bi-clock-history me-1"></i> Histórico
-                                <span class="badge bg-secondary ms-1"><?= count($casamentos_realizados) ?></span>
                             </button>
                         </li>
                         <li class="nav-item" role="presentation">
-                            <button class="nav-link" id="buscar-tab" data-bs-toggle="tab" data-bs-target="#buscar" type="button" role="tab">
-                                <i class="bi bi-search me-1"></i> Buscar Noivos
+                            <button class="nav-link" id="buscar-tab" data-bs-toggle="tab" data-bs-target="#buscar" type="button" role="tab" title="Buscar Noivos" aria-label="Buscar Noivos">
+                                <i class="bi bi-search"></i>
+                            </button>
+                        </li>
+                        <li class="nav-item d-md-none" role="presentation">
+                            <button class="nav-link" type="button" id="btn-ir-calendario" title="Ir para o Calendário" aria-label="Ir para o Calendário">
+                                <i class="bi bi-calendar3"></i>
                             </button>
                         </li>
                     </ul>
@@ -801,8 +805,8 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                                 <?php if (empty($casamentos_futuros)): ?>
                                     <p class="text-center text-muted py-5"><i class="bi bi-inbox fs-3 d-block mb-2"></i>Nenhum casamento futuro agendado.</p>
                                 <?php else: ?>
-                                    <?php foreach ($casamentos_futuros as $cas): ?>
-                                    <div class="border rounded-3 p-3 mb-2">
+                                    <?php foreach ($casamentos_futuros as $i => $cas): ?>
+                                    <div class="border rounded-3 p-3 mb-2<?= $i >= 5 ? ' d-none casamento-extra-futuros' : '' ?>">
                                         <span class="text-dark fw-bold fs-6 d-block mb-1"><?= htmlspecialchars($cas['nome_noivos']) ?></span>
                                         <div class="d-flex justify-content-between align-items-start gap-2">
                                             <div class="text-muted" style="font-size: 0.8rem;">
@@ -853,8 +857,8 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                                     <?php if (empty($casamentos_futuros)): ?>
                                         <tr><td colspan="3" class="text-center text-muted py-5"><i class="bi bi-inbox fs-3 d-block mb-2"></i>Nenhum casamento futuro agendado.</td></tr>
                                     <?php else: ?>
-                                        <?php foreach ($casamentos_futuros as $cas): ?>
-                                        <tr>
+                                        <?php foreach ($casamentos_futuros as $i => $cas): ?>
+                                        <tr class="<?= $i >= 5 ? 'd-none casamento-extra-futuros' : '' ?>">
                                             <td>
                                                 <span class="text-dark fw-bold fs-6"><?= htmlspecialchars($cas['nome_noivos']) ?></span><br>
                                                 <div class="text-muted mt-1" style="font-size: 0.8rem;">
@@ -896,6 +900,14 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                                     </tbody>
                                 </table>
                             </div>
+
+                            <?php if (count($casamentos_futuros) > 5): ?>
+                            <div class="text-center mt-2 mb-1">
+                                <button type="button" class="btn rounded-pill btn-ver-mais-casamentos" data-alvo="casamento-extra-futuros">
+                                    <i class="bi bi-chevron-down me-1"></i> Ver mais <span class="text-muted">(<?= count($casamentos_futuros) - 5 ?>)</span>
+                                </button>
+                            </div>
+                            <?php endif; ?>
                         </div>
 
                         <div class="tab-pane fade p-3" id="historico" role="tabpanel">
@@ -905,8 +917,8 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                                 <?php if (empty($casamentos_realizados)): ?>
                                     <p class="text-center text-muted py-5"><i class="bi bi-inbox fs-3 d-block mb-2"></i>Nenhum histórico disponível.</p>
                                 <?php else: ?>
-                                    <?php foreach ($casamentos_realizados as $cas): ?>
-                                    <div class="border rounded-3 p-3 mb-2">
+                                    <?php foreach ($casamentos_realizados as $i => $cas): ?>
+                                    <div class="border rounded-3 p-3 mb-2<?= $i >= 5 ? ' d-none casamento-extra-historico' : '' ?>">
                                         <span class="text-dark fw-bold"><?= htmlspecialchars($cas['nome_noivos']) ?></span>
                                         <div class="text-muted mt-1" style="font-size: 0.8rem;">
                                             <i class="bi bi-envelope"></i> <?= htmlspecialchars($cas['email_noivos']) ?>
@@ -942,8 +954,8 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                                     <?php if (empty($casamentos_realizados)): ?>
                                         <tr><td colspan="3" class="text-center text-muted py-5"><i class="bi bi-inbox fs-3 d-block mb-2"></i>Nenhum histórico disponível.</td></tr>
                                     <?php else: ?>
-                                        <?php foreach ($casamentos_realizados as $cas): ?>
-                                        <tr>
+                                        <?php foreach ($casamentos_realizados as $i => $cas): ?>
+                                        <tr class="<?= $i >= 5 ? 'd-none casamento-extra-historico' : '' ?>">
                                             <td>
                                                 <span class="text-dark fw-bold"><?= htmlspecialchars($cas['nome_noivos']) ?></span><br>
                                                 <div class="text-muted mt-1" style="font-size: 0.8rem;">
@@ -972,6 +984,14 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                                     </tbody>
                                 </table>
                             </div>
+
+                            <?php if (count($casamentos_realizados) > 5): ?>
+                            <div class="text-center mt-2 mb-1">
+                                <button type="button" class="btn rounded-pill btn-ver-mais-casamentos" data-alvo="casamento-extra-historico">
+                                    <i class="bi bi-chevron-down me-1"></i> Ver mais <span class="text-muted">(<?= count($casamentos_realizados) - 5 ?>)</span>
+                                </button>
+                            </div>
+                            <?php endif; ?>
                         </div>
 
                         <div class="tab-pane fade p-3" id="buscar" role="tabpanel">
@@ -1449,6 +1469,21 @@ document.addEventListener('DOMContentLoaded', function () {
             });
         });
     }
+
+    // Ícone de calendário (só mobile): rola a página até o card do calendário
+    document.getElementById('btn-ir-calendario')?.addEventListener('click', function () {
+        document.getElementById('calendario-wrapper')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+
+    // Botões "Ver mais": revela o restante dos casamentos (Próximos / Histórico)
+    document.querySelectorAll('.btn-ver-mais-casamentos').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            document.querySelectorAll('.' + this.dataset.alvo).forEach(function (el) {
+                el.classList.remove('d-none');
+            });
+            this.remove();
+        });
+    });
 
     // Botão "Marcar lidas": some com o badge e limpa a lista exibida
     document.getElementById('btn-marcar-lidas')?.addEventListener('click', function (e) {

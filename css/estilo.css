@@ -80,6 +80,39 @@ html {
     }
 }
 
+/* Abas do Painel da Assessoria (Próximos/Histórico/Buscar/Calendário):
+   no mobile, Próximos/Histórico dividem o espaço à esquerda e a lupa +
+   calendário ficam sempre grudados na extremidade direita da linha;
+   encolhe padding/fonte conforme a tela diminui — sem rolagem horizontal. */
+@media (max-width: 767.98px) {
+    #eventoTabs .nav-item:nth-child(1),
+    #eventoTabs .nav-item:nth-child(2) {
+        flex: 1 1 0;
+    }
+    #eventoTabs .nav-item:nth-child(3) {
+        margin-left: auto;
+    }
+    #eventoTabs .nav-link {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+    }
+}
+@media (max-width: 575.98px) {
+    #eventoTabs .nav-link {
+        padding: 0.5rem 0.5rem;
+        font-size: 0.8rem;
+        white-space: nowrap;
+    }
+}
+@media (max-width: 400px) {
+    #eventoTabs .nav-link {
+        padding: 0.5rem 0.35rem;
+        font-size: 0.75rem;
+    }
+}
+
 /* ============================================================
    2. ESTILOS BASE
    ============================================================ */
@@ -201,6 +234,24 @@ body {
 }
 .btn:active {
     transform: translateY(0);
+}
+
+/* Botão "Ver mais" — minimalista, nas cores do sistema */
+.btn-ver-mais-casamentos {
+    background: transparent;
+    border: 1.5px solid rgba(169, 116, 79, 0.35);
+    color: var(--color-primary-dark);
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 0.4rem 1.5rem;
+    box-shadow: none;
+}
+.btn-ver-mais-casamentos:hover {
+    background: var(--color-primary-light);
+    border-color: var(--color-primary);
+    color: var(--color-primary-dark);
+    transform: none;
+    box-shadow: none;
 }
 
 /* Soft Badges */
