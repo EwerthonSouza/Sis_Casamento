@@ -4,18 +4,23 @@
    (visão global) e gerenciar.php (visão por evento).
    ============================================================ */
 
-// Migração: tabela de controle de "última vez que cada usuário viu as notificações"
-try {
-    $pdo->query("SELECT 1 FROM notificacoes_lidas LIMIT 1");
-} catch (Exception $e) {
-    $pdo->exec("
-        CREATE TABLE notificacoes_lidas (
-            usuario_tipo      VARCHAR(20) NOT NULL,
-            usuario_id        INT         NOT NULL,
-            ultima_visualizacao DATETIME  NOT NULL,
-            PRIMARY KEY (usuario_tipo, usuario_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-    ");
+// Migração: tabela de controle de "última vez que cada usuário viu as notificações".
+// Esse arquivo é incluído em toda página com sino de notificações — sem cache
+// isso rodava em toda requisição de gerenciar.php, noivos.php e painel_admin.php.
+if (!schema_ja_verificado('notificacoes')) {
+    try {
+        $pdo->query("SELECT 1 FROM notificacoes_lidas LIMIT 1");
+    } catch (Exception $e) {
+        $pdo->exec("
+            CREATE TABLE notificacoes_lidas (
+                usuario_tipo      VARCHAR(20) NOT NULL,
+                usuario_id        INT         NOT NULL,
+                ultima_visualizacao DATETIME  NOT NULL,
+                PRIMARY KEY (usuario_tipo, usuario_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        ");
+    }
+    marcar_schema_verificado('notificacoes');
 }
 
 /**

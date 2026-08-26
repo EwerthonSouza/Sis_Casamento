@@ -37,7 +37,10 @@ function verificar_csrf(): void {
 
 /* ============================================================
    AUTO-CONFIGURAÇÃO DO BANCO DE DADOS
+   Roda só uma vez (marcador em disco) — antes rodava esse bloco inteiro de
+   SELECTs/ALTER TABLE em toda requisição, inclusive em cada AJAX da página.
    ============================================================ */
+if (!schema_ja_verificado('gerenciar')) {
 
 // 1. Criação automática da tabela notas_evento
 try {
@@ -74,14 +77,17 @@ catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal VAR
 try { $pdo->query("SELECT foto_casal_ativa FROM eventos LIMIT 1"); }
 catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal_ativa TINYINT(1) NOT NULL DEFAULT 0"); }
 
-require_once 'notificacoes.inc.php';
+// 2b. Token do link específico de confirmação (por convidado)
+try { $pdo->query("SELECT token_convite FROM convidados LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE convidados ADD COLUMN token_convite VARCHAR(64) NULL"); }
 
-// 2. Colunas de convidados
-try { $pdo->query("SELECT nomes_acompanhantes FROM convidados LIMIT 1"); }
-catch (Exception $e) { $pdo->exec("ALTER TABLE convidados ADD COLUMN nomes_acompanhantes VARCHAR(255) NULL"); }
+// 2c. Acompanhante de um link específico (aponta pro id do convidado "dono" do link)
+try { $pdo->query("SELECT convidado_principal_id FROM convidados LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE convidados ADD COLUMN convidado_principal_id INT NULL"); }
 
-try { $pdo->query("SELECT idades_filhos FROM convidados LIMIT 1"); }
-catch (Exception $e) { $pdo->exec("ALTER TABLE convidados ADD COLUMN idades_filhos VARCHAR(255) NULL"); }
+// 2d. Modo de confirmação escolhido para o evento (geral ou específico)
+try { $pdo->query("SELECT modo_confirmacao FROM eventos LIMIT 1"); }
+catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN modo_confirmacao VARCHAR(20) NOT NULL DEFAULT 'geral'"); }
 
 // 3. Coluna de controle de pagamento parcial
 try { $pdo->query("SELECT valor_pago FROM suppliers_evento LIMIT 1"); }
@@ -163,6 +169,10 @@ catch (Exception $e) { $pdo->exec("ALTER TABLE checklist_comentarios ADD COLUMN 
 try { $pdo->query("SELECT criado_em FROM checklist_comentarios LIMIT 1"); }
 catch (Exception $e) { $pdo->exec("ALTER TABLE checklist_comentarios ADD COLUMN criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP"); }
 
+marcar_schema_verificado('gerenciar');
+}
+
+require_once 'notificacoes.inc.php';
 
 /* ============================================================
    ID DO EVENTO — valida que é inteiro positivo
@@ -186,6 +196,43 @@ function json_out(array $data): void {
     }
     echo json_encode($data, JSON_UNESCAPED_UNICODE);
     exit;
+}
+
+const FAIXAS_ETARIAS_CONVIDADOS = ['Adulto (11+ anos)', 'Criança (6-10 anos)', 'Criança de Colo (0-5 anos)'];
+
+/** Sincroniza os acompanhantes (nome + faixa etária) de um convidado titular:
+ *  atualiza os que vieram com id, cria os novos, remove os que saíram da lista. */
+function sincronizar_acompanhantes(PDO $pdo, int $evento_id, int $principal_id, array $ids, array $nomes, array $faixas): void {
+    $mantidos = [];
+    for ($i = 0; $i < count($nomes); $i++) {
+        $nome = trim($nomes[$i] ?? '');
+        if ($nome === '') continue;
+        $faixa = in_array($faixas[$i] ?? '', FAIXAS_ETARIAS_CONVIDADOS, true) ? $faixas[$i] : FAIXAS_ETARIAS_CONVIDADOS[0];
+        $id = (int)($ids[$i] ?? 0);
+
+        if ($id > 0) {
+            $chk = $pdo->prepare("SELECT id FROM convidados WHERE id = ? AND convidado_principal_id = ? AND evento_id = ?");
+            $chk->execute([$id, $principal_id, $evento_id]);
+            if ($chk->fetch()) {
+                $pdo->prepare("UPDATE convidados SET nome = ?, faixa_etaria = ? WHERE id = ?")->execute([$nome, $faixa, $id]);
+                $mantidos[] = $id;
+                continue;
+            }
+        }
+
+        $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, categoria, confirmado, convidado_principal_id) VALUES (?, ?, ?, 'Outros', 0, ?)")
+            ->execute([$evento_id, $nome, $faixa, $principal_id]);
+        $mantidos[] = (int)$pdo->lastInsertId();
+    }
+
+    $stmtAtuais = $pdo->prepare("SELECT id FROM convidados WHERE convidado_principal_id = ? AND evento_id = ?");
+    $stmtAtuais->execute([$principal_id, $evento_id]);
+    $idsAtuais = array_map('intval', $stmtAtuais->fetchAll(PDO::FETCH_COLUMN));
+    $idsRemover = array_diff($idsAtuais, $mantidos);
+    if (!empty($idsRemover)) {
+        $ph = implode(',', array_fill(0, count($idsRemover), '?'));
+        $pdo->prepare("DELETE FROM convidados WHERE id IN ($ph)")->execute(array_values($idsRemover));
+    }
 }
 
 /* Retorna [classe_css, texto] do badge de prazo de uma tarefa */
@@ -387,20 +434,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
-    // 10. Adicionar convidado
+    // 10. Criar convite (titular + acompanhantes) — sempre entra como "pendente"
     if (isset($_POST['adicionar_convidado_admin'])) {
         $nome       = trim($_POST['nome_convidado']       ?? '');
         $fone       = trim($_POST['telefone_convidado']   ?? '');
         $cat        = trim($_POST['categoria_convidado']  ?? 'Outros');
-        $acomp_qtd  = max(0, (int)($_POST['acompanhantes']       ?? 0));
-        $acomp_nms  = trim($_POST['nomes_acompanhantes']  ?? '');
-        $filhos_qtd = max(0, (int)($_POST['filhos']              ?? 0));
-        $filhos_ids = trim($_POST['idades_filhos']        ?? '');
-        $confirmado = ($_POST['status_convidado'] ?? 'pendente') === 'confirmado' ? 1 : 0;
-        if ($nome !== '') {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $confirmado, $acomp_nms, $filhos_ids]);
-            $_SESSION['msg_sucesso'] = "Convidado adicionado!";
+        $nomes_acomp  = $_POST['nome_acompanhante_novo']  ?? [];
+        $faixas_acomp = $_POST['faixa_acompanhante_novo'] ?? [];
+        if ($nome === '') {
+            $_SESSION['msg_erro'] = "Informe o nome do convidado.";
+        } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
+            $_SESSION['msg_erro'] = "Informe um telefone/WhatsApp válido (com DDD) para o convidado.";
+        } else {
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, confirmado) VALUES (?, ?, ?, ?, 0)")
+                ->execute([$evento_id, $nome, $fone, $cat]);
+            $novo_id = (int)$pdo->lastInsertId();
+            sincronizar_acompanhantes($pdo, $evento_id, $novo_id, [], $nomes_acomp, $faixas_acomp);
+            $_SESSION['msg_sucesso'] = "Convite criado!";
         }
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
@@ -423,26 +473,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nome       = trim($_POST['nome_convidado']      ?? '');
         $fone       = trim($_POST['telefone_convidado']  ?? '');
         $cat        = trim($_POST['categoria_convidado'] ?? '') ?: 'Outros';
-        $acomp_qtd  = max(0, (int)($_POST['acompanhantes']      ?? 0));
-        $acomp_nms  = trim($_POST['nomes_acompanhantes'] ?? '');
-        $filhos_qtd = max(0, (int)($_POST['filhos']             ?? 0));
-        $filhos_ids = trim($_POST['idades_filhos']       ?? '');
-        if ($id > 0 && $nome !== '') {
-            $pdo->prepare("UPDATE convidados SET nome = ?, telefone = ?, categoria = ?, acompanhantes = ?, filhos = ?, nomes_acompanhantes = ?, idades_filhos = ? WHERE id = ? AND evento_id = ?")
-                ->execute([$nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids, $id, $evento_id]);
-            if ($ajax) json_out([
-                'ok'                   => true,
-                'id'                   => $id,
-                'nome'                 => htmlspecialchars($nome, ENT_QUOTES, 'UTF-8'),
-                'categoria'            => htmlspecialchars($cat, ENT_QUOTES, 'UTF-8'),
-                'telefone'             => htmlspecialchars($fone, ENT_QUOTES, 'UTF-8'),
-                'acompanhantes'        => $acomp_qtd,
-                'filhos'               => $filhos_qtd,
-                'nomes_acompanhantes'  => htmlspecialchars($acomp_nms, ENT_QUOTES, 'UTF-8'),
-                'idades_filhos'        => htmlspecialchars($filhos_ids, ENT_QUOTES, 'UTF-8'),
-            ]);
-        } else {
+        $ids_acomp    = $_POST['id_acompanhante_edit']    ?? [];
+        $nomes_acomp  = $_POST['nome_acompanhante_edit']  ?? [];
+        $faixas_acomp = $_POST['faixa_acompanhante_edit'] ?? [];
+        if ($id <= 0 || $nome === '') {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o nome do convidado.']);
+        } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Informe um telefone/WhatsApp válido (com DDD) para o convidado.']);
+        } else {
+            $pdo->prepare("UPDATE convidados SET nome = ?, telefone = ?, categoria = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$nome, $fone, $cat, $id, $evento_id]);
+            sincronizar_acompanhantes($pdo, $evento_id, $id, $ids_acomp, $nomes_acomp, $faixas_acomp);
+            if ($ajax) {
+                $stAc = $pdo->prepare("SELECT id, nome, faixa_etaria FROM convidados WHERE convidado_principal_id = ? AND evento_id = ?");
+                $stAc->execute([$id, $evento_id]);
+                $acompanhantes_atuais = array_map(fn($a) => ['id' => $a['id'], 'nome' => $a['nome'], 'faixa' => $a['faixa_etaria']], $stAc->fetchAll(PDO::FETCH_ASSOC));
+                json_out([
+                    'ok'             => true,
+                    'id'             => $id,
+                    'nome'           => htmlspecialchars($nome, ENT_QUOTES, 'UTF-8'),
+                    'categoria'      => htmlspecialchars($cat, ENT_QUOTES, 'UTF-8'),
+                    'telefone'       => htmlspecialchars($fone, ENT_QUOTES, 'UTF-8'),
+                    'acompanhantes'  => $acompanhantes_atuais,
+                ]);
+            }
         }
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
@@ -701,9 +755,16 @@ $pct_pago_geral = $total_forn > 0 ? round($total_forn_pago / $total_forn * 100) 
 $rs2 = $pdo->prepare("SELECT * FROM convidados WHERE evento_id = ? ORDER BY nome ASC");
 $rs2->execute([$evento_id]);
 $lista_conv = $rs2->fetchAll();
+$acompanhantes_por_principal = [];
+foreach ($lista_conv as $c) {
+    if (!empty($c['convidado_principal_id'])) {
+        $acompanhantes_por_principal[$c['convidado_principal_id']][] = $c;
+    }
+}
+$lista_conv_principais = array_values(array_filter($lista_conv, fn($c) => empty($c['convidado_principal_id'])));
 $total_conf = 0; $total_pend = 0;
 $conv_grupos = [];
-foreach ($lista_conv as $c) {
+foreach ($lista_conv_principais as $c) {
     $c['confirmado'] ? $total_conf++ : $total_pend++;
     $cat = trim($c['categoria']);
     if (empty($cat)) { $cat = 'Outros'; } else { $cat = mb_convert_case($cat, MB_CASE_TITLE, "UTF-8"); }
@@ -842,17 +903,10 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
       .foto-casal-header { width: 72px; height: 72px; }
     }
 
-    /* ---- LINHA DE BOTÕES DO CABEÇALHO: no mobile o sino fica ao lado do
-       Exportar PDF e Confirmação de Presença quebra pra linha própria; no
-       desktop os dois botões ficam juntos e o sino vai pra extremidade ---- */
+    /* ---- LINHA DE BOTÕES DO CABEÇALHO: Exportar PDF à esquerda, sino de
+       notificações empurrado pra extremidade direita ---- */
     .header-btn-exportar  { order: 1; }
     .header-btn-sino      { order: 2; margin-left: auto; }
-    .header-btn-confirmacao { order: 3; flex-basis: 100%; }
-
-    @media (min-width: 768px) {
-      .header-btn-confirmacao { order: 2; flex-basis: auto; }
-      .header-btn-sino        { order: 3; }
-    }
 
     /* ---- PAGAMENTO FORNECEDOR ---- */
     .forn-pago-row {
@@ -1127,31 +1181,6 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
   </div>
 </div>
 
-<div class="modal fade" id="modalLinkConfirmacao" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content border-0 shadow-lg rounded-4">
-      <div class="modal-header border-0 bg-light">
-        <h5 class="modal-title fw-bold"><i class="bi bi-envelope-check-fill text-danger me-2"></i> Confirmação de Presença</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-      </div>
-      <div class="modal-body p-4">
-        <p class="text-muted small mb-3">Envie este link para os convidados. Eles poderão confirmar a presença de toda a família diretamente por ele — sem precisar de login.</p>
-        <div class="input-group mb-2">
-          <input type="text" id="input-link-confirmacao" class="form-control" value="<?= htmlspecialchars($link_confirmacao_url) ?>" readonly>
-          <button class="btn btn-danger fw-bold" type="button" id="btn-copiar-link">
-            <i class="bi bi-clipboard-fill me-1"></i> Copiar
-          </button>
-        </div>
-        <a href="<?= htmlspecialchars($link_confirmacao_url) ?>" target="_blank" class="small text-decoration-none">
-          <i class="bi bi-box-arrow-up-right me-1"></i> Abrir o link em uma nova aba
-        </a>
-      </div>
-      <div class="modal-footer border-0 pt-0">
-        <button type="button" class="btn btn-secondary btn-sm px-4 rounded-pill fw-bold" data-bs-dismiss="modal">Fechar</button>
-      </div>
-    </div>
-  </div>
-</div>
 
 <div class="modal fade" id="modalExportarPdf" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
@@ -1257,11 +1286,6 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
             </div>
           </div>
         </div>
-
-        <button type="button" class="btn btn-sm btn-outline-light rounded-3 header-btn-confirmacao"
-                data-bs-toggle="modal" data-bs-target="#modalLinkConfirmacao">
-          <i class="bi bi-envelope-check-fill me-1"></i> Confirmação de Presença
-        </button>
       </div>
 
       <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
@@ -1856,13 +1880,18 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
             <div class="card shadow-sm border-0" style="border-radius: var(--radius);">
               <div class="etapa-body bg-white p-3 rounded-3">
                 <div class="row g-2 mb-3">
-                  <div class="col-12 col-sm-6">
+                  <div class="col-12 col-sm-4">
                     <button type="button" class="btn btn-success w-100 btn-sm fw-bold shadow-sm py-2 rounded-3 h-100"
                             data-bs-toggle="modal" data-bs-target="#modalAddConvidado">
-                      <i class="bi bi-person-plus-fill me-1"></i> Cadastrar Convidado
+                      <i class="bi bi-person-plus-fill me-1"></i> Criar Convite
                     </button>
                   </div>
-                  <div class="col-12 col-sm-6">
+                  <div class="col-12 col-sm-4">
+                    <a href="convidados.php?id=<?= $evento_id ?>" class="btn btn-info w-100 btn-sm fw-bold shadow-sm py-2 rounded-3 h-100 d-flex align-items-center justify-content-center text-dark">
+                      <i class="bi bi-people-fill me-2"></i> Gerenciar
+                    </a>
+                  </div>
+                  <div class="col-12 col-sm-4">
                     <a href="organizar_mesas.php?id=<?= $evento_id ?>" class="btn btn-primary w-100 btn-sm fw-bold shadow-sm py-2 rounded-3 h-100 d-flex align-items-center justify-content-center">
                       <i class="bi bi-grid-3x3-gap-fill me-2"></i> Organizar Mesas
                     </a>
@@ -1881,78 +1910,6 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
                       <small class="text-muted" style="font-size:.7rem;">Pendentes</small>
                     </div>
                   </div>
-                </div>
-                <div class="fw-bold text-muted mb-2" style="font-size:.72rem;text-transform:uppercase;">
-                  Lista completa (<span id="cnt-total"><?= count($lista_conv) ?></span>)
-                </div>
-                <div id="lista-convidados" class="scroll-lista-grande">
-                  <?php if (empty($lista_conv)): ?>
-                    <p class="text-center text-muted small py-4 mb-0">Nenhum convidado cadastrado.</p>
-                  <?php else: ?>
-                    <?php foreach ($conv_grupos as $grp => $convidadosDoGrupo): ?>
-                    <div class="grupo-sec" data-grupo="<?= htmlspecialchars($grp, ENT_QUOTES, 'UTF-8') ?>">
-                      <div class="badge bg-secondary text-white w-100 text-start px-3 py-2 rounded-2 mb-1 mt-2 sec-badge">
-                        <i class="bi bi-tag-fill me-1"></i>
-                        <?= htmlspecialchars($grp, ENT_QUOTES, 'UTF-8') ?> (<span class="cnt-grp"><?= count($convidadosDoGrupo) ?></span>)
-                      </div>
-                      <?php foreach ($convidadosDoGrupo as $con):
-                        $cConf   = (bool)$con['confirmado'];
-                        $recusou = (!$cConf && ($con['resposta_rsvp'] ?? '') === 'recusado'); ?>
-                      <div class="conv-row <?= $cConf ? 'conf' : 'pend' ?> p-2 mb-2 bg-light shadow-sm"
-                           data-id="<?= $con['id'] ?>"
-                           data-conf="<?= (int)$cConf ?>"
-                           data-nome="<?= strtolower(htmlspecialchars($con['nome'], ENT_QUOTES, 'UTF-8')) ?>">
-                        <div class="d-flex justify-content-between align-items-start mb-1">
-                          <h6 class="mb-0 small fw-bold text-dark text-truncate pe-2" title="<?= htmlspecialchars($con['nome'], ENT_QUOTES, 'UTF-8') ?>">
-                            <?= htmlspecialchars($con['nome'], ENT_QUOTES, 'UTF-8') ?>
-                          </h6>
-                          <div class="d-flex align-items-center gap-1 flex-shrink-0">
-                            <button type="button" class="btn p-0 border-0 bg-transparent btn-toggle-conv" data-id="<?= $con['id'] ?>">
-                              <span class="badge <?= $cConf ? 'bg-success' : ($recusou ? 'bg-danger' : 'bg-warning text-dark') ?> rounded-pill" style="font-size:.6rem;">
-                                <?= $cConf ? '<i class="bi bi-check-circle-fill me-1"></i> Confirmado' : ($recusou ? '<i class="bi bi-x-circle-fill me-1"></i> Recusou' : '<i class="bi bi-hourglass-split me-1"></i> Pendente') ?>
-                              </span>
-                            </button>
-                            <button type="button" class="btn p-0 border-0 bg-transparent text-primary btn-edit-conv"
-                                    data-id="<?= $con['id'] ?>"
-                                    data-nome="<?= htmlspecialchars($con['nome'], ENT_QUOTES, 'UTF-8') ?>"
-                                    data-categoria="<?= htmlspecialchars($con['categoria'], ENT_QUOTES, 'UTF-8') ?>"
-                                    data-telefone="<?= htmlspecialchars($con['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                    data-acompanhantes="<?= (int)$con['acompanhantes'] ?>"
-                                    data-nomes-acompanhantes="<?= htmlspecialchars($con['nomes_acompanhantes'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                    data-filhos="<?= (int)$con['filhos'] ?>"
-                                    data-idades-filhos="<?= htmlspecialchars($con['idades_filhos'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                    title="Editar">
-                              <i class="bi bi-pencil fs-6"></i>
-                            </button>
-                            <button type="button" class="btn p-0 border-0 bg-transparent text-danger btn-excluir-conv" data-id="<?= $con['id'] ?>" title="Remover">
-                              <i class="bi bi-trash fs-6"></i>
-                            </button>
-                          </div>
-                        </div>
-                        <?php if (!empty($con['telefone']) || $con['acompanhantes'] > 0 || $con['filhos'] > 0): ?>
-                        <div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.4;">
-                          <?php if (!empty($con['telefone'])): ?>
-                            <div><i class="bi bi-whatsapp me-1 text-success"></i><?= htmlspecialchars($con['telefone'], ENT_QUOTES, 'UTF-8') ?></div>
-                          <?php endif; ?>
-                          <?php if ($con['acompanhantes'] > 0): ?>
-                            <div>
-                              <i class="bi bi-person-plus me-1"></i>Acomp (<?= (int)$con['acompanhantes'] ?>):
-                              <?= !empty($con['nomes_acompanhantes']) ? htmlspecialchars($con['nomes_acompanhantes'], ENT_QUOTES, 'UTF-8') : '<span class="fst-italic text-black-50">Nomes não informados</span>' ?>
-                            </div>
-                          <?php endif; ?>
-                          <?php if ($con['filhos'] > 0): ?>
-                            <div>
-                              <i class="bi bi-emoji-smile me-1"></i>Filhos (<?= (int)$con['filhos'] ?>):
-                              <?= !empty($con['idades_filhos']) ? htmlspecialchars($con['idades_filhos'], ENT_QUOTES, 'UTF-8') : '<span class="fst-italic text-black-50">Idades não informadas</span>' ?>
-                            </div>
-                          <?php endif; ?>
-                        </div>
-                        <?php endif; ?>
-                      </div>
-                      <?php endforeach; ?>
-                    </div>
-                    <?php endforeach; ?>
-                  <?php endif; ?>
                 </div>
               </div>
             </div>
@@ -2115,7 +2072,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content border-0 shadow-lg rounded-4">
       <div class="modal-header bg-light border-0">
-        <h5 class="modal-title fw-bold"><i class="bi bi-person-plus text-success me-2"></i> Cadastrar Convidado</h5>
+        <h5 class="modal-title fw-bold"><i class="bi bi-person-plus text-success me-2"></i> Criar Convite</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <form method="POST" action="?id=<?= $evento_id ?>">
@@ -2144,47 +2101,20 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
             </div>
             <div class="col-12 col-md-6">
               <label class="form-label small fw-bold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" name="telefone_convidado" class="form-control" placeholder="(00) 00000-0000">
+              <input type="text" name="telefone_convidado" class="form-control" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-4 text-secondary opacity-25">
           <h6 class="fw-bold small text-dark mb-3"><i class="bi bi-people-fill text-secondary"></i> Acompanhantes</h6>
-          <div class="row g-3 mb-4">
-            <div class="col-12 col-sm-4">
-              <label class="form-label small text-secondary">Quantidade</label>
-              <input type="number" min="0" name="acompanhantes" class="form-control" value="0">
-            </div>
-            <div class="col-12 col-sm-8">
-              <label class="form-label small text-secondary">Nomes (separados por vírgula)</label>
-              <input type="text" name="nomes_acompanhantes" class="form-control" placeholder="Ex: Maria, João...">
-            </div>
-          </div>
-          <h6 class="fw-bold small text-dark mb-3"><i class="bi bi-emoji-smile-fill text-secondary"></i> Filhos</h6>
-          <div class="row g-3">
-            <div class="col-12 col-sm-4">
-              <label class="form-label small text-secondary">Quantidade</label>
-              <input type="number" min="0" name="filhos" class="form-control" value="0">
-            </div>
-            <div class="col-12 col-sm-8">
-              <label class="form-label small text-secondary">Idades (separadas por vírgula)</label>
-              <input type="text" name="idades_filhos" class="form-control" placeholder="Ex: 5 anos, 12 anos...">
-            </div>
-          </div>
-          <hr class="my-4 text-secondary opacity-25">
-          <div>
-            <label class="form-label small fw-bold text-secondary d-block">Status de Confirmação</label>
-            <div class="btn-group w-100" role="group">
-              <input type="radio" class="btn-check" name="status_convidado" id="ga-status-pendente" value="pendente" checked>
-              <label class="btn btn-outline-warning btn-sm" for="ga-status-pendente"><i class="bi bi-hourglass-split"></i> Pendente</label>
-
-              <input type="radio" class="btn-check" name="status_convidado" id="ga-status-confirmado" value="confirmado">
-              <label class="btn btn-outline-success btn-sm" for="ga-status-confirmado"><i class="bi bi-check-circle"></i> Confirmado</label>
-            </div>
-          </div>
+          <div id="acomp-add-lista" class="d-flex flex-column gap-2 mb-2"></div>
+          <button type="button" id="btn-add-acomp-add" class="btn btn-outline-secondary btn-sm rounded-pill px-3 mb-4">
+            <i class="bi bi-person-plus-fill me-1"></i> Adicionar acompanhante
+          </button>
+          <p class="text-muted mb-0" style="font-size:.72rem;"><i class="bi bi-info-circle me-1"></i>O convite entra como "Pendente" — o titular e os acompanhantes confirmam presença por conta própria pelo link.</p>
         </div>
         <div class="modal-footer border-0 pt-0">
           <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
-          <button type="submit" class="btn btn-success btn-sm px-4 rounded-pill fw-bold">Cadastrar</button>
+          <button type="submit" class="btn btn-success btn-sm px-4 rounded-pill fw-bold">Criar Convite</button>
         </div>
       </form>
     </div>
@@ -2213,32 +2143,15 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
             </div>
             <div class="col-12 col-md-6">
               <label class="form-label small fw-bold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" id="econv-telefone" class="form-control" placeholder="(00) 00000-0000">
+              <input type="text" id="econv-telefone" class="form-control" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-4 text-secondary opacity-25">
           <h6 class="fw-bold small text-dark mb-3"><i class="bi bi-people-fill text-secondary"></i> Acompanhantes</h6>
-          <div class="row g-3 mb-4">
-            <div class="col-12 col-sm-4">
-              <label class="form-label small text-secondary">Quantidade</label>
-              <input type="number" min="0" id="econv-acompanhantes" class="form-control">
-            </div>
-            <div class="col-12 col-sm-8">
-              <label class="form-label small text-secondary">Nomes (separados por vírgula)</label>
-              <input type="text" id="econv-nomes-acompanhantes" class="form-control" placeholder="Ex: Maria, João...">
-            </div>
-          </div>
-          <h6 class="fw-bold small text-dark mb-3"><i class="bi bi-emoji-smile-fill text-secondary"></i> Filhos</h6>
-          <div class="row g-3">
-            <div class="col-12 col-sm-4">
-              <label class="form-label small text-secondary">Quantidade</label>
-              <input type="number" min="0" id="econv-filhos" class="form-control">
-            </div>
-            <div class="col-12 col-sm-8">
-              <label class="form-label small text-secondary">Idades (separadas por vírgula)</label>
-              <input type="text" id="econv-idades-filhos" class="form-control" placeholder="Ex: 5 anos, 12 anos...">
-            </div>
-          </div>
+          <div id="acomp-edit-lista" class="d-flex flex-column gap-2 mb-2"></div>
+          <button type="button" id="btn-add-acomp-edit" class="btn btn-outline-secondary btn-sm rounded-pill px-3">
+            <i class="bi bi-person-plus-fill me-1"></i> Adicionar acompanhante
+          </button>
         </div>
         <div class="modal-footer border-0 pt-0">
           <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
@@ -2743,23 +2656,6 @@ document.getElementById('btnGerarPdfSecoes')?.addEventListener('click', function
   }
 });
 
-/* ---- COPIAR LINK DE CONFIRMAÇÃO DE PRESENÇA ---- */
-document.getElementById('btn-copiar-link')?.addEventListener('click', async function () {
-  const input = document.getElementById('input-link-confirmacao');
-  const btn   = this;
-  const orig  = btn.innerHTML;
-  try {
-    await navigator.clipboard.writeText(input.value);
-  } catch {
-    input.removeAttribute('readonly');
-    input.select();
-    document.execCommand('copy');
-    input.setAttribute('readonly', 'readonly');
-  }
-  btn.innerHTML = '<i class="bi bi-check-lg me-1"></i> Copiado!';
-  setTimeout(() => { btn.innerHTML = orig; }, 1800);
-});
-
 /* ---- BUSCA + FILTRO DO CHECKLIST ---- */
 (function () {
   const busca = document.getElementById('buscaChecklist');
@@ -2825,7 +2721,13 @@ async function ajax(obj) {
   obj.is_ajax    = '1';
   obj.csrf_token = CSRF_TOKEN;
   const fd = new FormData();
-  Object.entries(obj).forEach(([k, v]) => fd.append(k, v));
+  Object.entries(obj).forEach(([k, v]) => {
+    if (Array.isArray(v)) {
+      v.forEach(item => fd.append(k + '[]', item));
+    } else {
+      fd.append(k, v);
+    }
+  });
   const r = await fetch(SELF, { method: 'POST', body: fd });
   return r.json();
 }
@@ -3310,20 +3212,79 @@ function bindExcluirConv(btn) {
   });
 }
 
+/* ---- Repetidor de acompanhantes (nome + faixa etária) ---- */
+function escapeHtmlAcomp(str) {
+  const d = document.createElement('div');
+  d.textContent = str || '';
+  return d.innerHTML;
+}
+
+function linhaAcompanhanteHtml(prefixo, dados) {
+  dados = dados || {};
+  const comId = prefixo === 'edit';
+  return '' +
+    '<div class="row g-2 align-items-center acomp-' + prefixo + '-linha">' +
+      (comId ? '<input type="hidden" name="id_acompanhante_edit[]" value="' + (dados.id || '') + '">' : '') +
+      '<div class="col-7">' +
+        '<input type="text" name="nome_acompanhante_' + (comId ? 'edit' : 'novo') + '[]" class="form-control form-control-sm campo-nome-acomp" placeholder="Nome do acompanhante" value="' + escapeHtmlAcomp(dados.nome || '') + '">' +
+      '</div>' +
+      '<div class="col-4">' +
+        '<select name="faixa_acompanhante_' + (comId ? 'edit' : 'novo') + '[]" class="form-select form-select-sm campo-faixa-acomp">' +
+          '<option value="Adulto (11+ anos)">Adulto</option>' +
+          '<option value="Criança (6-10 anos)">Criança (6-10)</option>' +
+          '<option value="Criança de Colo (0-5 anos)">Criança de colo</option>' +
+        '</select>' +
+      '</div>' +
+      '<div class="col-1 text-end">' +
+        '<button type="button" class="btn btn-outline-danger btn-sm w-100 btn-remover-acomp" title="Remover"><i class="bi bi-x-lg"></i></button>' +
+      '</div>' +
+    '</div>';
+}
+
+function adicionarLinhaAcompanhante(containerId, prefixo, dados) {
+  const container = document.getElementById(containerId);
+  container.insertAdjacentHTML('beforeend', linhaAcompanhanteHtml(prefixo, dados));
+  if (dados && dados.faixa) {
+    const linhas = container.querySelectorAll('.campo-faixa-acomp');
+    linhas[linhas.length - 1].value = dados.faixa;
+  }
+}
+
+document.getElementById('btn-add-acomp-add')?.addEventListener('click', () => {
+  adicionarLinhaAcompanhante('acomp-add-lista', 'add');
+});
+document.getElementById('btn-add-acomp-edit')?.addEventListener('click', () => {
+  adicionarLinhaAcompanhante('acomp-edit-lista', 'edit');
+});
+document.getElementById('acomp-add-lista')?.addEventListener('click', e => {
+  const btn = e.target.closest('.btn-remover-acomp');
+  if (btn) btn.closest('.acomp-add-linha').remove();
+});
+document.getElementById('acomp-edit-lista')?.addEventListener('click', e => {
+  const btn = e.target.closest('.btn-remover-acomp');
+  if (btn) btn.closest('.acomp-edit-linha').remove();
+});
+document.getElementById('modalAddConvidado')?.addEventListener('show.bs.modal', () => {
+  document.getElementById('acomp-add-lista').innerHTML = '';
+});
+
 const GRUPO_CONV_ICON = 'bi-tag-fill';
 const modalEditConvEl = document.getElementById('modalEditConvidado');
 const modalEditConv   = modalEditConvEl ? new bootstrap.Modal(modalEditConvEl) : null;
 
 function bindEditConv(btn) {
   btn.addEventListener('click', () => {
-    document.getElementById('econv-id').value                 = btn.dataset.id;
-    document.getElementById('econv-nome').value                = btn.dataset.nome;
-    document.getElementById('econv-categoria').value           = btn.dataset.categoria;
-    document.getElementById('econv-telefone').value            = btn.dataset.telefone;
-    document.getElementById('econv-acompanhantes').value       = btn.dataset.acompanhantes;
-    document.getElementById('econv-nomes-acompanhantes').value = btn.dataset.nomesAcompanhantes;
-    document.getElementById('econv-filhos').value              = btn.dataset.filhos;
-    document.getElementById('econv-idades-filhos').value       = btn.dataset.idadesFilhos;
+    document.getElementById('econv-id').value        = btn.dataset.id;
+    document.getElementById('econv-nome').value       = btn.dataset.nome;
+    document.getElementById('econv-categoria').value  = btn.dataset.categoria;
+    document.getElementById('econv-telefone').value   = btn.dataset.telefone;
+
+    const listaEdit = document.getElementById('acomp-edit-lista');
+    listaEdit.innerHTML = '';
+    let acompanhantes = [];
+    try { acompanhantes = JSON.parse(btn.dataset.acompanhantesJson || '[]'); } catch (err) {}
+    acompanhantes.forEach(a => adicionarLinhaAcompanhante('acomp-edit-lista', 'edit', a));
+
     modalEditConv?.show();
   });
 }
@@ -3350,6 +3311,11 @@ document.getElementById('form-edit-convidado')?.addEventListener('submit', async
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>...';
   btn.disabled = true;
 
+  const listaEditEl   = document.getElementById('acomp-edit-lista');
+  const idsAcompEdit  = Array.from(listaEditEl.querySelectorAll('.acomp-edit-linha input[name="id_acompanhante_edit[]"]')).map(el => el.value);
+  const nomesAcompEdit  = Array.from(listaEditEl.querySelectorAll('.campo-nome-acomp')).map(el => el.value.trim());
+  const faixasAcompEdit = Array.from(listaEditEl.querySelectorAll('.campo-faixa-acomp')).map(el => el.value);
+
   try {
     const r = await ajax({
       editar_convidado: '1',
@@ -3357,10 +3323,9 @@ document.getElementById('form-edit-convidado')?.addEventListener('submit', async
       nome_convidado: nome,
       categoria_convidado: document.getElementById('econv-categoria').value.trim(),
       telefone_convidado: document.getElementById('econv-telefone').value.trim(),
-      acompanhantes: document.getElementById('econv-acompanhantes').value || 0,
-      nomes_acompanhantes: document.getElementById('econv-nomes-acompanhantes').value.trim(),
-      filhos: document.getElementById('econv-filhos').value || 0,
-      idades_filhos: document.getElementById('econv-idades-filhos').value.trim(),
+      id_acompanhante_edit: idsAcompEdit,
+      nome_acompanhante_edit: nomesAcompEdit,
+      faixa_acompanhante_edit: faixasAcompEdit,
     });
 
     if (r.ok) {
@@ -3376,21 +3341,19 @@ document.getElementById('form-edit-convidado')?.addEventListener('submit', async
         row.querySelector('.text-muted.border-top')?.remove();
         const extrasParts = [];
         if (r.telefone) extrasParts.push(`<div><i class="bi bi-whatsapp me-1 text-success"></i>${r.telefone}</div>`);
-        if (r.acompanhantes > 0) extrasParts.push(`<div><i class="bi bi-person-plus me-1"></i>Acomp (${r.acompanhantes}): ${r.nomes_acompanhantes || '<span class="fst-italic text-black-50">Nomes não informados</span>'}</div>`);
-        if (r.filhos > 0) extrasParts.push(`<div><i class="bi bi-emoji-smile me-1"></i>Filhos (${r.filhos}): ${r.idades_filhos || '<span class="fst-italic text-black-50">Idades não informadas</span>'}</div>`);
+        if (r.acompanhantes && r.acompanhantes.length) {
+          extrasParts.push(`<div><i class="bi bi-people me-1"></i>${r.acompanhantes.map(a => escapeHtmlAcomp(a.nome)).join(', ')}</div>`);
+        }
         if (extrasParts.length) {
           row.insertAdjacentHTML('beforeend', `<div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.4;">${extrasParts.join('')}</div>`);
         }
 
         const btnEdit = row.querySelector('.btn-edit-conv');
         if (btnEdit) {
-          btnEdit.dataset.nome                = r.nome;
-          btnEdit.dataset.categoria           = cat;
-          btnEdit.dataset.telefone            = r.telefone;
-          btnEdit.dataset.acompanhantes       = r.acompanhantes;
-          btnEdit.dataset.nomesAcompanhantes  = r.nomes_acompanhantes;
-          btnEdit.dataset.filhos              = r.filhos;
-          btnEdit.dataset.idadesFilhos        = r.idades_filhos;
+          btnEdit.dataset.nome               = r.nome;
+          btnEdit.dataset.categoria          = cat;
+          btnEdit.dataset.telefone           = r.telefone;
+          btnEdit.dataset.acompanhantesJson  = JSON.stringify(r.acompanhantes || []);
         }
 
         // Move para o grupo certo, se a categoria mudou

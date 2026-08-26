@@ -45,24 +45,66 @@ if ($eh_noivos) {
 /* ============================================================
    AUTO-CONFIGURAÇÃO DO BANCO DE DADOS
    ============================================================ */
-try {
-    $pdo->exec("CREATE TABLE IF NOT EXISTS mesas (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        evento_id INT NOT NULL,
-        nome VARCHAR(100) NOT NULL,
-        capacidade INT NOT NULL DEFAULT 8,
-        ordem INT DEFAULT 0
-    )");
-} catch (PDOException $e) {}
+// Essa página faz um monte de chamadas AJAX (arrastar convidado, mover mesa,
+// confirmar presença...) e cada uma reexecutava CREATE TABLE + todos os checks
+// de coluna abaixo. Uma vez confirmado, marca em disco e pula tudo isso.
+if (!schema_ja_verificado('organizar_mesas')) {
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS mesas (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            evento_id INT NOT NULL,
+            nome VARCHAR(100) NOT NULL,
+            capacidade INT NOT NULL DEFAULT 8,
+            ordem INT DEFAULT 0
+        )");
+    } catch (PDOException $e) {}
 
-$schema_checks = [
-    "SELECT mesa_id FROM convidados LIMIT 1"             => "ALTER TABLE convidados ADD COLUMN mesa_id INT NULL",
-    "SELECT nomes_acompanhantes FROM convidados LIMIT 1" => "ALTER TABLE convidados ADD COLUMN nomes_acompanhantes VARCHAR(255) NULL",
-    "SELECT idades_filhos FROM convidados LIMIT 1"       => "ALTER TABLE convidados ADD COLUMN idades_filhos VARCHAR(255) NULL",
-    "SELECT ordem FROM mesas LIMIT 1"                   => "ALTER TABLE mesas ADD COLUMN ordem INT DEFAULT 0",
-];
-foreach ($schema_checks as $check => $alter) {
-    try { $pdo->query($check); } catch (Exception $e) { try { $pdo->exec($alter); } catch (Exception $x) {} }
+    $schema_checks = [
+        "SELECT mesa_id FROM convidados LIMIT 1"                => "ALTER TABLE convidados ADD COLUMN mesa_id INT NULL",
+        "SELECT convidado_principal_id FROM convidados LIMIT 1" => "ALTER TABLE convidados ADD COLUMN convidado_principal_id INT NULL",
+        "SELECT ordem FROM mesas LIMIT 1"                       => "ALTER TABLE mesas ADD COLUMN ordem INT DEFAULT 0",
+    ];
+    foreach ($schema_checks as $check => $alter) {
+        try { $pdo->query($check); } catch (Exception $e) { try { $pdo->exec($alter); } catch (Exception $x) {} }
+    }
+    marcar_schema_verificado('organizar_mesas');
+}
+
+const FAIXAS_ETARIAS_CONVIDADOS = ['Adulto (11+ anos)', 'Criança (6-10 anos)', 'Criança de Colo (0-5 anos)'];
+
+/** Sincroniza os acompanhantes (nome + faixa etária) de um convidado titular:
+ *  atualiza os que vieram com id, cria os novos, remove os que saíram da lista. */
+function sincronizar_acompanhantes(PDO $pdo, int $evento_id, int $principal_id, array $ids, array $nomes, array $faixas): void {
+    $mantidos = [];
+    for ($i = 0; $i < count($nomes); $i++) {
+        $nome = trim($nomes[$i] ?? '');
+        if ($nome === '') continue;
+        $faixa = in_array($faixas[$i] ?? '', FAIXAS_ETARIAS_CONVIDADOS, true) ? $faixas[$i] : FAIXAS_ETARIAS_CONVIDADOS[0];
+        $id = (int)($ids[$i] ?? 0);
+
+        if ($id > 0) {
+            $chk = $pdo->prepare("SELECT id FROM convidados WHERE id = ? AND convidado_principal_id = ? AND evento_id = ?");
+            $chk->execute([$id, $principal_id, $evento_id]);
+            if ($chk->fetch()) {
+                $pdo->prepare("UPDATE convidados SET nome = ?, faixa_etaria = ? WHERE id = ?")->execute([$nome, $faixa, $id]);
+                $mantidos[] = $id;
+                continue;
+            }
+        }
+
+        $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, categoria, confirmado, convidado_principal_id) VALUES (?, ?, ?, 'Outros', 0, ?)")
+            ->execute([$evento_id, $nome, $faixa, $principal_id]);
+        $mantidos[] = (int)$pdo->lastInsertId();
+    }
+
+    $stmtAtuais = $pdo->prepare("SELECT id FROM convidados WHERE convidado_principal_id = ? AND evento_id = ?");
+    $stmtAtuais->execute([$principal_id, $evento_id]);
+    $idsAtuais = array_map('intval', $stmtAtuais->fetchAll(PDO::FETCH_COLUMN));
+    $idsRemover = array_diff($idsAtuais, $mantidos);
+    if (!empty($idsRemover)) {
+        $ph = implode(',', array_fill(0, count($idsRemover), '?'));
+        $pdo->prepare("DELETE FROM convidados WHERE id IN ($ph)")->execute(array_values($idsRemover));
+    }
 }
 
 /* ============================================================
@@ -87,10 +129,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['mover_convidado_ajax'])) {
         $cid = (int)($_POST['convidado_id'] ?? 0);
         $mid = (int)($_POST['nova_mesa_id'] ?? 0) ?: null;
-        $pdo->prepare("UPDATE convidados SET mesa_id = ? WHERE id = ? AND evento_id = ?")
-            ->execute([$mid, $cid, $evento_id]);
-        
-        if (!$is_ajax_html) json_out(['ok' => true]);
+        // Quem recusou nunca ocupa mesa — só permite mover de volta pra fila (mid nulo).
+        $recusouMov  = false;
+        $mesaLotada  = false;
+        if ($mid !== null) {
+            $chkRec = $pdo->prepare("SELECT resposta_rsvp FROM convidados WHERE id = ? AND evento_id = ?");
+            $chkRec->execute([$cid, $evento_id]);
+            $recusouMov = $chkRec->fetchColumn() === 'recusado';
+
+            if (!$recusouMov) {
+                // Não deixa exceder a capacidade da mesa (exclui a própria pessoa da
+                // contagem, senão um simples reordenar dentro da mesma mesa já bloquearia).
+                // fetchColumn() === false (mesa não existe mais, ex: excluída em outra aba)
+                // é tratado como bloqueio também — nunca como "capacidade ilimitada".
+                $stCap = $pdo->prepare("SELECT capacidade FROM mesas WHERE id = ? AND evento_id = ?");
+                $stCap->execute([$mid, $evento_id]);
+                $capRow = $stCap->fetchColumn();
+
+                if ($capRow === false) {
+                    $mesaLotada = true;
+                    $_SESSION['msg_erro'] = "Essa mesa não existe mais (pode ter sido excluída em outra aba). Atualize a página.";
+                } else {
+                    $capacidade = (int)$capRow;
+                    $stOcup = $pdo->prepare("SELECT COUNT(*) FROM convidados WHERE mesa_id = ? AND evento_id = ? AND id != ?");
+                    $stOcup->execute([$mid, $evento_id, $cid]);
+                    $ocupacaoAtual = (int)$stOcup->fetchColumn();
+
+                    if ($capacidade > 0 && $ocupacaoAtual >= $capacidade) {
+                        $mesaLotada = true;
+                        $_SESSION['msg_erro'] = "Mesa cheia! Aumente a quantidade de cadeiras ou remova alguém da mesa antes de adicionar mais pessoas.";
+                    }
+                }
+            }
+        }
+        if (!$recusouMov && !$mesaLotada) {
+            $pdo->prepare("UPDATE convidados SET mesa_id = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$mid, $cid, $evento_id]);
+        }
+
+        if (!$is_ajax_html) {
+            json_out([
+                'ok'     => !$recusouMov && !$mesaLotada,
+                'motivo' => $mesaLotada ? 'lotada' : ($recusouMov ? 'recusado' : null),
+            ]);
+        }
     }
 
     // AJAX: Reordenar mesas
@@ -186,22 +268,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $cid = (int)$_POST['convidado_id'];
         $mid = (int)$_POST['mesa_id'];
         if ($cid > 0 && $mid > 0) {
-            $pdo->prepare("UPDATE convidados SET mesa_id = ? WHERE id = ? AND evento_id = ?")
-                ->execute([$mid, $cid, $evento_id]);
+            $chkRec = $pdo->prepare("SELECT resposta_rsvp FROM convidados WHERE id = ? AND evento_id = ?");
+            $chkRec->execute([$cid, $evento_id]);
+            if ($chkRec->fetchColumn() !== 'recusado') {
+                $stCap = $pdo->prepare("SELECT capacidade FROM mesas WHERE id = ? AND evento_id = ?");
+                $stCap->execute([$mid, $evento_id]);
+                $capRow = $stCap->fetchColumn();
+
+                $stOcup = $pdo->prepare("SELECT COUNT(*) FROM convidados WHERE mesa_id = ? AND evento_id = ? AND id != ?");
+                $stOcup->execute([$mid, $evento_id, $cid]);
+                $ocupacaoAtual = (int)$stOcup->fetchColumn();
+
+                if ($capRow === false) {
+                    $_SESSION['msg_erro'] = "Essa mesa não existe mais (pode ter sido excluída em outra aba). Atualize a página.";
+                } elseif ((int)$capRow > 0 && $ocupacaoAtual >= (int)$capRow) {
+                    $_SESSION['msg_erro'] = "Mesa cheia! Aumente a quantidade de cadeiras ou remova alguém da mesa antes de adicionar mais pessoas.";
+                } else {
+                    $pdo->prepare("UPDATE convidados SET mesa_id = ? WHERE id = ? AND evento_id = ?")
+                        ->execute([$mid, $cid, $evento_id]);
+                }
+            }
         }
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
     }
 
-    // 7b. Adicionar Convidado (novo; vai pra fila de espera, ou direto pra mesa se mesa_id vier preenchido)
+    // 7b. Criar Convite (novo; vai pra fila de espera, ou direto pra mesa se mesa_id vier preenchido)
+    // Sempre entra como "pendente" — só o próprio convidado sabe se vai comparecer.
     if (isset($_POST['adicionar_convidado'])) {
         $nome       = trim($_POST['nome_convidado']      ?? '');
         $fone       = trim($_POST['telefone_convidado']  ?? '');
         $cat        = trim($_POST['categoria_convidado'] ?? 'Outros');
-        $acomp_qtd  = max(0, (int)($_POST['acompanhantes']      ?? 0));
-        $acomp_nms  = trim($_POST['nomes_acompanhantes'] ?? '');
-        $filhos_qtd = max(0, (int)($_POST['filhos']             ?? 0));
-        $filhos_ids = trim($_POST['idades_filhos']       ?? '');
-        $confirmado = ($_POST['status_convidado'] ?? 'pendente') === 'confirmado' ? 1 : 0;
+        $nomes_acomp  = $_POST['nome_acompanhante_novo']  ?? [];
+        $faixas_acomp = $_POST['faixa_acompanhante_novo'] ?? [];
 
         $mesa_destino = null;
         $mid_novo = (int)($_POST['mesa_id'] ?? 0);
@@ -212,14 +310,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($nomeMesa !== false) $mesa_destino = $mid_novo;
         }
 
-        if ($nome !== '') {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos, mesa_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $confirmado, $acomp_nms, $filhos_ids, $mesa_destino]);
-            $_SESSION['msg_sucesso'] = $mesa_destino
-                ? "Convidado <strong>" . htmlspecialchars($nome) . "</strong> cadastrado e adicionado à <strong>" . htmlspecialchars($nomeMesa) . "</strong>!"
-                : "Convidado <strong>" . htmlspecialchars($nome) . "</strong> adicionado à fila!";
-        } else {
+        if ($nome === '') {
             $_SESSION['msg_erro'] = "Informe o nome do convidado.";
+        } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
+            $_SESSION['msg_erro'] = "Informe um telefone/WhatsApp válido (com DDD) para o convidado.";
+        } else {
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, confirmado, mesa_id) VALUES (?, ?, ?, ?, 0, ?)")
+                ->execute([$evento_id, $nome, $fone, $cat, $mesa_destino]);
+            $novo_id = (int)$pdo->lastInsertId();
+            sincronizar_acompanhantes($pdo, $evento_id, $novo_id, [], $nomes_acomp, $faixas_acomp);
+            $_SESSION['msg_sucesso'] = $mesa_destino
+                ? "Convite <strong>" . htmlspecialchars($nome) . "</strong> criado e adicionado à <strong>" . htmlspecialchars($nomeMesa) . "</strong>!"
+                : "Convite <strong>" . htmlspecialchars($nome) . "</strong> criado!";
         }
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
     }
@@ -230,26 +332,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nome       = trim($_POST['nome_convidado']      ?? '');
         $fone       = trim($_POST['telefone_convidado']  ?? '');
         $cat        = trim($_POST['categoria_convidado'] ?? 'Outros');
-        $acomp_qtd  = max(0, (int)($_POST['acompanhantes']      ?? 0));
-        $acomp_nms  = trim($_POST['nomes_acompanhantes'] ?? '');
-        $filhos_qtd = max(0, (int)($_POST['filhos']             ?? 0));
-        $filhos_ids = trim($_POST['idades_filhos']       ?? '');
-        if ($cid > 0 && $nome !== '') {
-            $pdo->prepare("UPDATE convidados SET nome = ?, telefone = ?, categoria = ?, acompanhantes = ?, filhos = ?, nomes_acompanhantes = ?, idades_filhos = ? WHERE id = ? AND evento_id = ?")
-                ->execute([$nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids, $cid, $evento_id]);
-            $_SESSION['msg_sucesso'] = "Convidado <strong>" . htmlspecialchars($nome) . "</strong> atualizado!";
-        } else {
+        $ids_acomp    = $_POST['id_acompanhante_edit']    ?? [];
+        $nomes_acomp  = $_POST['nome_acompanhante_edit']  ?? [];
+        $faixas_acomp = $_POST['faixa_acompanhante_edit'] ?? [];
+        if ($cid <= 0 || $nome === '') {
             $_SESSION['msg_erro'] = "Informe o nome do convidado.";
+        } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
+            $_SESSION['msg_erro'] = "Informe um telefone/WhatsApp válido (com DDD) para o convidado.";
+        } else {
+            $pdo->prepare("UPDATE convidados SET nome = ?, telefone = ?, categoria = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$nome, $fone, $cat, $cid, $evento_id]);
+            sincronizar_acompanhantes($pdo, $evento_id, $cid, $ids_acomp, $nomes_acomp, $faixas_acomp);
+            $_SESSION['msg_sucesso'] = "Convidado <strong>" . htmlspecialchars($nome) . "</strong> atualizado!";
         }
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
     }
 
-    // 7d. Excluir Convidado
+    // 7d. Excluir Convidado (e os acompanhantes ligados a ele, se houver)
     if (isset($_POST['excluir_convidado'])) {
         $cid = (int)($_POST['convidado_id'] ?? 0);
         $st  = $pdo->prepare("SELECT nome FROM convidados WHERE id = ? AND evento_id = ?");
         $st->execute([$cid, $evento_id]);
         $nn  = $st->fetchColumn() ?: 'Convidado';
+        $pdo->prepare("DELETE FROM convidados WHERE convidado_principal_id = ? AND evento_id = ?")->execute([$cid, $evento_id]);
         $pdo->prepare("DELETE FROM convidados WHERE id = ? AND evento_id = ?")->execute([$cid, $evento_id]);
         $_SESSION['msg_sucesso'] = "Convidado <strong>" . htmlspecialchars($nn) . "</strong> removido.";
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
@@ -280,37 +385,88 @@ $stmt->execute([$evento_id]);
 $evento = $stmt->fetch();
 if (!$evento) die("Evento não encontrado.");
 
+// Corrige convidados com mesa_id "fantasma" (apontando pra uma mesa já excluída,
+// ex: alguém excluiu a mesa numa aba enquanto outra aba/sessão ainda arrastava
+// gente pra ela) — sem isso a pessoa some da tela mas continua contando como
+// "ocupada" nas estatísticas, o que não batia com as cadeiras livres reais.
+$pdo->prepare("
+    UPDATE convidados c
+    LEFT JOIN mesas m ON c.mesa_id = m.id AND m.evento_id = c.evento_id
+    SET c.mesa_id = NULL
+    WHERE c.evento_id = ? AND c.mesa_id IS NOT NULL AND m.id IS NULL
+")->execute([$evento_id]);
+
 $stmtM = $pdo->prepare("SELECT * FROM mesas WHERE evento_id = ? ORDER BY ordem ASC, id ASC");
 $stmtM->execute([$evento_id]);
 $lista_mesas = $stmtM->fetchAll(PDO::FETCH_ASSOC);
 
 $stmtC = $pdo->prepare("
-    SELECT id, nome, telefone, categoria, acompanhantes, filhos, confirmado,
-           mesa_id, nomes_acompanhantes, idades_filhos
+    SELECT id, nome, telefone, categoria, confirmado, mesa_id, convidado_principal_id, faixa_etaria, resposta_rsvp
     FROM convidados WHERE evento_id = ? ORDER BY nome ASC
 ");
 $stmtC->execute([$evento_id]);
-$todos = $stmtC->fetchAll(PDO::FETCH_ASSOC);
+$todos_raw = $stmtC->fetchAll(PDO::FETCH_ASSOC);
 
-$sem_mesa = $na_mesa = [];
-$total_alocados = $total_cap = $total_conf = 0;
+$nomes_por_id = [];
+$acompanhantes_por_principal = [];
+foreach ($todos_raw as $c) {
+    $nomes_por_id[$c['id']] = $c['nome'];
+    if (!empty($c['convidado_principal_id'])) {
+        $acompanhantes_por_principal[$c['convidado_principal_id']][] = $c;
+    }
+}
 
-foreach ($todos as $c) {
-    $c['lugares'] = 1 + (int)$c['acompanhantes'] + (int)$c['filhos'];
-    if ($c['confirmado']) $total_conf++;
+// Ordena a lista para que cada titular apareça imediatamente seguido dos seus próprios
+// acompanhantes (em vez da ordem alfabética "solta", que espalhava a família inteira pela
+// fila) — assim dá pra ver a família agrupada mesmo cada um confirmando/recusando sozinho.
+$titulares_ordenados = array_values(array_filter($todos_raw, fn($c) => empty($c['convidado_principal_id'])));
+$todos_agrupados = [];
+foreach ($titulares_ordenados as $tit) {
+    $todos_agrupados[] = $tit;
+    foreach ($acompanhantes_por_principal[$tit['id']] ?? [] as $acomp) {
+        $todos_agrupados[] = $acomp;
+    }
+}
+
+// Titular e cada acompanhante confirmam/recusam de forma independente (link específico
+// por pessoa) — por isso cada um vira sua própria unidade de assento, não "1 + acompanhantes"
+// em bloco. Um recusado nunca ocupa mesa, mesmo que more tenha ficado com mesa_id de antes.
+$sem_mesa = $na_mesa = $recusados = $fila_itens = [];
+$total_alocados = $total_cap = $total_conf = $total_pend = $total_recusado = 0;
+$stmtLimparMesa = $pdo->prepare("UPDATE convidados SET mesa_id = NULL WHERE id = ?");
+
+// Monta $fila_itens já na ordem agrupada por família (não como merge de dois blocos
+// separados) — senão um acompanhante recusado sempre "pulava" pro fim da fila, longe
+// do resto da família só por causa do status.
+foreach ($todos_agrupados as $c) {
+    $c['lugares']        = 1;
+    $c['principal_nome'] = !empty($c['convidado_principal_id']) ? ($nomes_por_id[$c['convidado_principal_id']] ?? null) : null;
+    $c['acompanhantes_lista'] = $acompanhantes_por_principal[$c['id']] ?? [];
+    $recusou = ($c['resposta_rsvp'] ?? '') === 'recusado';
+
+    if ($recusou) {
+        $total_recusado++;
+        if (!empty($c['mesa_id'])) { $stmtLimparMesa->execute([$c['id']]); $c['mesa_id'] = null; }
+        $recusados[] = $c;
+        $fila_itens[] = $c;
+        continue;
+    }
+
+    $c['confirmado'] ? $total_conf++ : $total_pend++;
     if ($c['mesa_id']) {
         $na_mesa[$c['mesa_id']][] = $c;
         $total_alocados += $c['lugares'];
     } else {
         $sem_mesa[] = $c;
+        $fila_itens[] = $c;
     }
 }
 foreach ($lista_mesas as $m) $total_cap += (int)$m['capacidade'];
 
-$total_conv   = count($todos);
+$total_conv   = count($todos_raw);
 $total_livres = $total_cap - $total_alocados;
 
-$categorias_existentes = array_values(array_unique(array_filter(array_map(fn($c) => trim($c['categoria']), $todos))));
+$categorias_existentes = array_values(array_unique(array_filter(array_map(fn($c) => trim($c['categoria']), $todos_raw))));
 sort($categorias_existentes);
 
 $msg_ok  = $_SESSION['msg_sucesso'] ?? '';
@@ -408,7 +564,9 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     .conv-item:active { cursor: grabbing; }
     .conv-item.confirmado { border-left-color: #10b981 !important; }
     .conv-item.pendente   { border-left-color: #f59e0b !important; }
+    .conv-item.recusado   { border-left-color: #94a3b8 !important; opacity: .6; cursor: not-allowed; }
     .conv-item:hover      { background: #f0f9ff !important; }
+    .conv-item.recusado:hover { background: #fff !important; }
 
     .mesa-card { border-radius: var(--radius) !important; border: 1px solid #e2e8f0 !important; transition: box-shadow .2s, border-color .3s; }
     .mesa-card:hover { box-shadow: 0 .5rem 1.5rem rgba(0,0,0,.1) !important; }
@@ -530,13 +688,31 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   </div>
   <?php endif; ?>
   <?php if ($msg_err): ?>
-  <div class="toast align-items-center text-bg-danger border-0 shadow-lg" role="alert" data-bs-autohide="true" data-bs-delay="5000">
+  <div class="toast align-items-center text-bg-danger border-0 shadow-lg" role="alert" data-bs-autohide="true" data-bs-delay="5000" <?= str_starts_with($msg_err, 'Mesa cheia!') ? 'data-mesa-lotada="1"' : '' ?>>
     <div class="d-flex">
       <div class="toast-body fw-semibold"><i class="bi bi-exclamation-triangle-fill me-2"></i><?= $msg_err ?></div>
       <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
     </div>
   </div>
   <?php endif; ?>
+</div>
+
+<!-- Modal de aviso: mesa cheia (capacidade atingida) -->
+<div class="modal fade" id="modalMesaCheia" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-body text-center p-4">
+        <div class="mb-3">
+          <i class="bi bi-exclamation-triangle-fill text-danger" style="font-size:2.5rem;"></i>
+        </div>
+        <h5 class="fw-bold mb-2">Mesa cheia!</h5>
+        <p class="text-muted mb-0">Essa mesa já atingiu a quantidade de cadeiras cadastrada. Aumente a capacidade da mesa ou remova alguém dela antes de adicionar mais pessoas.</p>
+      </div>
+      <div class="modal-footer border-0 pt-0 justify-content-center">
+        <button type="button" class="btn btn-danger px-4 rounded-pill fw-bold" data-bs-dismiss="modal">Entendi</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- =========================================================
@@ -567,12 +743,9 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         <ul>
           <?php foreach ($cvs as $cm): ?>
             <li>
-              <?= $cm['confirmado'] ? '&check;' : '&#9203;' ?> <?= htmlspecialchars($cm['nome']) ?><?= $cm['lugares'] > 1 ? ' (' . $cm['lugares'] . ' lug.)' : '' ?>
-              <?php if (!empty($cm['nomes_acompanhantes'])): ?>
-                <div class="pm-detalhe">+ <?= htmlspecialchars($cm['nomes_acompanhantes']) ?></div>
-              <?php endif; ?>
-              <?php if (!empty($cm['idades_filhos'])): ?>
-                <div class="pm-detalhe">Filhos: <?= htmlspecialchars($cm['idades_filhos']) ?></div>
+              <?= $cm['confirmado'] ? '&check;' : '&#9203;' ?> <?= htmlspecialchars($cm['nome']) ?>
+              <?php if (!empty($cm['principal_nome'])): ?>
+                <div class="pm-detalhe">Acompanha: <?= htmlspecialchars($cm['principal_nome']) ?></div>
               <?php endif; ?>
             </li>
           <?php endforeach; ?>
@@ -611,8 +784,11 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         </button>
         <div class="w-100 d-md-none quebra-mesas-mobile"></div>
         <button class="btn btn-sm btn-info rounded-pill text-dark fw-semibold shadow-sm px-3 btn-add-convidado-topo" data-bs-toggle="modal" data-bs-target="#modalAddConvidado">
-          <i class="bi bi-person-plus-fill me-1"></i> Adicionar Convidado
+          <i class="bi bi-person-plus-fill me-1"></i> Criar Convite
         </button>
+        <a href="convidados.php<?= $eh_noivos ? '' : '?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-pill fw-semibold px-3">
+          <i class="bi bi-people-fill me-1"></i> Gerenciar Convidados
+        </a>
       </div>
     </div>
 
@@ -621,26 +797,32 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       $cls_sem_mesa = 'text-danger';
       $cls_livres   = $total_livres < 0 ? 'text-danger' : ($total_livres <= 5 && $total_livres >= 0 ? 'text-warning' : 'text-success');
     ?>
-    <div class="row g-2 mt-3">
-      <div class="col-6 col-sm-3">
+    <div class="row row-cols-2 row-cols-sm-5 g-2 mt-3">
+      <div class="col">
         <div class="stat">
           <span class="stat-icon text-primary"><i class="bi bi-envelope-fill"></i></span>
           <div class="stat-body"><div class="val"><?= $total_conv ?></div><div class="lbl">Convites</div></div>
         </div>
       </div>
-      <div class="col-6 col-sm-3">
+      <div class="col">
         <div class="stat">
           <span class="stat-icon text-info"><i class="bi bi-check-circle-fill"></i></span>
           <div class="stat-body"><div class="val text-info"><?= $total_conf ?></div><div class="lbl">Confirmados</div></div>
         </div>
       </div>
-      <div class="col-6 col-sm-3">
+      <div class="col">
+        <div class="stat">
+          <span class="stat-icon text-secondary"><i class="bi bi-x-circle-fill"></i></span>
+          <div class="stat-body"><div class="val text-secondary"><?= $total_recusado ?></div><div class="lbl">Recusaram</div></div>
+        </div>
+      </div>
+      <div class="col">
         <div class="stat">
           <span class="stat-icon <?= $cls_sem_mesa ?>"><i class="bi bi-exclamation-triangle-fill"></i></span>
           <div class="stat-body"><div class="val <?= $cls_sem_mesa ?>"><?= count($sem_mesa) ?></div><div class="lbl">Sem Mesa</div></div>
         </div>
       </div>
-      <div class="col-6 col-sm-3">
+      <div class="col">
         <div class="stat">
           <span class="stat-icon <?= $cls_livres ?>">
             <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 16 16" fill="currentColor">
@@ -676,36 +858,37 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
             <button class="btn btn-primary btn-sm rounded-pill active" data-f="todos" style="font-size:.7rem;padding:.25rem .6rem;">Todos</button>
             <button class="btn btn-outline-success btn-sm rounded-pill" data-f="confirmado" style="font-size:.7rem;padding:.25rem .6rem;">✓ Confirm.</button>
             <button class="btn btn-outline-warning btn-sm rounded-pill" data-f="pendente" style="font-size:.7rem;padding:.25rem .6rem;">⏳ Pendente</button>
+            <button class="btn btn-outline-secondary btn-sm rounded-pill" data-f="recusado" style="font-size:.7rem;padding:.25rem .6rem;">✗ Recusou</button>
           </div>
         </div>
 
         <div class="card-body p-0 scroll-g bg-light flex-grow-1">
           <div class="sortable-area p-2" data-mesa-id="0" id="lista-espera" style="min-height: 80px;">
-            <?php if (empty($sem_mesa)): ?>
+            <?php if (empty($fila_itens)): ?>
               <div class="text-center py-5 text-muted msg-vazia-estatica">
                 <i class="bi bi-check2-all fs-2 d-block mb-2 text-success"></i>
                 <strong>Todos alocados!</strong><br><small>Nenhum convidado na fila.</small>
               </div>
             <?php endif; ?>
 
-            <?php foreach ($sem_mesa as $c): $sc = $c['confirmado'] ? 'confirmado' : 'pendente'; ?>
-            <div class="list-group-item bg-white rounded-2 shadow-sm conv-item <?= $sc ?> p-2 mb-1 border-0"
+            <?php foreach ($fila_itens as $c):
+                $recusou = ($c['resposta_rsvp'] ?? '') === 'recusado';
+                $sc = $recusou ? 'recusado' : ($c['confirmado'] ? 'confirmado' : 'pendente'); ?>
+            <div class="list-group-item bg-white rounded-2 shadow-sm conv-item <?= $sc ?> p-2 mb-1 border-0<?= !empty($c['principal_nome']) ? ' ms-3' : '' ?>"
+                 style="<?= !empty($c['principal_nome']) ? 'width:calc(100% - 1rem);' : '' ?>"
                  data-conv-id="<?= $c['id'] ?>"
                  data-nome="<?= strtolower(htmlspecialchars($c['nome'])) ?>"
                  data-status="<?= $sc ?>"
                  data-lugares="<?= $c['lugares'] ?>">
-              
+
               <div class="d-flex align-items-start gap-2">
-                <i class="bi bi-grip-vertical drag-guest flex-shrink-0 mt-1"></i>
+                <i class="bi <?= $recusou ? 'bi-lock-fill text-muted' : 'bi-grip-vertical drag-guest' ?> flex-shrink-0 mt-1" <?= $recusou ? 'title="Recusou — não pode ser colocado em mesa"' : '' ?>></i>
                 <div class="flex-grow-1 min-w-0">
                   <div class="d-flex justify-content-between align-items-start gap-1">
                     <span class="fw-semibold small text-dark text-truncate" title="<?= htmlspecialchars($c['nome']) ?>">
                       <?= htmlspecialchars($c['nome']) ?>
                     </span>
                     <div class="d-flex align-items-center gap-2 flex-shrink-0 no-print">
-                      <span class="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 rounded-pill" style="font-size:.62rem;">
-                        <i class="bi bi-person-fill"></i> <?= $c['lugares'] ?>
-                      </span>
                       <div class="d-flex align-items-center gap-1 conv-actions">
                         <button type="button" class="btn-icon-conv text-primary btn-edit-convidado"
                                 title="Editar convidado"
@@ -713,10 +896,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                                 data-nome="<?= htmlspecialchars($c['nome'], ENT_QUOTES, 'UTF-8') ?>"
                                 data-telefone="<?= htmlspecialchars($c['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                                 data-categoria="<?= htmlspecialchars($c['categoria'], ENT_QUOTES, 'UTF-8') ?>"
-                                data-acompanhantes="<?= (int)$c['acompanhantes'] ?>"
-                                data-nomes-acompanhantes="<?= htmlspecialchars($c['nomes_acompanhantes'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                data-filhos="<?= (int)$c['filhos'] ?>"
-                                data-idades-filhos="<?= htmlspecialchars($c['idades_filhos'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                data-acompanhantes-json="<?= htmlspecialchars(json_encode(array_map(fn($a) => ['id' => $a['id'], 'nome' => $a['nome'], 'faixa' => $a['faixa_etaria']], $c['acompanhantes_lista'])), ENT_QUOTES, 'UTF-8') ?>"
                                 data-bs-toggle="modal" data-bs-target="#modalEditConvidado">
                           <i class="bi bi-pencil-fill"></i>
                         </button>
@@ -731,15 +911,19 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                     </div>
                   </div>
 
-                  <?php if (!empty($c['nomes_acompanhantes']) || !empty($c['idades_filhos'])): ?>
+                  <?php if (!empty($c['principal_nome'])): ?>
                   <div class="text-muted mt-1" style="font-size:.62rem;line-height:1.35;">
-                    <?php if (!empty($c['nomes_acompanhantes'])): ?><div class="text-truncate"><i class="bi bi-people me-1"></i><?= htmlspecialchars($c['nomes_acompanhantes']) ?></div><?php endif; ?>
-                    <?php if (!empty($c['idades_filhos'])): ?><div class="text-truncate"><i class="bi bi-emoji-smile me-1"></i><?= htmlspecialchars($c['idades_filhos']) ?></div><?php endif; ?>
+                    <i class="bi bi-people me-1"></i>Acompanha: <?= htmlspecialchars($c['principal_nome'], ENT_QUOTES, 'UTF-8') ?>
                   </div>
                   <?php endif; ?>
 
                   <!-- Rodapé do Card da Fila com Botão de Confirmar -->
                   <div class="d-flex align-items-center justify-content-between mt-2 pt-1 border-top border-light" style="font-size:.64rem;">
+                    <?php if ($recusou): ?>
+                      <span class="fw-semibold text-secondary d-flex align-items-center gap-1">
+                        <i class="bi bi-x-circle-fill" style="font-size:.85rem;"></i> Recusou
+                      </span>
+                    <?php else: ?>
                     <form method="POST" class="m-0 no-print form-confirmar">
                       <input type="hidden" name="alternar_confirmacao" value="1">
                       <input type="hidden" name="convidado_id" value="<?= $c['id'] ?>">
@@ -751,6 +935,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                         </span>
                       </button>
                     </form>
+                    <?php endif; ?>
                     <span class="text-muted text-truncate" style="max-width:45%;" title="<?= htmlspecialchars($c['categoria']) ?>"><?= htmlspecialchars($c['categoria'] ?: 'Sem categoria') ?></span>
                   </div>
 
@@ -878,12 +1063,10 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                     <div class="flex-grow-1 min-w-0">
                       <div class="d-flex justify-content-between align-items-start gap-1">
                         <span class="fw-semibold text-dark text-truncate"><?= htmlspecialchars($cm['nome']) ?></span>
-                        <?php if ($cm['lugares'] > 1): ?><span class="badge bg-secondary bg-opacity-10 text-secondary flex-shrink-0" style="font-size:.58rem;"><?= $cm['lugares'] ?> lug.</span><?php endif; ?>
                       </div>
-                      <?php if ($cm['lugares'] > 1 && (!empty($cm['nomes_acompanhantes']) || !empty($cm['idades_filhos']))): ?>
+                      <?php if (!empty($cm['principal_nome'])): ?>
                       <div class="text-muted mt-0" style="font-size:.62rem;line-height:1.3;">
-                        <?php if (!empty($cm['nomes_acompanhantes'])): ?><div class="text-truncate"><i class="bi bi-people me-1"></i><?= htmlspecialchars($cm['nomes_acompanhantes']) ?></div><?php endif; ?>
-                        <?php if (!empty($cm['idades_filhos'])): ?><div class="text-truncate"><i class="bi bi-emoji-smile me-1"></i><?= htmlspecialchars($cm['idades_filhos']) ?></div><?php endif; ?>
+                        <div class="text-truncate"><i class="bi bi-people me-1"></i>Acompanha: <?= htmlspecialchars($cm['principal_nome'], ENT_QUOTES, 'UTF-8') ?></div>
                       </div>
                       <?php endif; ?>
                     </div>
@@ -907,10 +1090,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                                 data-nome="<?= htmlspecialchars($cm['nome'], ENT_QUOTES, 'UTF-8') ?>"
                                 data-telefone="<?= htmlspecialchars($cm['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                                 data-categoria="<?= htmlspecialchars($cm['categoria'], ENT_QUOTES, 'UTF-8') ?>"
-                                data-acompanhantes="<?= (int)$cm['acompanhantes'] ?>"
-                                data-nomes-acompanhantes="<?= htmlspecialchars($cm['nomes_acompanhantes'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                data-filhos="<?= (int)$cm['filhos'] ?>"
-                                data-idades-filhos="<?= htmlspecialchars($cm['idades_filhos'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                data-acompanhantes-json="<?= htmlspecialchars(json_encode(array_map(fn($a) => ['id' => $a['id'], 'nome' => $a['nome'], 'faixa' => $a['faixa_etaria']], $cm['acompanhantes_lista'])), ENT_QUOTES, 'UTF-8') ?>"
                                 data-bs-toggle="modal" data-bs-target="#modalEditConvidado">
                           <i class="bi bi-pencil-fill"></i>
                         </button>
@@ -977,7 +1157,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
               <!-- Será populado dinamicamente via JS -->
             </select>
             <div id="add-guest-warning" class="form-text text-danger mt-2" style="font-size: 0.75rem; display: none;">
-              <i class="bi bi-exclamation-triangle"></i> Não há mais convidados na fila de espera.
+              <i class="bi bi-exclamation-triangle"></i> Não há mais convidados disponíveis (todos já estão nesta mesa ou recusaram).
             </div>
           </div>
           <button type="button" id="btn-novo-convidado-mesa" class="btn btn-link btn-sm px-0 mt-2 text-decoration-none fw-semibold">
@@ -993,12 +1173,12 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   </div>
 </div>
 
-<!-- Modal: Adicionar Convidado -->
+<!-- Modal: Criar Convite -->
 <div class="modal fade" id="modalAddConvidado" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content border-0 shadow-lg rounded-4">
       <div class="modal-header border-0 pb-0">
-        <h6 class="modal-title fw-bold"><i class="bi bi-person-plus-fill text-info me-2"></i>Adicionar Convidado</h6>
+        <h6 class="modal-title fw-bold"><i class="bi bi-person-plus-fill text-info me-2"></i>Criar Convite</h6>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <form method="POST" class="form-ajax">
@@ -1024,45 +1204,23 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
             </div>
             <div class="col-md-6">
               <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" name="telefone_convidado" class="form-control rounded-3" placeholder="(00) 00000-0000">
+              <input type="text" name="telefone_convidado" class="form-control rounded-3" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-3 text-secondary opacity-25">
-          <div class="row g-3 mb-3">
-            <div class="col-4">
-              <label class="form-label small fw-semibold text-secondary">Acompanhantes</label>
-              <input type="number" min="0" name="acompanhantes" class="form-control rounded-3" value="0">
-            </div>
-            <div class="col-8">
-              <label class="form-label small fw-semibold text-secondary">Nomes (separados por vírgula)</label>
-              <input type="text" name="nomes_acompanhantes" class="form-control rounded-3" placeholder="Ex: Maria, João...">
-            </div>
+          <div class="mb-2">
+            <label class="form-label small fw-semibold text-secondary d-block mb-1">Acompanhantes</label>
+            <div id="acomp-add-lista" class="d-flex flex-column gap-2 mb-2"></div>
+            <button type="button" id="btn-add-acomp-add" class="btn btn-outline-secondary btn-sm rounded-pill px-3">
+              <i class="bi bi-person-plus-fill me-1"></i> Adicionar acompanhante
+            </button>
+            <p class="text-muted mb-0 mt-1" style="font-size:.7rem;">Informe adulto, criança ou criança de colo para cada um — ajuda a assessoria a fechar a contagem do buffet.</p>
           </div>
-          <div class="row g-3">
-            <div class="col-4">
-              <label class="form-label small fw-semibold text-secondary">Filhos</label>
-              <input type="number" min="0" name="filhos" class="form-control rounded-3" value="0">
-            </div>
-            <div class="col-8">
-              <label class="form-label small fw-semibold text-secondary">Idades (separadas por vírgula)</label>
-              <input type="text" name="idades_filhos" class="form-control rounded-3" placeholder="Ex: 5 anos, 12 anos...">
-            </div>
-          </div>
-          <hr class="my-3 text-secondary opacity-25">
-          <div>
-            <label class="form-label small fw-semibold text-secondary d-block">Status de Confirmação</label>
-            <div class="btn-group w-100" role="group">
-              <input type="radio" class="btn-check" name="status_convidado" id="om-status-pendente" value="pendente" checked>
-              <label class="btn btn-outline-warning btn-sm" for="om-status-pendente"><i class="bi bi-hourglass-split"></i> Pendente</label>
-
-              <input type="radio" class="btn-check" name="status_convidado" id="om-status-confirmado" value="confirmado">
-              <label class="btn btn-outline-success btn-sm" for="om-status-confirmado"><i class="bi bi-check-circle"></i> Confirmado</label>
-            </div>
-          </div>
+          <p class="text-muted mb-0" style="font-size:.72rem;"><i class="bi bi-info-circle me-1"></i>O convite entra como "Pendente" — o titular e os acompanhantes confirmam presença por conta própria pelo link.</p>
         </div>
         <div class="modal-footer border-0 pt-0">
           <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
-          <button type="submit" class="btn btn-info btn-sm px-4 rounded-pill fw-semibold">Adicionar à Fila</button>
+          <button type="submit" class="btn btn-info btn-sm px-4 rounded-pill fw-semibold">Criar Convite</button>
         </div>
       </form>
     </div>
@@ -1092,29 +1250,16 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
             </div>
             <div class="col-md-6">
               <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" name="telefone_convidado" id="ec-telefone" class="form-control rounded-3" placeholder="(00) 00000-0000">
+              <input type="text" name="telefone_convidado" id="ec-telefone" class="form-control rounded-3" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-3 text-secondary opacity-25">
-          <div class="row g-3 mb-3">
-            <div class="col-4">
-              <label class="form-label small fw-semibold text-secondary">Acompanhantes</label>
-              <input type="number" min="0" name="acompanhantes" id="ec-acompanhantes" class="form-control rounded-3">
-            </div>
-            <div class="col-8">
-              <label class="form-label small fw-semibold text-secondary">Nomes (separados por vírgula)</label>
-              <input type="text" name="nomes_acompanhantes" id="ec-nomes-acompanhantes" class="form-control rounded-3" placeholder="Ex: Maria, João...">
-            </div>
-          </div>
-          <div class="row g-3">
-            <div class="col-4">
-              <label class="form-label small fw-semibold text-secondary">Filhos</label>
-              <input type="number" min="0" name="filhos" id="ec-filhos" class="form-control rounded-3">
-            </div>
-            <div class="col-8">
-              <label class="form-label small fw-semibold text-secondary">Idades (separadas por vírgula)</label>
-              <input type="text" name="idades_filhos" id="ec-idades-filhos" class="form-control rounded-3" placeholder="Ex: 5 anos, 12 anos...">
-            </div>
+          <div class="mb-2">
+            <label class="form-label small fw-semibold text-secondary d-block mb-1">Acompanhantes</label>
+            <div id="acomp-edit-lista" class="d-flex flex-column gap-2 mb-2"></div>
+            <button type="button" id="btn-add-acomp-edit" class="btn btn-outline-secondary btn-sm rounded-pill px-3">
+              <i class="bi bi-person-plus-fill me-1"></i> Adicionar acompanhante
+            </button>
           </div>
         </div>
         <div class="modal-footer border-0 pt-0">
@@ -1209,9 +1354,65 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 <script>
 const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;
 
+/* ---- Repetidor de acompanhantes (nome + faixa etária) ---- */
+function escapeHtmlConv(str) {
+  const d = document.createElement('div');
+  d.textContent = str || '';
+  return d.innerHTML;
+}
+
+function linhaAcompanhanteHtml(prefixo, dados) {
+  dados = dados || {};
+  const comId = prefixo === 'edit';
+  return '' +
+    '<div class="row g-2 align-items-center acomp-' + prefixo + '-linha">' +
+      (comId ? '<input type="hidden" name="id_acompanhante_edit[]" value="' + (dados.id || '') + '">' : '') +
+      '<div class="col-7">' +
+        '<input type="text" name="nome_acompanhante_' + (comId ? 'edit' : 'novo') + '[]" class="form-control form-control-sm campo-nome-acomp" placeholder="Nome do acompanhante" value="' + escapeHtmlConv(dados.nome || '') + '">' +
+      '</div>' +
+      '<div class="col-4">' +
+        '<select name="faixa_acompanhante_' + (comId ? 'edit' : 'novo') + '[]" class="form-select form-select-sm campo-faixa-acomp">' +
+          '<option value="Adulto (11+ anos)">Adulto</option>' +
+          '<option value="Criança (6-10 anos)">Criança (6-10)</option>' +
+          '<option value="Criança de Colo (0-5 anos)">Criança de colo</option>' +
+        '</select>' +
+      '</div>' +
+      '<div class="col-1 text-end">' +
+        '<button type="button" class="btn btn-outline-danger btn-sm w-100 btn-remover-acomp" title="Remover"><i class="bi bi-x-lg"></i></button>' +
+      '</div>' +
+    '</div>';
+}
+
+function adicionarLinhaAcompanhante(containerId, prefixo, dados) {
+  const container = document.getElementById(containerId);
+  container.insertAdjacentHTML('beforeend', linhaAcompanhanteHtml(prefixo, dados));
+  if (dados && dados.faixa) {
+    const linhas = container.querySelectorAll('.campo-faixa-acomp');
+    linhas[linhas.length - 1].value = dados.faixa;
+  }
+}
+
 document.addEventListener('DOMContentLoaded', function () {
 
   document.querySelectorAll('.toast').forEach(el => bootstrap.Toast.getOrCreateInstance(el).show());
+
+  document.getElementById('btn-add-acomp-add')?.addEventListener('click', () => {
+    adicionarLinhaAcompanhante('acomp-add-lista', 'add');
+  });
+  document.getElementById('btn-add-acomp-edit')?.addEventListener('click', () => {
+    adicionarLinhaAcompanhante('acomp-edit-lista', 'edit');
+  });
+  document.getElementById('acomp-add-lista')?.addEventListener('click', e => {
+    const btn = e.target.closest('.btn-remover-acomp');
+    if (btn) btn.closest('.acomp-add-linha').remove();
+  });
+  document.getElementById('acomp-edit-lista')?.addEventListener('click', e => {
+    const btn = e.target.closest('.btn-remover-acomp');
+    if (btn) btn.closest('.acomp-edit-linha').remove();
+  });
+  document.getElementById('modalAddConvidado')?.addEventListener('show.bs.modal', () => {
+    document.getElementById('acomp-add-lista').innerHTML = '';
+  });
 
   // Delegação dos botões de ação nas mesas
   document.addEventListener('click', function(e) {
@@ -1226,44 +1427,62 @@ document.addEventListener('DOMContentLoaded', function () {
     // Botão Editar Convidado
     const btnEditConv = e.target.closest('.btn-edit-convidado');
     if (btnEditConv) {
-      document.getElementById('ec-id').value                  = btnEditConv.dataset.id;
-      document.getElementById('ec-nome').value                = btnEditConv.dataset.nome;
-      document.getElementById('ec-categoria').value            = btnEditConv.dataset.categoria;
-      document.getElementById('ec-telefone').value             = btnEditConv.dataset.telefone;
-      document.getElementById('ec-acompanhantes').value        = btnEditConv.dataset.acompanhantes;
-      document.getElementById('ec-nomes-acompanhantes').value  = btnEditConv.dataset.nomesAcompanhantes;
-      document.getElementById('ec-filhos').value                = btnEditConv.dataset.filhos;
-      document.getElementById('ec-idades-filhos').value         = btnEditConv.dataset.idadesFilhos;
+      document.getElementById('ec-id').value        = btnEditConv.dataset.id;
+      document.getElementById('ec-nome').value       = btnEditConv.dataset.nome;
+      document.getElementById('ec-categoria').value  = btnEditConv.dataset.categoria;
+      document.getElementById('ec-telefone').value   = btnEditConv.dataset.telefone;
+
+      const listaEdit = document.getElementById('acomp-edit-lista');
+      listaEdit.innerHTML = '';
+      let acompanhantes = [];
+      try { acompanhantes = JSON.parse(btnEditConv.dataset.acompanhantesJson || '[]'); } catch (err) {}
+      acompanhantes.forEach(a => adicionarLinhaAcompanhante('acomp-edit-lista', 'edit', a));
     }
 
     // Botão Adicionar Convidado na Mesa
     const btnAddGuest = e.target.closest('.btn-add-guest');
     if (btnAddGuest) {
-      document.getElementById('add-guest-mid').value = btnAddGuest.dataset.id;
+      const targetMesaId = btnAddGuest.dataset.id;
+      document.getElementById('add-guest-mid').value = targetMesaId;
       document.getElementById('add-guest-mesa-nome').textContent = btnAddGuest.dataset.nome;
-      
+
       const select = document.getElementById('select-convidados');
       select.innerHTML = '<option value="" disabled selected>Escolha um convidado...</option>';
-      
-      const convidadosFila = document.querySelectorAll('#lista-espera .conv-item');
+
+      // Antes só listava quem estava na fila de espera — se todo mundo já tinha
+      // mesa (mesmo que em OUTRA mesa), o modal ficava vazio e parecia travado.
+      // Agora lista todo mundo (fila + já sentados em outras mesas), deixando
+      // claro onde cada um está; escolher move a pessoa pra essa mesa.
+      const todosConvidados = document.querySelectorAll('.conv-item:not(.recusado)');
       let qtdDisponivel = 0;
-      
-      convidadosFila.forEach(item => {
+
+      todosConvidados.forEach(item => {
+        const area = item.closest('.sortable-area');
+        const mesaAtualId = area ? area.dataset.mesaId : null;
+        const jaNestaMesa = mesaAtualId && mesaAtualId === targetMesaId;
+        if (jaNestaMesa) return;
+
         const cid = item.dataset.convId;
-        const nome = item.querySelector('.fw-semibold').textContent.trim();
-        const lugares = item.dataset.lugares;
-        const pendenteText = item.dataset.status === 'pendente' ? ' ⏳' : ' ✓';
-        
+        const nomeEl = item.querySelector('.fw-semibold');
+        const nome = nomeEl ? nomeEl.textContent.trim() : '';
+        const statusText = item.dataset.status === 'pendente' ? ' ⏳' : ' ✓';
+
+        let localTxt = '';
+        if (mesaAtualId && mesaAtualId !== '0') {
+          const mesaEl = document.querySelector('.mesa-col[data-mesa-id="' + mesaAtualId + '"] h6 span.text-truncate');
+          localTxt = mesaEl ? ` (em ${mesaEl.textContent.trim()})` : ' (em outra mesa)';
+        }
+
         const option = document.createElement('option');
         option.value = cid;
-        option.textContent = `${nome} (${lugares} lug.)${pendenteText}`;
+        option.textContent = `${nome}${statusText}${localTxt}`;
         select.appendChild(option);
         qtdDisponivel++;
       });
-      
+
       const btnSubmit = document.getElementById('btn-submit-add-guest');
       const warning = document.getElementById('add-guest-warning');
-      
+
       if (qtdDisponivel === 0) {
         btnSubmit.disabled = true;
         select.disabled = true;
@@ -1325,7 +1544,7 @@ document.addEventListener('DOMContentLoaded', function () {
       document.querySelectorAll('#filtros-wrap .btn').forEach(b => {
         const f = b.dataset.f;
         b.className = 'btn btn-sm rounded-pill ' + (b === this
-          ? (f === 'confirmado' ? 'btn-success active' : f === 'pendente' ? 'btn-warning active' : 'btn-primary active')
+          ? (f === 'confirmado' ? 'btn-success active' : f === 'pendente' ? 'btn-warning active' : f === 'recusado' ? 'btn-secondary active' : 'btn-primary active')
           : (f === 'confirmado' ? 'btn-outline-success' : f === 'pendente' ? 'btn-outline-warning' : 'btn-outline-secondary'));
         b.style.cssText = 'font-size:.7rem;padding:.25rem .6rem;';
       });
@@ -1408,6 +1627,12 @@ document.addEventListener('DOMContentLoaded', function () {
         if (cToasts && nToasts) {
           cToasts.innerHTML = nToasts.innerHTML;
           cToasts.querySelectorAll('.toast').forEach(t => bootstrap.Toast.getOrCreateInstance(t).show());
+
+          // Mesa cheia merece um aviso mais chamativo que um toast no canto —
+          // sobe o modal específico em vez de só deixar o toast passar batido.
+          if (cToasts.querySelector('[data-mesa-lotada="1"]')) {
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('modalMesaCheia')).show();
+          }
         }
 
         const cFila = document.getElementById('lista-espera');
@@ -1466,6 +1691,8 @@ document.addEventListener('DOMContentLoaded', function () {
       const s = Sortable.create(area, {
         group: 'convidados',
         animation: 200,
+        filter: '.recusado',
+        preventOnFilter: false,
         ghostClass: 'sortable-ghost',
         chosenClass: 'sortable-chosen',
         dragClass: 'sortable-drag',
@@ -1487,7 +1714,10 @@ document.addEventListener('DOMContentLoaded', function () {
           fd.append('convidado_id', convId);
           fd.append('nova_mesa_id', mesaId);
 
-          processAjaxAction(fd, 'silent');
+          // 'full' (não 'silent') porque, se a mesa estiver cheia, o servidor recusa a
+          // troca — precisa re-renderizar fila/mesas do zero pra desfazer visualmente o
+          // que o Sortable já tinha movido na tela, e mostrar o aviso de mesa cheia.
+          processAjaxAction(fd, 'full');
         }
       });
       sortables.push(s);
