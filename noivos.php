@@ -37,25 +37,42 @@ $link_confirmacao_scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== '
 $link_confirmacao_base   = $link_confirmacao_scheme . $_SERVER['HTTP_HOST'] . rtrim(dirname($_SERVER['PHP_SELF']), '/');
 $link_confirmacao_url    = $link_confirmacao_base . '/confirmar.php?evento=' . $evento_id;
 
-// Garante que a coluna de prazo do checklist existe (mesma migração de gerenciar.php)
-try { $pdo->query("SELECT data_prazo FROM checklist LIMIT 1"); }
-catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN data_prazo DATE NULL"); }
+// Mesma migração de gerenciar.php — roda só uma vez (marcador em disco) em vez
+// de em toda requisição, já que essa página é recarregada o tempo todo.
+if (!schema_ja_verificado('noivos')) {
+    try { $pdo->query("SELECT data_prazo FROM checklist LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN data_prazo DATE NULL"); }
 
-// Colunas de rastreio de conclusão (quem/quando) — usadas pelo sino de notificações do admin
-try { $pdo->query("SELECT concluido_em FROM checklist LIMIT 1"); }
-catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN concluido_em DATETIME NULL"); }
-try { $pdo->query("SELECT concluido_por FROM checklist LIMIT 1"); }
-catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN concluido_por VARCHAR(20) NULL"); }
+    // Colunas de rastreio de conclusão (quem/quando) — usadas pelo sino de notificações do admin
+    try { $pdo->query("SELECT concluido_em FROM checklist LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN concluido_em DATETIME NULL"); }
+    try { $pdo->query("SELECT concluido_por FROM checklist LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE checklist ADD COLUMN concluido_por VARCHAR(20) NULL"); }
 
-// Foto do casal exibida no convite (link público de confirmação de presença)
-try { $pdo->query("SELECT foto_casal FROM eventos LIMIT 1"); }
-catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal VARCHAR(255) NULL"); }
-try { $pdo->query("SELECT foto_casal_ativa FROM eventos LIMIT 1"); }
-catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal_ativa TINYINT(1) NOT NULL DEFAULT 0"); }
+    // Foto do casal exibida no convite (link público de confirmação de presença)
+    try { $pdo->query("SELECT foto_casal FROM eventos LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal VARCHAR(255) NULL"); }
+    try { $pdo->query("SELECT foto_casal_ativa FROM eventos LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal_ativa TINYINT(1) NOT NULL DEFAULT 0"); }
 
-// Cor de fundo da página do convite (link público de confirmação de presença)
-try { $pdo->query("SELECT cor_convite FROM eventos LIMIT 1"); }
-catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN cor_convite VARCHAR(7) NULL"); }
+    // Cor de fundo da página do convite (link público de confirmação de presença)
+    try { $pdo->query("SELECT cor_convite FROM eventos LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN cor_convite VARCHAR(7) NULL"); }
+
+    // Token do link específico de confirmação (por convidado)
+    try { $pdo->query("SELECT token_convite FROM convidados LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE convidados ADD COLUMN token_convite VARCHAR(64) NULL"); }
+
+    // Acompanhante de um link específico (aponta pro id do convidado "dono" do link)
+    try { $pdo->query("SELECT convidado_principal_id FROM convidados LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE convidados ADD COLUMN convidado_principal_id INT NULL"); }
+
+    // Modo de confirmação escolhido para o evento (geral ou específico)
+    try { $pdo->query("SELECT modo_confirmacao FROM eventos LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN modo_confirmacao VARCHAR(20) NOT NULL DEFAULT 'geral'"); }
+
+    marcar_schema_verificado('noivos');
+}
 
 /* ============================================================
    HELPER: Resposta JSON para AJAX
@@ -64,6 +81,43 @@ function json_out(array $data): void {
     header('Content-Type: application/json');
     echo json_encode($data);
     exit;
+}
+
+const FAIXAS_ETARIAS_CONVIDADOS = ['Adulto (11+ anos)', 'Criança (6-10 anos)', 'Criança de Colo (0-5 anos)'];
+
+/** Sincroniza os acompanhantes (nome + faixa etária) de um convidado titular:
+ *  atualiza os que vieram com id, cria os novos, remove os que saíram da lista. */
+function sincronizar_acompanhantes(PDO $pdo, int $evento_id, int $principal_id, array $ids, array $nomes, array $faixas): void {
+    $mantidos = [];
+    for ($i = 0; $i < count($nomes); $i++) {
+        $nome = trim($nomes[$i] ?? '');
+        if ($nome === '') continue;
+        $faixa = in_array($faixas[$i] ?? '', FAIXAS_ETARIAS_CONVIDADOS, true) ? $faixas[$i] : FAIXAS_ETARIAS_CONVIDADOS[0];
+        $id = (int)($ids[$i] ?? 0);
+
+        if ($id > 0) {
+            $chk = $pdo->prepare("SELECT id FROM convidados WHERE id = ? AND convidado_principal_id = ? AND evento_id = ?");
+            $chk->execute([$id, $principal_id, $evento_id]);
+            if ($chk->fetch()) {
+                $pdo->prepare("UPDATE convidados SET nome = ?, faixa_etaria = ? WHERE id = ?")->execute([$nome, $faixa, $id]);
+                $mantidos[] = $id;
+                continue;
+            }
+        }
+
+        $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, categoria, confirmado, convidado_principal_id) VALUES (?, ?, ?, 'Outros', 0, ?)")
+            ->execute([$evento_id, $nome, $faixa, $principal_id]);
+        $mantidos[] = (int)$pdo->lastInsertId();
+    }
+
+    $stmtAtuais = $pdo->prepare("SELECT id FROM convidados WHERE convidado_principal_id = ? AND evento_id = ?");
+    $stmtAtuais->execute([$principal_id, $evento_id]);
+    $idsAtuais = array_map('intval', $stmtAtuais->fetchAll(PDO::FETCH_COLUMN));
+    $idsRemover = array_diff($idsAtuais, $mantidos);
+    if (!empty($idsRemover)) {
+        $ph = implode(',', array_fill(0, count($idsRemover), '?'));
+        $pdo->prepare("DELETE FROM convidados WHERE id IN ($ph)")->execute(array_values($idsRemover));
+    }
 }
 
 /* Retorna [classe_css, texto] do badge de prazo de uma tarefa */
@@ -146,45 +200,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: noivos.php"); exit;
     }
 
-    // 6. Excluir convidado
+    // 6. Excluir convidado (e os acompanhantes ligados a ele, se houver)
     if (isset($_POST['excluir_convidado_noivos'])) {
         $id  = (int)$_POST['convidado_id'];
         $chk = $pdo->prepare("SELECT confirmado FROM convidados WHERE id = ? AND evento_id = ?");
         $chk->execute([$id, $evento_id]);
         $row = $chk->fetch();
+        $pdo->prepare("DELETE FROM convidados WHERE convidado_principal_id = ? AND evento_id = ?")
+            ->execute([$id, $evento_id]);
         $pdo->prepare("DELETE FROM convidados WHERE id = ? AND evento_id = ?")
             ->execute([$id, $evento_id]);
         if ($ajax) json_out(['ok' => true, 'era_conf' => $row ? (int)$row['confirmado'] : 0]);
         header("Location: noivos.php"); exit;
     }
 
-    // 6b. Adicionar convidado (Noivos)
+    // 6b. Criar convite (Noivos) — sempre entra como "pendente"
     if (isset($_POST['adicionar_convidado_noivos'])) {
         $nome       = trim($_POST['nome_convidado']      ?? '');
         $fone       = trim($_POST['telefone_convidado']  ?? '');
         $cat        = trim($_POST['categoria_convidado'] ?? '') ?: 'Outros';
-        $acomp_qtd  = max(0, (int)($_POST['acompanhantes']      ?? 0));
-        $acomp_nms  = trim($_POST['nomes_acompanhantes'] ?? '');
-        $filhos_qtd = max(0, (int)($_POST['filhos']             ?? 0));
-        $filhos_ids = trim($_POST['idades_filhos']       ?? '');
-        $confirmado = ($_POST['status_convidado'] ?? 'pendente') === 'confirmado' ? 1 : 0;
-        if ($nome !== '') {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, acompanhantes, filhos, confirmado, nomes_acompanhantes, idades_filhos) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                ->execute([$evento_id, $nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $confirmado, $acomp_nms, $filhos_ids]);
-            if ($ajax) json_out([
-                'ok'                   => true,
-                'id'                   => (int)$pdo->lastInsertId(),
-                'nome'                 => htmlspecialchars($nome),
-                'categoria'            => htmlspecialchars($cat),
-                'telefone'             => htmlspecialchars($fone),
-                'acompanhantes'        => $acomp_qtd,
-                'filhos'               => $filhos_qtd,
-                'nomes_acompanhantes'  => htmlspecialchars($acomp_nms),
-                'idades_filhos'        => htmlspecialchars($filhos_ids),
-                'confirmado'           => $confirmado,
-            ]);
-        } else {
+        $nomes_acomp  = $_POST['nome_acompanhante_novo']  ?? [];
+        $faixas_acomp = $_POST['faixa_acompanhante_novo'] ?? [];
+        if ($nome === '') {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o nome do convidado.']);
+        } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Informe um telefone/WhatsApp válido (com DDD) para o convidado.']);
+        } else {
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, confirmado) VALUES (?, ?, ?, ?, 0)")
+                ->execute([$evento_id, $nome, $fone, $cat]);
+            $novo_id = (int)$pdo->lastInsertId();
+            sincronizar_acompanhantes($pdo, $evento_id, $novo_id, [], $nomes_acomp, $faixas_acomp);
+            if ($ajax) {
+                $stAc = $pdo->prepare("SELECT id, nome, faixa_etaria FROM convidados WHERE convidado_principal_id = ? AND evento_id = ?");
+                $stAc->execute([$novo_id, $evento_id]);
+                $acompanhantes_atuais = array_map(fn($a) => ['id' => $a['id'], 'nome' => $a['nome'], 'faixa' => $a['faixa_etaria']], $stAc->fetchAll(PDO::FETCH_ASSOC));
+                json_out([
+                    'ok'             => true,
+                    'id'             => $novo_id,
+                    'nome'           => htmlspecialchars($nome),
+                    'categoria'      => htmlspecialchars($cat),
+                    'telefone'       => htmlspecialchars($fone),
+                    'acompanhantes'  => $acompanhantes_atuais,
+                    'confirmado'     => 0,
+                ]);
+            }
         }
         header("Location: noivos.php"); exit;
     }
@@ -195,26 +254,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nome       = trim($_POST['nome_convidado']      ?? '');
         $fone       = trim($_POST['telefone_convidado']  ?? '');
         $cat        = trim($_POST['categoria_convidado'] ?? '') ?: 'Outros';
-        $acomp_qtd  = max(0, (int)($_POST['acompanhantes']      ?? 0));
-        $acomp_nms  = trim($_POST['nomes_acompanhantes'] ?? '');
-        $filhos_qtd = max(0, (int)($_POST['filhos']             ?? 0));
-        $filhos_ids = trim($_POST['idades_filhos']       ?? '');
-        if ($id > 0 && $nome !== '') {
-            $pdo->prepare("UPDATE convidados SET nome = ?, telefone = ?, categoria = ?, acompanhantes = ?, filhos = ?, nomes_acompanhantes = ?, idades_filhos = ? WHERE id = ? AND evento_id = ?")
-                ->execute([$nome, $fone, $cat, $acomp_qtd, $filhos_qtd, $acomp_nms, $filhos_ids, $id, $evento_id]);
-            if ($ajax) json_out([
-                'ok'                   => true,
-                'id'                   => $id,
-                'nome'                 => htmlspecialchars($nome),
-                'categoria'            => htmlspecialchars($cat),
-                'telefone'             => htmlspecialchars($fone),
-                'acompanhantes'        => $acomp_qtd,
-                'filhos'               => $filhos_qtd,
-                'nomes_acompanhantes'  => htmlspecialchars($acomp_nms),
-                'idades_filhos'        => htmlspecialchars($filhos_ids),
-            ]);
-        } else {
+        $ids_acomp    = $_POST['id_acompanhante_edit']    ?? [];
+        $nomes_acomp  = $_POST['nome_acompanhante_edit']  ?? [];
+        $faixas_acomp = $_POST['faixa_acompanhante_edit'] ?? [];
+        if ($id <= 0 || $nome === '') {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o nome do convidado.']);
+        } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Informe um telefone/WhatsApp válido (com DDD) para o convidado.']);
+        } else {
+            $pdo->prepare("UPDATE convidados SET nome = ?, telefone = ?, categoria = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$nome, $fone, $cat, $id, $evento_id]);
+            sincronizar_acompanhantes($pdo, $evento_id, $id, $ids_acomp, $nomes_acomp, $faixas_acomp);
+            if ($ajax) {
+                $stAc = $pdo->prepare("SELECT id, nome, faixa_etaria FROM convidados WHERE convidado_principal_id = ? AND evento_id = ?");
+                $stAc->execute([$id, $evento_id]);
+                $acompanhantes_atuais = array_map(fn($a) => ['id' => $a['id'], 'nome' => $a['nome'], 'faixa' => $a['faixa_etaria']], $stAc->fetchAll(PDO::FETCH_ASSOC));
+                json_out([
+                    'ok'             => true,
+                    'id'             => $id,
+                    'nome'           => htmlspecialchars($nome),
+                    'categoria'      => htmlspecialchars($cat),
+                    'telefone'       => htmlspecialchars($fone),
+                    'acompanhantes'  => $acompanhantes_atuais,
+                ]);
+            }
         }
         header("Location: noivos.php"); exit;
     }
@@ -371,6 +434,72 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         header("Location: noivos.php"); exit;
     }
+
+    // 13. Gerar link específico de confirmação (travado no WhatsApp do convidado, com acompanhantes)
+    if (isset($_POST['criar_link_especifico'])) {
+        $nome_link = trim($_POST['nome_convidado_link'] ?? '');
+        $tel_link  = trim($_POST['telefone_convidado_link'] ?? '');
+        $tel_link_digits = preg_replace('/\D+/', '', $tel_link);
+        $nomes_acomp  = $_POST['nome_acompanhante_link']  ?? [];
+        $faixas_acomp = $_POST['faixa_acompanhante_link'] ?? [];
+
+        if ($nome_link === '' || strlen($tel_link_digits) < 10) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o nome e um número de WhatsApp válido (com DDD).']);
+            header("Location: noivos.php"); exit;
+        }
+
+        do {
+            $token_link = bin2hex(random_bytes(16));
+            $chk = $pdo->prepare("SELECT id FROM convidados WHERE token_convite = ?");
+            $chk->execute([$token_link]);
+        } while ($chk->fetch());
+
+        $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, confirmado, token_convite) VALUES (?, ?, ?, 'Outros', 0, ?)")
+            ->execute([$evento_id, $nome_link, $tel_link, $token_link]);
+        $novo_convidado_id = (int)$pdo->lastInsertId();
+
+        $acompanhantes_criados = [];
+        $insAcomp = $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, categoria, confirmado, convidado_principal_id) VALUES (?, ?, ?, 'Outros', 0, ?)");
+        for ($i = 0; $i < count($nomes_acomp); $i++) {
+            $nome_acomp = trim($nomes_acomp[$i]);
+            if ($nome_acomp === '') continue;
+            $faixa_acomp = in_array($faixas_acomp[$i] ?? '', ['Criança de Colo (0-5 anos)', 'Criança (6-10 anos)', 'Adulto (11+ anos)'], true)
+                ? $faixas_acomp[$i] : 'Adulto (11+ anos)';
+            $insAcomp->execute([$evento_id, $nome_acomp, $faixa_acomp, $novo_convidado_id]);
+            $acompanhantes_criados[] = ['id' => (int)$pdo->lastInsertId(), 'nome' => $nome_acomp];
+        }
+
+        if ($ajax) {
+            json_out([
+                'ok'              => true,
+                'id'              => $novo_convidado_id,
+                'nome'            => $nome_link,
+                'telefone'        => $tel_link,
+                'telefone_digits' => $tel_link_digits,
+                'link'            => $link_confirmacao_url . '&token=' . $token_link,
+                'acompanhantes'   => $acompanhantes_criados,
+            ]);
+        }
+        header("Location: noivos.php"); exit;
+    }
+
+    // 14. Remover / revogar link específico (AJAX) — junto com os acompanhantes ainda pendentes
+    if (isset($_POST['excluir_link_especifico'])) {
+        $id_link = (int)($_POST['convidado_id'] ?? 0);
+        $chk = $pdo->prepare("SELECT resposta_rsvp FROM convidados WHERE id = ? AND evento_id = ?");
+        $chk->execute([$id_link, $evento_id]);
+        $conv_link = $chk->fetch();
+        if ($conv_link) {
+            if ($conv_link['resposta_rsvp'] === null) {
+                $pdo->prepare("DELETE FROM convidados WHERE convidado_principal_id = ? AND evento_id = ? AND resposta_rsvp IS NULL")->execute([$id_link, $evento_id]);
+                $pdo->prepare("DELETE FROM convidados WHERE id = ? AND evento_id = ?")->execute([$id_link, $evento_id]);
+            } else {
+                $pdo->prepare("UPDATE convidados SET token_convite = NULL WHERE id = ? AND evento_id = ?")->execute([$id_link, $evento_id]);
+            }
+        }
+        if ($ajax) json_out(['ok' => true]);
+        header("Location: noivos.php"); exit;
+    }
 }
 
 /* ============================================================
@@ -386,10 +515,21 @@ $lista_checklist = $rs->fetchAll();
 $rs2 = $pdo->prepare("SELECT * FROM convidados WHERE evento_id = ? ORDER BY nome ASC");
 $rs2->execute([$evento_id]);
 $lista_convidados = $rs2->fetchAll();
+$links_especificos = array_values(array_filter($lista_convidados, fn($c) => !empty($c['token_convite'])));
+$acompanhantes_por_principal = [];
+foreach ($lista_convidados as $c) {
+    if (!empty($c['convidado_principal_id'])) {
+        $acompanhantes_por_principal[$c['convidado_principal_id']][] = $c;
+    }
+}
+
+// Acompanhantes do link específico não aparecem como convidados avulsos na lista —
+// eles vêm agrupados dentro do card do convidado titular.
+$lista_convidados_principais = array_values(array_filter($lista_convidados, fn($c) => empty($c['convidado_principal_id'])));
 
 $total_conf = 0; $total_pend = 0;
 $conv_grupos = ['Família' => [], 'Amigos' => [], 'Outros' => []];
-foreach ($lista_convidados as $c) {
+foreach ($lista_convidados_principais as $c) {
     $c['confirmado'] ? $total_conf++ : $total_pend++;
     $cat = $c['categoria'] ?: 'Outros';
     if (!array_key_exists($cat, $conv_grupos)) $conv_grupos[$cat] = [];
@@ -404,7 +544,7 @@ sort($grupos_extras, SORT_FLAG_CASE | SORT_STRING);
 $ordem_grupos = array_merge($grupos_fixos, $grupos_extras);
 
 $categorias_existentes = array_values(array_unique(array_filter(array_map(
-    fn($c) => trim($c['categoria'] ?? ''), $lista_convidados
+    fn($c) => trim($c['categoria'] ?? ''), $lista_convidados_principais
 ))));
 sort($categorias_existentes, SORT_FLAG_CASE | SORT_STRING);
 
@@ -904,7 +1044,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content border-0 shadow-lg rounded-4">
       <div class="modal-header border-0 pb-0">
-        <h6 class="modal-title fw-bold"><i class="bi bi-person-plus-fill text-primary me-2"></i>Adicionar Convidado</h6>
+        <h6 class="modal-title fw-bold"><i class="bi bi-person-plus-fill text-primary me-2"></i>Criar Convite</h6>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <form id="form-convidado">
@@ -926,45 +1066,23 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
             </div>
             <div class="col-md-6">
               <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" id="conv-telefone" class="form-control rounded-3" placeholder="(00) 00000-0000">
+              <input type="text" id="conv-telefone" class="form-control rounded-3" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-3 text-secondary opacity-25">
-          <div class="row g-3 mb-3">
-            <div class="col-4">
-              <label class="form-label small fw-semibold text-secondary">Acompanhantes</label>
-              <input type="number" min="0" id="conv-acompanhantes" class="form-control rounded-3" value="0">
-            </div>
-            <div class="col-8">
-              <label class="form-label small fw-semibold text-secondary">Nomes (separados por vírgula)</label>
-              <input type="text" id="conv-nomes-acompanhantes" class="form-control rounded-3" placeholder="Ex: Maria, João...">
-            </div>
+          <div class="mb-2">
+            <label class="form-label small fw-semibold text-secondary d-block mb-1">Acompanhantes</label>
+            <div id="acomp-add-lista" class="d-flex flex-column gap-2 mb-2"></div>
+            <button type="button" id="btn-add-acomp-add" class="btn btn-outline-secondary btn-sm rounded-pill px-3">
+              <i class="bi bi-person-plus-fill me-1"></i> Adicionar acompanhante
+            </button>
+            <p class="text-muted mb-0 mt-1" style="font-size:.7rem;">Informe adulto, criança ou criança de colo para cada um — ajuda a assessoria a fechar a contagem do buffet.</p>
           </div>
-          <div class="row g-3">
-            <div class="col-4">
-              <label class="form-label small fw-semibold text-secondary">Filhos</label>
-              <input type="number" min="0" id="conv-filhos" class="form-control rounded-3" value="0">
-            </div>
-            <div class="col-8">
-              <label class="form-label small fw-semibold text-secondary">Idades (separadas por vírgula)</label>
-              <input type="text" id="conv-idades-filhos" class="form-control rounded-3" placeholder="Ex: 5 anos, 12 anos...">
-            </div>
-          </div>
-          <hr class="my-3 text-secondary opacity-25">
-          <div>
-            <label class="form-label small fw-semibold text-secondary d-block">Status de Confirmação</label>
-            <div class="btn-group w-100" role="group">
-              <input type="radio" class="btn-check" name="conv-status" id="conv-status-pendente" value="pendente" checked>
-              <label class="btn btn-outline-warning btn-sm" for="conv-status-pendente"><i class="bi bi-hourglass-split"></i> Pendente</label>
-
-              <input type="radio" class="btn-check" name="conv-status" id="conv-status-confirmado" value="confirmado">
-              <label class="btn btn-outline-success btn-sm" for="conv-status-confirmado"><i class="bi bi-check-circle"></i> Confirmado</label>
-            </div>
-          </div>
+          <p class="text-muted mb-0" style="font-size:.72rem;"><i class="bi bi-info-circle me-1"></i>O convite entra como "Pendente" — o titular e os acompanhantes confirmam presença por conta própria pelo link.</p>
         </div>
         <div class="modal-footer border-0 pt-0">
           <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
-          <button type="submit" id="btn-salvar-convidado" class="btn btn-primary btn-sm px-4 rounded-pill fw-semibold">Adicionar</button>
+          <button type="submit" id="btn-salvar-convidado" class="btn btn-primary btn-sm px-4 rounded-pill fw-semibold">Criar Convite</button>
         </div>
       </form>
     </div>
@@ -993,29 +1111,16 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
             </div>
             <div class="col-md-6">
               <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" id="econv-telefone" class="form-control rounded-3" placeholder="(00) 00000-0000">
+              <input type="text" id="econv-telefone" class="form-control rounded-3" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-3 text-secondary opacity-25">
-          <div class="row g-3 mb-3">
-            <div class="col-4">
-              <label class="form-label small fw-semibold text-secondary">Acompanhantes</label>
-              <input type="number" min="0" id="econv-acompanhantes" class="form-control rounded-3">
-            </div>
-            <div class="col-8">
-              <label class="form-label small fw-semibold text-secondary">Nomes (separados por vírgula)</label>
-              <input type="text" id="econv-nomes-acompanhantes" class="form-control rounded-3" placeholder="Ex: Maria, João...">
-            </div>
-          </div>
-          <div class="row g-3">
-            <div class="col-4">
-              <label class="form-label small fw-semibold text-secondary">Filhos</label>
-              <input type="number" min="0" id="econv-filhos" class="form-control rounded-3">
-            </div>
-            <div class="col-8">
-              <label class="form-label small fw-semibold text-secondary">Idades (separadas por vírgula)</label>
-              <input type="text" id="econv-idades-filhos" class="form-control rounded-3" placeholder="Ex: 5 anos, 12 anos...">
-            </div>
+          <div class="mb-2">
+            <label class="form-label small fw-semibold text-secondary d-block mb-1">Acompanhantes</label>
+            <div id="acomp-edit-lista" class="d-flex flex-column gap-2 mb-2"></div>
+            <button type="button" id="btn-add-acomp-edit" class="btn btn-outline-secondary btn-sm rounded-pill px-3">
+              <i class="bi bi-person-plus-fill me-1"></i> Adicionar acompanhante
+            </button>
           </div>
         </div>
         <div class="modal-footer border-0 pt-0">
@@ -1028,25 +1133,69 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 </div>
 
 <div class="modal fade" id="modalLinkConfirmacao" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
     <div class="modal-content border-0 shadow-lg rounded-4">
       <div class="modal-header border-0 bg-light">
         <h5 class="modal-title fw-bold"><i class="bi bi-envelope-check-fill text-danger me-2"></i> Confirmação de Presença</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body p-4">
-        <p class="text-muted small mb-3">Envie este link para seus convidados. Eles poderão confirmar a presença de toda a família diretamente por ele — sem precisar de login.</p>
-        <div class="input-group mb-2">
-          <input type="text" id="input-link-confirmacao" class="form-control" value="<?= htmlspecialchars($link_confirmacao_url) ?>" readonly>
-          <button class="btn btn-danger fw-bold" type="button" id="btn-copiar-link">
-            <i class="bi bi-clipboard-fill me-1"></i> Copiar
-          </button>
-        </div>
-        <a href="<?= htmlspecialchars($link_confirmacao_url) ?>" target="_blank" class="small text-decoration-none">
-          <i class="bi bi-box-arrow-up-right me-1"></i> Abrir o link em uma nova aba
-        </a>
 
-        <hr class="my-3">
+        <p class="text-muted small mb-3">Gere um link exclusivo para cada convidado. O link já chega travado no nome e no WhatsApp dele, evitando confirmações feitas por engano em nome de outra pessoa. Se ele já vem acompanhado, cadastre os acompanhantes junto — o link chega com a família inteira pré-preenchida.</p>
+
+        <div class="card border-0 rounded-4 p-3 mb-3" style="background:#f8fafc;border:1.5px solid #e2e8f0 !important;">
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label small fw-bold text-secondary mb-1">Nome do convidado</label>
+              <input type="text" id="link-esp-nome" class="form-control form-control-sm" placeholder="Ex: Maria Silva">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-bold text-secondary mb-1">WhatsApp</label>
+              <input type="text" id="link-esp-telefone" class="form-control form-control-sm" placeholder="(00) 00000-0000">
+            </div>
+          </div>
+
+          <div id="lista-acompanhantes-link-esp" class="d-flex flex-column gap-2 mt-2"></div>
+
+          <button type="button" id="btn-add-acompanhante-link-esp" class="btn btn-outline-secondary btn-sm rounded-pill mt-2 align-self-start px-3">
+            <i class="bi bi-person-plus-fill me-1"></i> Adicionar acompanhante
+          </button>
+
+          <button type="button" id="btn-gerar-link-especifico" class="btn btn-danger btn-sm fw-bold rounded-pill mt-3 align-self-start px-3">
+            <i class="bi bi-magic me-1"></i> Gerar Link
+          </button>
+          <div id="link-esp-erro" class="text-danger small mt-2 d-none"></div>
+        </div>
+
+        <div id="lista-links-especificos" class="d-flex flex-column gap-2 mb-3" style="max-height:260px;overflow-y:auto;">
+          <?php foreach ($links_especificos as $c): $linkEsp = $link_confirmacao_url . '&token=' . $c['token_convite']; $telDigitsC = preg_replace('/\D+/', '', $c['telefone'] ?? ''); $acompC = $acompanhantes_por_principal[$c['id']] ?? []; ?>
+          <div class="linha-link-especifico border rounded-3 p-2" data-id="<?= (int)$c['id'] ?>">
+            <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+              <div class="small fw-bold text-truncate"><?= htmlspecialchars($c['nome'], ENT_QUOTES, 'UTF-8') ?></div>
+              <span class="badge <?= $c['resposta_rsvp'] === 'confirmado' ? 'bg-success' : ($c['resposta_rsvp'] === 'recusado' ? 'bg-secondary' : 'bg-warning text-dark') ?>" style="font-size:.65rem;">
+                <?= $c['resposta_rsvp'] === 'confirmado' ? 'Confirmado' : ($c['resposta_rsvp'] === 'recusado' ? 'Recusou' : 'Pendente') ?>
+              </span>
+            </div>
+            <?php if (!empty($acompC)): ?>
+              <div class="text-muted mb-1" style="font-size:.72rem;">
+                <i class="bi bi-people-fill me-1"></i><?= htmlspecialchars(implode(', ', array_column($acompC, 'nome')), ENT_QUOTES, 'UTF-8') ?>
+              </div>
+            <?php endif; ?>
+            <div class="input-group input-group-sm">
+              <input type="text" class="form-control campo-link-esp" value="<?= htmlspecialchars($linkEsp, ENT_QUOTES, 'UTF-8') ?>" readonly>
+              <button class="btn btn-outline-secondary btn-copiar-link-esp" type="button" title="Copiar"><i class="bi bi-clipboard"></i></button>
+              <a class="btn btn-outline-success btn-whatsapp-link-esp" target="_blank" title="Enviar por WhatsApp"
+                 href="https://wa.me/<?= htmlspecialchars($telDigitsC, ENT_QUOTES, 'UTF-8') ?>?text=<?= rawurlencode('Oi ' . $c['nome'] . '! Confirme sua presença no nosso casamento por aqui: ' . $linkEsp) ?>">
+                <i class="bi bi-whatsapp"></i>
+              </a>
+              <button class="btn btn-outline-danger btn-remover-link-esp" type="button" title="Remover link"><i class="bi bi-trash"></i></button>
+            </div>
+          </div>
+          <?php endforeach; ?>
+          <div class="text-center text-muted small py-3" id="msg-lista-vazia" <?= empty($links_especificos) ? '' : 'style="display:none;"' ?>>
+            <i class="bi bi-inbox fs-4 d-block mb-1"></i> Nenhum link específico gerado ainda.
+          </div>
+        </div>
 
         <div class="card border-0 rounded-4 p-3" style="background:#fef2f2;border:1.5px solid #fecaca !important;">
           <div class="d-flex justify-content-between align-items-start gap-3">
@@ -1118,6 +1267,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
             </button>
           </div>
         </div>
+
       </div>
       <div class="modal-footer border-0 pt-0">
         <button type="button" class="btn btn-secondary btn-sm px-4 rounded-pill fw-bold" data-bs-dismiss="modal">Fechar</button>
@@ -1465,6 +1615,24 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
           </div>
         </button>
 
+        <a href="convidados.php" class="btn-musicas-sidebar text-decoration-none" style="background: linear-gradient(135deg, #cffafe 0%, #a5f3fc 100%); border-color: #67e8f9;">
+          <div class="d-flex justify-content-between align-items-center p-3">
+            <div class="d-flex align-items-center gap-3">
+              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0"
+                   style="width:44px;height:44px;">
+                <i class="bi bi-people-fill fs-4" style="color:#0891b2;"></i>
+              </div>
+              <div class="text-start">
+                <h6 class="mb-0 fw-bold text-dark">Gerenciar Convidados</h6>
+                <small class="text-dark" style="font-size:.78rem;opacity:.6;">Adicionar, editar e enviar o link por WhatsApp</small>
+              </div>
+            </div>
+            <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:#0891b2; border:none; color:#fff;">
+              Abrir <i class="bi bi-arrow-right ms-1"></i>
+            </span>
+          </div>
+        </a>
+
         <a href="organizar_mesas.php" class="btn-musicas-sidebar text-decoration-none" style="background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%); border-color: #86efac;">
           <div class="d-flex justify-content-between align-items-center p-3">
             <div class="d-flex align-items-center gap-3">
@@ -1707,7 +1875,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 
             <button class="btn btn-primary btn-sm w-100 fw-bold rounded-pill shadow-sm mb-2"
                     type="button" data-bs-toggle="modal" data-bs-target="#modalAddConvidado">
-              <i class="bi bi-person-plus-fill me-1"></i> Adicionar Convidado
+              <i class="bi bi-person-plus-fill me-1"></i> Criar Convite
             </button>
 
             <button class="btn btn-outline-primary btn-sm w-100 fw-bold rounded-pill shadow-sm collapsed"
@@ -1742,7 +1910,8 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                     </div>
                     <?php foreach ($conv_grupos[$grp] as $con):
                       $cConf   = (bool)$con['confirmado'];
-                      $recusou = (!$cConf && ($con['resposta_rsvp'] ?? '') === 'recusado'); ?>
+                      $recusou = (!$cConf && ($con['resposta_rsvp'] ?? '') === 'recusado');
+                      $acompCon = $acompanhantes_por_principal[$con['id']] ?? []; ?>
                     <div class="conv-row <?= $cConf ? 'conf' : 'pend' ?> p-2 mb-2 bg-light shadow-sm"
                          data-id="<?= $con['id'] ?>"
                          data-conf="<?= (int)$cConf ?>"
@@ -1766,10 +1935,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                                   data-nome="<?= htmlspecialchars($con['nome'], ENT_QUOTES, 'UTF-8') ?>"
                                   data-categoria="<?= htmlspecialchars($con['categoria'], ENT_QUOTES, 'UTF-8') ?>"
                                   data-telefone="<?= htmlspecialchars($con['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                  data-acompanhantes="<?= (int)$con['acompanhantes'] ?>"
-                                  data-nomes-acompanhantes="<?= htmlspecialchars($con['nomes_acompanhantes'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                  data-filhos="<?= (int)$con['filhos'] ?>"
-                                  data-idades-filhos="<?= htmlspecialchars($con['idades_filhos'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                  data-acompanhantes-json="<?= htmlspecialchars(json_encode(array_map(fn($a) => ['id' => $a['id'], 'nome' => $a['nome'], 'faixa' => $a['faixa_etaria']], $acompCon)), ENT_QUOTES, 'UTF-8') ?>"
                                   title="Editar">
                             <i class="bi bi-pencil fs-6"></i>
                           </button>
@@ -1778,17 +1944,24 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                           </button>
                         </div>
                       </div>
-                      <?php if (!empty($con['telefone']) || !empty($con['acompanhantes']) || !empty($con['filhos'])): ?>
+                      <?php if (!empty($con['telefone'])): ?>
                       <div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.5;">
-                        <?php if (!empty($con['telefone'])): ?>
-                          <div><i class="bi bi-whatsapp me-1 text-success"></i><?= htmlspecialchars($con['telefone']) ?></div>
-                        <?php endif; ?>
-                        <?php if (!empty($con['acompanhantes'])): ?>
-                          <div><i class="bi bi-person-plus me-1"></i>Acomp: <?= htmlspecialchars($con['acompanhantes']) ?></div>
-                        <?php endif; ?>
-                        <?php if (!empty($con['filhos'])): ?>
-                          <div><i class="bi bi-emoji-smile me-1"></i>Filhos: <?= htmlspecialchars($con['filhos']) ?></div>
-                        <?php endif; ?>
+                        <div><i class="bi bi-whatsapp me-1 text-success"></i><?= htmlspecialchars($con['telefone']) ?></div>
+                      </div>
+                      <?php endif; ?>
+                      <?php if (!empty($acompCon)): ?>
+                      <div class="d-flex flex-wrap align-items-center gap-1 mt-1">
+                        <?php foreach ($acompCon as $a):
+                            $statusA = $a['resposta_rsvp'] === 'recusado' ? 'recusado' : ($a['confirmado'] ? 'confirmado' : 'pendente');
+                            $rotuloA = str_starts_with($a['faixa_etaria'] ?? '', 'Criança de Colo') ? 'colo'
+                                     : (str_starts_with($a['faixa_etaria'] ?? '', 'Criança') ? 'criança' : 'adulto');
+                            $corA = $statusA === 'confirmado' ? 'bg-success-subtle text-success' : ($statusA === 'recusado' ? 'bg-secondary-subtle text-secondary' : 'bg-warning-subtle text-warning-emphasis');
+                            $iconeA = $statusA === 'confirmado' ? 'bi-check-circle-fill' : ($statusA === 'recusado' ? 'bi-x-circle-fill' : 'bi-hourglass-split');
+                        ?>
+                        <span class="badge rounded-pill <?= $corA ?> border" style="font-size:.62rem;font-weight:500;">
+                          <i class="bi <?= $iconeA ?> me-1"></i><?= htmlspecialchars($a['nome'], ENT_QUOTES, 'UTF-8') ?> <span class="opacity-75">(<?= $rotuloA ?>)</span>
+                        </span>
+                        <?php endforeach; ?>
                       </div>
                       <?php endif; ?>
                     </div>
@@ -1942,21 +2115,142 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
    ============================================================ */
 const SELF = window.location.href;
 
-/* ---- COPIAR LINK DE CONFIRMAÇÃO ---- */
-document.getElementById('btn-copiar-link')?.addEventListener('click', async function () {
-  const input = document.getElementById('input-link-confirmacao');
-  const btn   = this;
-  const orig  = btn.innerHTML;
-  try {
-    await navigator.clipboard.writeText(input.value);
-  } catch {
-    input.removeAttribute('readonly');
-    input.select();
-    document.execCommand('copy');
-    input.setAttribute('readonly', 'readonly');
+/* ============================================================
+   MODAL DE CONFIRMAÇÃO DE PRESENÇA — link específico
+   ============================================================ */
+
+function escapeHtmlLinkEsp(str) {
+  const d = document.createElement('div');
+  d.textContent = str || '';
+  return d.innerHTML;
+}
+
+/* ---- Acompanhantes cadastrados junto com o link específico ---- */
+function linhaAcompanhanteInputHtml() {
+  return '' +
+    '<div class="row g-2 align-items-center acomp-link-linha">' +
+      '<div class="col-7">' +
+        '<input type="text" class="form-control form-control-sm campo-nome-acomp-link" placeholder="Nome do acompanhante">' +
+      '</div>' +
+      '<div class="col-4">' +
+        '<select class="form-select form-select-sm campo-faixa-acomp-link">' +
+          '<option value="Adulto (11+ anos)" selected>Adulto</option>' +
+          '<option value="Criança (6-10 anos)">Criança (6-10)</option>' +
+          '<option value="Criança de Colo (0-5 anos)">Criança de colo</option>' +
+        '</select>' +
+      '</div>' +
+      '<div class="col-1 text-end">' +
+        '<button type="button" class="btn btn-outline-danger btn-sm w-100 btn-remover-acomp-link" title="Remover"><i class="bi bi-x-lg"></i></button>' +
+      '</div>' +
+    '</div>';
+}
+
+document.getElementById('btn-add-acompanhante-link-esp')?.addEventListener('click', function () {
+  document.getElementById('lista-acompanhantes-link-esp').insertAdjacentHTML('beforeend', linhaAcompanhanteInputHtml());
+});
+
+document.getElementById('lista-acompanhantes-link-esp')?.addEventListener('click', function (e) {
+  const btn = e.target.closest('.btn-remover-acomp-link');
+  if (btn) btn.closest('.acomp-link-linha').remove();
+});
+
+function linhaLinkEspecificoHtml(r) {
+  const msgWpp = encodeURIComponent('Oi ' + r.nome + '! Confirme sua presença no nosso casamento por aqui: ' + r.link);
+  const acompHtml = (r.acompanhantes && r.acompanhantes.length)
+    ? '<div class="text-muted mb-1" style="font-size:.72rem;"><i class="bi bi-people-fill me-1"></i>' + escapeHtmlLinkEsp(r.acompanhantes.map(a => a.nome).join(', ')) + '</div>'
+    : '';
+  return '' +
+    '<div class="linha-link-especifico border rounded-3 p-2" data-id="' + r.id + '">' +
+      '<div class="d-flex justify-content-between align-items-center gap-2 mb-1">' +
+        '<div class="small fw-bold text-truncate">' + escapeHtmlLinkEsp(r.nome) + '</div>' +
+        '<span class="badge bg-warning text-dark" style="font-size:.65rem;">Pendente</span>' +
+      '</div>' +
+      acompHtml +
+      '<div class="input-group input-group-sm">' +
+        '<input type="text" class="form-control campo-link-esp" value="' + escapeHtmlLinkEsp(r.link) + '" readonly>' +
+        '<button class="btn btn-outline-secondary btn-copiar-link-esp" type="button" title="Copiar"><i class="bi bi-clipboard"></i></button>' +
+        '<a class="btn btn-outline-success btn-whatsapp-link-esp" target="_blank" title="Enviar por WhatsApp" href="https://wa.me/' + r.telefone_digits + '?text=' + msgWpp + '"><i class="bi bi-whatsapp"></i></a>' +
+        '<button class="btn btn-outline-danger btn-remover-link-esp" type="button" title="Remover link"><i class="bi bi-trash"></i></button>' +
+      '</div>' +
+    '</div>';
+}
+
+document.getElementById('btn-gerar-link-especifico')?.addEventListener('click', async function () {
+  const nomeEl = document.getElementById('link-esp-nome');
+  const telEl  = document.getElementById('link-esp-telefone');
+  const erroEl = document.getElementById('link-esp-erro');
+  const btn    = this;
+  const nome   = nomeEl.value.trim();
+  const tel    = telEl.value.trim();
+  erroEl.classList.add('d-none');
+
+  if (!nome || tel.replace(/\D/g, '').length < 10) {
+    erroEl.textContent = 'Informe o nome e um WhatsApp válido (com DDD).';
+    erroEl.classList.remove('d-none');
+    return;
   }
-  btn.innerHTML = '<i class="bi bi-check-lg me-1"></i> Copiado!';
-  setTimeout(() => { btn.innerHTML = orig; }, 1800);
+
+  const nomesAcomp  = Array.from(document.querySelectorAll('#lista-acompanhantes-link-esp .campo-nome-acomp-link')).map(el => el.value.trim());
+  const faixasAcomp = Array.from(document.querySelectorAll('#lista-acompanhantes-link-esp .campo-faixa-acomp-link')).map(el => el.value);
+
+  btn.disabled = true;
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Gerando...';
+
+  const r = await ajax({
+    criar_link_especifico: '1',
+    nome_convidado_link: nome,
+    telefone_convidado_link: tel,
+    nome_acompanhante_link: nomesAcomp,
+    faixa_acompanhante_link: faixasAcomp,
+  });
+
+  btn.disabled = false;
+  btn.innerHTML = orig;
+
+  if (!r.ok) {
+    erroEl.textContent = r.msg || 'Não foi possível gerar o link.';
+    erroEl.classList.remove('d-none');
+    return;
+  }
+
+  nomeEl.value = '';
+  telEl.value  = '';
+  document.getElementById('lista-acompanhantes-link-esp').innerHTML = '';
+  document.getElementById('msg-lista-vazia').style.display = 'none';
+  document.getElementById('lista-links-especificos').insertAdjacentHTML('afterbegin', linhaLinkEspecificoHtml(r));
+});
+
+document.getElementById('lista-links-especificos')?.addEventListener('click', async function (e) {
+  const linha = e.target.closest('.linha-link-especifico');
+  if (!linha) return;
+
+  if (e.target.closest('.btn-copiar-link-esp')) {
+    const input = linha.querySelector('.campo-link-esp');
+    try {
+      await navigator.clipboard.writeText(input.value);
+    } catch {
+      input.removeAttribute('readonly');
+      input.select();
+      document.execCommand('copy');
+      input.setAttribute('readonly', 'readonly');
+    }
+    const btnCopiar = e.target.closest('.btn-copiar-link-esp');
+    const origIcon = btnCopiar.innerHTML;
+    btnCopiar.innerHTML = '<i class="bi bi-check-lg"></i>';
+    setTimeout(() => { btnCopiar.innerHTML = origIcon; }, 1500);
+  }
+
+  if (e.target.closest('.btn-remover-link-esp')) {
+    if (!confirm('Remover este link específico?')) return;
+    const r = await ajax({ excluir_link_especifico: '1', convidado_id: linha.dataset.id });
+    if (r.ok) {
+      linha.remove();
+      if (!document.querySelector('.linha-link-especifico')) {
+        document.getElementById('msg-lista-vazia').style.display = '';
+      }
+    }
+  }
 });
 
 /* ---- BUSCA + FILTRO DO CHECKLIST ---- */
@@ -2024,77 +2318,21 @@ async function ajax(obj) {
   obj.is_ajax = '1';
   obj.csrf_token = CSRF_TOKEN;
   const fd = new FormData();
-  Object.entries(obj).forEach(([k, v]) => fd.append(k, v));
+  Object.entries(obj).forEach(([k, v]) => {
+    if (Array.isArray(v)) {
+      v.forEach(item => fd.append(k + '[]', item));
+    } else {
+      fd.append(k, v);
+    }
+  });
   const r = await fetch(SELF, { method: 'POST', body: fd });
   return r.json();
 }
 
 /* ============================================================
-   FOTO DO CASAL NO CONVITE
-   ============================================================ */
-const switchFotoConvite = document.getElementById('switch-foto-convite');
-const areaFotoConvite   = document.getElementById('area-foto-convite');
-
-switchFotoConvite?.addEventListener('change', () => {
-  areaFotoConvite.style.display = switchFotoConvite.checked ? '' : 'none';
-});
-
-document.getElementById('btn-salvar-foto-convite')?.addEventListener('click', async function () {
-  const btn      = this;
-  const orig     = btn.innerHTML;
-  const input    = document.getElementById('input-foto-convite');
-  const preview  = document.getElementById('preview-foto-convite');
-  const btnRemover = document.getElementById('btn-remover-foto-convite');
-  const arquivo  = input.files[0];
-
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Salvando...';
-  btn.disabled  = true;
-
-  try {
-    const payload = { salvar_foto_casal: '1', foto_ativa: switchFotoConvite.checked ? '1' : '0' };
-    if (arquivo) payload.foto_casal_arquivo = arquivo;
-
-    const r = await ajax(payload);
-    if (r.ok) {
-      if (r.foto_url) {
-        preview.src = r.foto_url + '?t=' + Date.now();
-        preview.classList.remove('d-none');
-        btnRemover.classList.remove('d-none');
-        input.value = '';
-      }
-      toast(r.ativa ? 'Foto ativada no convite!' : 'Foto desativada no convite.', 'verde');
-    } else {
-      toast(r.msg || 'Erro ao salvar a foto.', 'verm');
-    }
-  } catch {
-    toast('Erro de conexão.', 'verm');
-  }
-  btn.innerHTML = orig;
-  btn.disabled  = false;
-});
-
-document.getElementById('btn-remover-foto-convite')?.addEventListener('click', async function () {
-  if (!confirm('Remover a foto do casal do convite?')) return;
-  const btn = this;
-  try {
-    const r = await ajax({ remover_foto_casal: '1' });
-    if (r.ok) {
-      document.getElementById('preview-foto-convite').classList.add('d-none');
-      document.getElementById('preview-foto-convite').src = '';
-      btn.classList.add('d-none');
-      switchFotoConvite.checked = false;
-      areaFotoConvite.style.display = 'none';
-      toast('Foto removida.', 'verm');
-    } else {
-      toast(r.msg || 'Erro ao remover a foto.', 'verm');
-    }
-  } catch {
-    toast('Erro de conexão.', 'verm');
-  }
-});
-
-/* ============================================================
-   COR DA PÁGINA DO CONVITE
+   FOTO DO CASAL E COR DA PÁGINA DO CONVITE
+   (a mesma configuração vale pro link geral e pros links
+   específicos — todos abrem a mesma página pública de RSVP)
    ============================================================ */
 function ajustarCor(hex, percent) {
   hex = hex.replace('#', '');
@@ -2108,52 +2346,124 @@ function ajustarCor(hex, percent) {
   return '#' + toHex(r) + toHex(g) + toHex(b);
 }
 
-let corConviteSelecionada = document.getElementById('input-cor-personalizada')?.value || '#8b5e3c';
+function initCustomizacaoConvite(sufixo) {
+  const switchFoto     = document.getElementById('switch-foto-convite' + sufixo);
+  const areaFoto       = document.getElementById('area-foto-convite' + sufixo);
+  const inputFoto      = document.getElementById('input-foto-convite' + sufixo);
+  const btnSalvarFoto  = document.getElementById('btn-salvar-foto-convite' + sufixo);
+  const btnRemoverFoto = document.getElementById('btn-remover-foto-convite' + sufixo);
 
-function atualizarPreviewCor(hex) {
-  corConviteSelecionada = hex;
-  const c1 = ajustarCor(hex, -0.22);
-  const c3 = ajustarCor(hex, 0.22);
-  const preview = document.getElementById('preview-cor-convite');
-  if (preview) preview.style.background = `linear-gradient(135deg, ${c1} 0%, ${hex} 50%, ${c3} 100%)`;
+  switchFoto?.addEventListener('change', () => {
+    areaFoto.style.display = switchFoto.checked ? '' : 'none';
+  });
 
-  document.querySelectorAll('.swatch-cor[data-cor]').forEach(sw => {
-    sw.classList.toggle('selecionada', sw.dataset.cor.toLowerCase() === hex.toLowerCase());
+  btnSalvarFoto?.addEventListener('click', async function () {
+    const btn     = this;
+    const orig    = btn.innerHTML;
+    const arquivo = inputFoto.files[0];
+
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Salvando...';
+    btn.disabled  = true;
+
+    try {
+      const payload = { salvar_foto_casal: '1', foto_ativa: switchFoto.checked ? '1' : '0' };
+      if (arquivo) payload.foto_casal_arquivo = arquivo;
+
+      const r = await ajax(payload);
+      if (r.ok) {
+        if (r.foto_url) {
+          document.querySelectorAll('[id^="preview-foto-convite"]').forEach(img => {
+            img.src = r.foto_url + '?t=' + Date.now();
+            img.classList.remove('d-none');
+          });
+          document.querySelectorAll('[id^="btn-remover-foto-convite"]').forEach(b => b.classList.remove('d-none'));
+          inputFoto.value = '';
+        }
+        toast(r.ativa ? 'Foto ativada no convite!' : 'Foto desativada no convite.', 'verde');
+      } else {
+        toast(r.msg || 'Erro ao salvar a foto.', 'verm');
+      }
+    } catch {
+      toast('Erro de conexão.', 'verm');
+    }
+    btn.innerHTML = orig;
+    btn.disabled  = false;
+  });
+
+  btnRemoverFoto?.addEventListener('click', async function () {
+    if (!confirm('Remover a foto do casal do convite?')) return;
+    try {
+      const r = await ajax({ remover_foto_casal: '1' });
+      if (r.ok) {
+        document.querySelectorAll('[id^="preview-foto-convite"]').forEach(img => { img.classList.add('d-none'); img.src = ''; });
+        document.querySelectorAll('[id^="btn-remover-foto-convite"]').forEach(b => b.classList.add('d-none'));
+        document.querySelectorAll('[id^="switch-foto-convite"]').forEach(sw => { sw.checked = false; });
+        document.querySelectorAll('[id^="area-foto-convite"]').forEach(a => { a.style.display = 'none'; });
+        toast('Foto removida.', 'verm');
+      } else {
+        toast(r.msg || 'Erro ao remover a foto.', 'verm');
+      }
+    } catch {
+      toast('Erro de conexão.', 'verm');
+    }
+  });
+
+  const paleta       = document.getElementById('paleta-cor-convite' + sufixo);
+  const inputCustom  = document.getElementById('input-cor-personalizada' + sufixo);
+  const preview      = document.getElementById('preview-cor-convite' + sufixo);
+  const btnSalvarCor = document.getElementById('btn-salvar-cor-convite' + sufixo);
+
+  function atualizarPreview(hex) {
+    const c1 = ajustarCor(hex, -0.22);
+    const c3 = ajustarCor(hex, 0.22);
+    if (preview) preview.style.background = `linear-gradient(135deg, ${c1} 0%, ${hex} 50%, ${c3} 100%)`;
+    paleta?.querySelectorAll('.swatch-cor[data-cor]').forEach(sw => {
+      sw.classList.toggle('selecionada', sw.dataset.cor.toLowerCase() === hex.toLowerCase());
+    });
+  }
+
+  paleta?.querySelectorAll('.swatch-cor[data-cor]').forEach(sw => {
+    sw.addEventListener('click', () => {
+      if (inputCustom) inputCustom.value = sw.dataset.cor;
+      atualizarPreview(sw.dataset.cor);
+    });
+  });
+
+  inputCustom?.addEventListener('input', function () { atualizarPreview(this.value); });
+
+  atualizarPreview(inputCustom?.value || '#8b5e3c');
+
+  btnSalvarCor?.addEventListener('click', async function () {
+    const btn  = this;
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>...';
+    btn.disabled  = true;
+
+    try {
+      const r = await ajax({ salvar_cor_convite: '1', cor: inputCustom.value });
+      if (r.ok) {
+        toast('Cor do convite atualizada!', 'verde');
+        document.querySelectorAll('[id^="input-cor-personalizada"]').forEach(el => { el.value = inputCustom.value; });
+        document.querySelectorAll('[id^="preview-cor-convite"]').forEach(el => {
+          const c1b = ajustarCor(inputCustom.value, -0.22);
+          const c3b = ajustarCor(inputCustom.value, 0.22);
+          el.style.background = `linear-gradient(135deg, ${c1b} 0%, ${inputCustom.value} 50%, ${c3b} 100%)`;
+        });
+        document.querySelectorAll('.swatch-cor[data-cor]').forEach(sw => {
+          sw.classList.toggle('selecionada', sw.dataset.cor.toLowerCase() === inputCustom.value.toLowerCase());
+        });
+      } else {
+        toast(r.msg || 'Erro ao salvar a cor.', 'verm');
+      }
+    } catch {
+      toast('Erro de conexão.', 'verm');
+    }
+    btn.innerHTML = orig;
+    btn.disabled  = false;
   });
 }
 
-document.querySelectorAll('.swatch-cor[data-cor]').forEach(sw => {
-  sw.addEventListener('click', () => {
-    document.getElementById('input-cor-personalizada').value = sw.dataset.cor;
-    atualizarPreviewCor(sw.dataset.cor);
-  });
-});
-
-document.getElementById('input-cor-personalizada')?.addEventListener('input', function () {
-  atualizarPreviewCor(this.value);
-});
-
-atualizarPreviewCor(corConviteSelecionada);
-
-document.getElementById('btn-salvar-cor-convite')?.addEventListener('click', async function () {
-  const btn  = this;
-  const orig = btn.innerHTML;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>...';
-  btn.disabled  = true;
-
-  try {
-    const r = await ajax({ salvar_cor_convite: '1', cor: corConviteSelecionada });
-    if (r.ok) {
-      toast('Cor do convite atualizada!', 'verde');
-    } else {
-      toast(r.msg || 'Erro ao salvar a cor.', 'verm');
-    }
-  } catch {
-    toast('Erro de conexão.', 'verm');
-  }
-  btn.innerHTML = orig;
-  btn.disabled  = false;
-});
+initCustomizacaoConvite('');
 
 /* Formata número como moeda BR */
 function brl(n) {
@@ -2611,18 +2921,74 @@ document.getElementById('btnConfExcluir').addEventListener('click', async () => 
   } catch { toast('Erro ao remover convidado.', 'verm'); }
 });
 
+/* ---- Repetidor de acompanhantes (nome + faixa etária) ---- */
+function escapeHtmlAcomp(str) {
+  const d = document.createElement('div');
+  d.textContent = str || '';
+  return d.innerHTML;
+}
+
+function linhaAcompanhanteHtml(prefixo, dados) {
+  dados = dados || {};
+  const comId = prefixo === 'edit';
+  return '' +
+    '<div class="row g-2 align-items-center acomp-' + prefixo + '-linha">' +
+      (comId ? '<input type="hidden" name="id_acompanhante_edit[]" value="' + (dados.id || '') + '">' : '') +
+      '<div class="col-7">' +
+        '<input type="text" name="nome_acompanhante_' + (comId ? 'edit' : 'novo') + '[]" class="form-control form-control-sm campo-nome-acomp" placeholder="Nome do acompanhante" value="' + escapeHtmlAcomp(dados.nome || '') + '">' +
+      '</div>' +
+      '<div class="col-4">' +
+        '<select name="faixa_acompanhante_' + (comId ? 'edit' : 'novo') + '[]" class="form-select form-select-sm campo-faixa-acomp">' +
+          '<option value="Adulto (11+ anos)">Adulto</option>' +
+          '<option value="Criança (6-10 anos)">Criança (6-10)</option>' +
+          '<option value="Criança de Colo (0-5 anos)">Criança de colo</option>' +
+        '</select>' +
+      '</div>' +
+      '<div class="col-1 text-end">' +
+        '<button type="button" class="btn btn-outline-danger btn-sm w-100 btn-remover-acomp" title="Remover"><i class="bi bi-x-lg"></i></button>' +
+      '</div>' +
+    '</div>';
+}
+
+function adicionarLinhaAcompanhante(containerId, prefixo, dados) {
+  const container = document.getElementById(containerId);
+  container.insertAdjacentHTML('beforeend', linhaAcompanhanteHtml(prefixo, dados));
+  if (dados && dados.faixa) {
+    const linhas = container.querySelectorAll('.campo-faixa-acomp');
+    linhas[linhas.length - 1].value = dados.faixa;
+  }
+}
+
+document.getElementById('btn-add-acomp-add')?.addEventListener('click', () => {
+  adicionarLinhaAcompanhante('acomp-add-lista', 'add');
+});
+document.getElementById('btn-add-acomp-edit')?.addEventListener('click', () => {
+  adicionarLinhaAcompanhante('acomp-edit-lista', 'edit');
+});
+document.getElementById('acomp-add-lista')?.addEventListener('click', e => {
+  const btn = e.target.closest('.btn-remover-acomp');
+  if (btn) btn.closest('.acomp-add-linha').remove();
+});
+document.getElementById('acomp-edit-lista')?.addEventListener('click', e => {
+  const btn = e.target.closest('.btn-remover-acomp');
+  if (btn) btn.closest('.acomp-edit-linha').remove();
+});
+
 const modalEditConv = new bootstrap.Modal(document.getElementById('modalEditConvidado'));
 
 function bindEditConv(btn) {
   btn.addEventListener('click', () => {
-    document.getElementById('econv-id').value                 = btn.dataset.id;
-    document.getElementById('econv-nome').value                = btn.dataset.nome;
-    document.getElementById('econv-categoria').value           = btn.dataset.categoria;
-    document.getElementById('econv-telefone').value            = btn.dataset.telefone;
-    document.getElementById('econv-acompanhantes').value       = btn.dataset.acompanhantes;
-    document.getElementById('econv-nomes-acompanhantes').value = btn.dataset.nomesAcompanhantes;
-    document.getElementById('econv-filhos').value              = btn.dataset.filhos;
-    document.getElementById('econv-idades-filhos').value       = btn.dataset.idadesFilhos;
+    document.getElementById('econv-id').value        = btn.dataset.id;
+    document.getElementById('econv-nome').value       = btn.dataset.nome;
+    document.getElementById('econv-categoria').value  = btn.dataset.categoria;
+    document.getElementById('econv-telefone').value   = btn.dataset.telefone;
+
+    const listaEdit = document.getElementById('acomp-edit-lista');
+    listaEdit.innerHTML = '';
+    let acompanhantes = [];
+    try { acompanhantes = JSON.parse(btn.dataset.acompanhantesJson || '[]'); } catch (err) {}
+    acompanhantes.forEach(a => adicionarLinhaAcompanhante('acomp-edit-lista', 'edit', a));
+
     modalEditConv.show();
   });
 }
@@ -2654,8 +3020,9 @@ const GRUPO_ICONS = { 'Família': 'bi-house-heart-fill', 'Amigos': 'bi-emoji-sun
 function montarLinhaConvidado(r) {
   const extrasParts = [];
   if (r.telefone) extrasParts.push(`<div><i class="bi bi-whatsapp me-1 text-success"></i>${r.telefone}</div>`);
-  if (r.acompanhantes > 0) extrasParts.push(`<div><i class="bi bi-person-plus me-1"></i>Acomp: ${r.acompanhantes}</div>`);
-  if (r.filhos > 0) extrasParts.push(`<div><i class="bi bi-emoji-smile me-1"></i>Filhos: ${r.filhos}</div>`);
+  if (r.acompanhantes && r.acompanhantes.length) {
+    extrasParts.push(`<div><i class="bi bi-people me-1"></i>${r.acompanhantes.map(a => escapeHtmlAcomp(a.nome)).join(', ')}</div>`);
+  }
   const extrasHtml = extrasParts.length
     ? `<div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.5;">${extrasParts.join('')}</div>`
     : '';
@@ -2671,8 +3038,7 @@ function montarLinhaConvidado(r) {
           </button>
           <button type="button" class="btn p-0 border-0 bg-transparent text-primary btn-edit-conv"
                   data-id="${r.id}" data-nome="${r.nome}" data-categoria="${r.categoria}" data-telefone="${r.telefone}"
-                  data-acompanhantes="${r.acompanhantes}" data-nomes-acompanhantes="${r.nomes_acompanhantes}"
-                  data-filhos="${r.filhos}" data-idades-filhos="${r.idades_filhos}" title="Editar">
+                  data-acompanhantes-json='${JSON.stringify(r.acompanhantes || [])}' title="Editar">
             <i class="bi bi-pencil fs-6"></i>
           </button>
           <button type="button" class="btn p-0 border-0 bg-transparent text-danger btn-excluir-conv" data-id="${r.id}" title="Remover">
@@ -2694,17 +3060,17 @@ document.getElementById('form-convidado').addEventListener('submit', async (e) =
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>...';
   btn.disabled = true;
 
+  const nomesAcompAdd  = Array.from(document.querySelectorAll('#acomp-add-lista .campo-nome-acomp')).map(el => el.value.trim());
+  const faixasAcompAdd = Array.from(document.querySelectorAll('#acomp-add-lista .campo-faixa-acomp')).map(el => el.value);
+
   try {
     const r = await ajax({
       adicionar_convidado_noivos: '1',
       nome_convidado: nome,
       categoria_convidado: document.getElementById('conv-categoria').value.trim(),
       telefone_convidado: document.getElementById('conv-telefone').value.trim(),
-      acompanhantes: document.getElementById('conv-acompanhantes').value || 0,
-      nomes_acompanhantes: document.getElementById('conv-nomes-acompanhantes').value.trim(),
-      filhos: document.getElementById('conv-filhos').value || 0,
-      idades_filhos: document.getElementById('conv-idades-filhos').value.trim(),
-      status_convidado: document.querySelector('input[name="conv-status"]:checked').value,
+      nome_acompanhante_novo: nomesAcompAdd,
+      faixa_acompanhante_novo: faixasAcompAdd,
     });
 
     if (r.ok) {
@@ -2734,6 +3100,7 @@ document.getElementById('form-convidado').addEventListener('submit', async (e) =
       deltaCntStatus(r.confirmado === 1, 1);
 
       document.getElementById('form-convidado').reset();
+      document.getElementById('acomp-add-lista').innerHTML = '';
       bootstrap.Modal.getInstance(document.getElementById('modalAddConvidado'))?.hide();
       toast('Convidado adicionado!', 'verde');
     } else {
@@ -2757,6 +3124,10 @@ document.getElementById('form-edit-convidado').addEventListener('submit', async 
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>...';
   btn.disabled = true;
 
+  const idsAcompEdit    = Array.from(document.querySelectorAll('#acomp-edit-lista .acomp-edit-linha input[name="id_acompanhante_edit[]"]')).map(el => el.value);
+  const nomesAcompEdit  = Array.from(document.querySelectorAll('#acomp-edit-lista .campo-nome-acomp')).map(el => el.value.trim());
+  const faixasAcompEdit = Array.from(document.querySelectorAll('#acomp-edit-lista .campo-faixa-acomp')).map(el => el.value);
+
   try {
     const r = await ajax({
       editar_convidado_noivos: '1',
@@ -2764,10 +3135,9 @@ document.getElementById('form-edit-convidado').addEventListener('submit', async 
       nome_convidado: nome,
       categoria_convidado: document.getElementById('econv-categoria').value.trim(),
       telefone_convidado: document.getElementById('econv-telefone').value.trim(),
-      acompanhantes: document.getElementById('econv-acompanhantes').value || 0,
-      nomes_acompanhantes: document.getElementById('econv-nomes-acompanhantes').value.trim(),
-      filhos: document.getElementById('econv-filhos').value || 0,
-      idades_filhos: document.getElementById('econv-idades-filhos').value.trim(),
+      id_acompanhante_edit: idsAcompEdit,
+      nome_acompanhante_edit: nomesAcompEdit,
+      faixa_acompanhante_edit: faixasAcompEdit,
     });
 
     if (r.ok) {
@@ -2783,21 +3153,19 @@ document.getElementById('form-edit-convidado').addEventListener('submit', async 
         row.querySelector('.text-muted.border-top')?.remove();
         const extrasParts = [];
         if (r.telefone) extrasParts.push(`<div><i class="bi bi-whatsapp me-1 text-success"></i>${r.telefone}</div>`);
-        if (r.acompanhantes > 0) extrasParts.push(`<div><i class="bi bi-person-plus me-1"></i>Acomp: ${r.acompanhantes}</div>`);
-        if (r.filhos > 0) extrasParts.push(`<div><i class="bi bi-emoji-smile me-1"></i>Filhos: ${r.filhos}</div>`);
+        if (r.acompanhantes && r.acompanhantes.length) {
+          extrasParts.push(`<div><i class="bi bi-people me-1"></i>${r.acompanhantes.map(a => escapeHtmlAcomp(a.nome)).join(', ')}</div>`);
+        }
         if (extrasParts.length) {
           row.insertAdjacentHTML('beforeend', `<div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.5;">${extrasParts.join('')}</div>`);
         }
 
         const btnEdit = row.querySelector('.btn-edit-conv');
         if (btnEdit) {
-          btnEdit.dataset.nome                = r.nome;
-          btnEdit.dataset.categoria           = cat;
-          btnEdit.dataset.telefone            = r.telefone;
-          btnEdit.dataset.acompanhantes       = r.acompanhantes;
-          btnEdit.dataset.nomesAcompanhantes  = r.nomes_acompanhantes;
-          btnEdit.dataset.filhos              = r.filhos;
-          btnEdit.dataset.idadesFilhos        = r.idades_filhos;
+          btnEdit.dataset.nome              = r.nome;
+          btnEdit.dataset.categoria         = cat;
+          btnEdit.dataset.telefone          = r.telefone;
+          btnEdit.dataset.acompanhantesJson = JSON.stringify(r.acompanhantes || []);
         }
 
         // Move para o grupo certo, se a categoria mudou

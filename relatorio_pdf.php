@@ -77,7 +77,17 @@ if (isset($mostrar['convidados'])) {
 
     $rs2 = $pdo->prepare("SELECT * FROM convidados WHERE evento_id = ? ORDER BY nome ASC");
     $rs2->execute([$evento_id]);
-    $lista_conv = $rs2->fetchAll();
+    $lista_conv_raw = $rs2->fetchAll();
+
+    $acompanhantes_por_principal = [];
+    foreach ($lista_conv_raw as $c) {
+        if (!empty($c['convidado_principal_id'] ?? null)) {
+            $acompanhantes_por_principal[$c['convidado_principal_id']][] = $c;
+        }
+    }
+    // Acompanhantes do link específico entram junto do card do titular, não como linha própria.
+    $lista_conv = array_values(array_filter($lista_conv_raw, fn($c) => empty($c['convidado_principal_id'] ?? null)));
+
     foreach ($lista_conv as $c) {
         $c['confirmado'] ? $total_conf++ : $total_pend++;
         $cat = trim($c['categoria'] ?? '');
@@ -220,12 +230,19 @@ ob_start();
 <?php else: foreach ($conv_grupos as $grp => $lista): ?>
   <h3><?= h($grp) ?> (<?= count($lista) ?>)</h3>
   <table>
-    <thead><tr><th style="width:24%">Nome</th><th style="width:15%">Telefone</th><th style="width:11%">Status</th><th style="width:14%">Mesa</th><th style="width:36%">Acompanhantes / Filhos</th></tr></thead>
+    <thead><tr><th style="width:24%">Nome</th><th style="width:15%">Telefone</th><th style="width:11%">Status</th><th style="width:14%">Mesa</th><th style="width:36%">Acompanhantes</th></tr></thead>
     <tbody>
     <?php foreach ($lista as $c):
+      $acompC = $acompanhantes_por_principal[$c['id']] ?? [];
       $extras = [];
-      if (($c['acompanhantes'] ?? 0) > 0) { $extras[] = 'Acomp (' . (int)$c['acompanhantes'] . '): ' . ($c['nomes_acompanhantes'] ?: '—'); }
-      if (($c['filhos'] ?? 0) > 0) { $extras[] = 'Filhos (' . (int)$c['filhos'] . '): ' . ($c['idades_filhos'] ?: '—'); }
+      if (!empty($acompC)) {
+          $rotulado = array_map(function ($a) {
+              $rotulo = str_starts_with($a['faixa_etaria'] ?? '', 'Criança de Colo') ? 'colo'
+                      : (str_starts_with($a['faixa_etaria'] ?? '', 'Criança') ? 'criança' : 'adulto');
+              return $a['nome'] . ' (' . $rotulo . ')';
+          }, $acompC);
+          $extras[] = implode(', ', $rotulado);
+      }
       $mesa_nome = !empty($c['mesa_id']) ? ($mesas_por_id[$c['mesa_id']] ?? '—') : '—';
     ?>
       <tr>
