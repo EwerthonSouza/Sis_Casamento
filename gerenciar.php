@@ -183,7 +183,11 @@ if (!$evento_id) {
     exit;
 }
 
-$link_confirmacao_scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://';
+// Checa também X-Forwarded-Proto: atrás de proxy/load balancer, $_SERVER['HTTPS']
+// não reflete o protocolo real usado pelo navegador.
+$https_ativo = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+    || (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower($_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https');
+$link_confirmacao_scheme = $https_ativo ? 'https://' : 'http://';
 $link_confirmacao_base   = $link_confirmacao_scheme . $_SERVER['HTTP_HOST'] . rtrim(dirname($_SERVER['PHP_SELF']), '/');
 $link_confirmacao_url    = $link_confirmacao_base . '/confirmar.php?evento=' . $evento_id;
 
@@ -886,27 +890,163 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
     :root { --radius: 16px; }
 
     .nome-noivos-titulo {
-      font-size: clamp(1.05rem, 5.5vw, 2rem);
+      font-size: clamp(1.4rem, 6vw, 2.6rem);
+      font-weight: 800;
+      text-transform: uppercase;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
       display: block;
       max-width: 100%;
-    }
-
-    .foto-casal-header {
-      width: 54px; height: 54px; object-fit: cover; border-radius: 50%;
-      border: 3px solid rgba(255,255,255,.5); box-shadow: 0 4px 14px rgba(0,0,0,.25);
-      flex-shrink: 0;
-    }
-    @media (min-width: 768px) {
-      .foto-casal-header { width: 72px; height: 72px; }
+      line-height: 1.05;
     }
 
     /* ---- LINHA DE BOTÕES DO CABEÇALHO: Exportar PDF à esquerda, sino de
        notificações empurrado pra extremidade direita ---- */
     .header-btn-exportar  { order: 1; }
     .header-btn-sino      { order: 2; margin-left: auto; }
+
+    /* ---- HERO DO CABEÇALHO (gerenciar.php) ---- */
+    .header-btn-exportar {
+      background: #fff; color: #dc2626; border: none;
+      box-shadow: 0 2px 10px rgba(0,0,0,.15);
+    }
+    .header-btn-exportar:hover { background: #fff5f5; color: #b91c1c; }
+    .header-btn-sino {
+      border-color: rgba(255,255,255,.55) !important;
+      background: transparent !important;
+    }
+    .header-btn-sino .badge { background: #f59e0b !important; }
+
+    .header-hero-accent {
+      border-left: 3px solid #f0c987;
+      padding-left: 1rem;
+    }
+    .header-hero-label {
+      font-size: .74rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .12em; color: #f0c987; margin-bottom: .3rem;
+    }
+
+    /* Contagem regressiva no mobile: badge minimalista ao lado do rótulo
+       "Casamento de" (no desktop continua o card grande junto com data/hora). */
+    .dias-pill-mobile {
+      display: inline-flex; align-items: center; flex-shrink: 0;
+      font-size: .68rem; font-weight: 700; white-space: nowrap;
+      padding: .3rem .7rem; border-radius: 999px;
+      background: rgba(34,197,94,.2); color: #dcfce7;
+      border: 1px solid rgba(34,197,94,.45);
+    }
+    .dias-pill-mobile.dias-pill-hoje     { background: rgba(245,158,11,.2); color: #fef3c7; border-color: rgba(245,158,11,.45); }
+    .dias-pill-mobile.dias-pill-passado  { background: rgba(148,163,184,.2); color: #e2e8f0; border-color: rgba(148,163,184,.45); }
+    .header-hero-subtitle { color: rgba(255,255,255,.75); font-size: .92rem; }
+
+    .info-tiles { margin-top: 1.1rem; }
+    /* No mobile os cards de data/horário ficam sempre lado a lado, dividindo
+       a largura igualmente (em vez de empilhar quando o conteúdo não coube
+       numa linha só). */
+    @media (max-width: 767.98px) {
+      .info-tiles { flex-wrap: nowrap; }
+      .info-tiles .info-tile { flex: 1 1 0; min-width: 0; padding: .5rem .55rem .5rem .5rem; }
+      .info-tiles .info-tile-icon { width: 34px; height: 34px; font-size: .95rem; }
+      .info-tiles .info-tile-val,
+      .info-tiles .info-tile-lbl { overflow: hidden; text-overflow: ellipsis; }
+      .info-tiles .info-tile-val { font-size: .9rem; }
+    }
+    .info-tile {
+      display: flex; align-items: center; gap: .65rem;
+      background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.18);
+      border-radius: 14px; padding: .5rem .9rem .5rem .5rem;
+    }
+    .info-tile-icon {
+      width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(240,201,135,.22); color: #f0c987; font-size: 1.05rem;
+    }
+    .info-tile-val { font-weight: 700; color: #fff; font-size: 1.02rem; line-height: 1.15; white-space: nowrap; }
+    .info-tile-lbl { font-size: .66rem; color: rgba(255,255,255,.65); margin-top: .1rem; white-space: nowrap; }
+
+    .info-tile-destaque { background: rgba(220,252,231,.94); border-color: rgba(220,252,231,.94); }
+    .info-tile-destaque .info-tile-icon { background: #22c55e; color: #fff; }
+    .info-tile-destaque .info-tile-val,
+    .info-tile-destaque .info-tile-lbl  { color: #15803d; }
+
+    .info-tile-destaque.hoje { background: rgba(254,243,199,.94); border-color: rgba(254,243,199,.94); }
+    .info-tile-destaque.hoje .info-tile-icon { background: #f59e0b; }
+    .info-tile-destaque.hoje .info-tile-val,
+    .info-tile-destaque.hoje .info-tile-lbl  { color: #b45309; }
+
+    .info-tile-destaque.passado { background: rgba(226,232,240,.9); border-color: rgba(226,232,240,.9); }
+    .info-tile-destaque.passado .info-tile-icon { background: #64748b; }
+    .info-tile-destaque.passado .info-tile-val,
+    .info-tile-destaque.passado .info-tile-lbl  { color: #334155; }
+
+    /* Fundo decorativo: pontinhos + painel de "luzes desfocadas" (sem
+       depender de foto real) + corações em linha — tudo isolado num div de
+       fundo próprio, com overflow:hidden só nele, pra não cortar o dropdown
+       do sino (que também é descendente do header). */
+    .header-hero-bg {
+      position: absolute; inset: 0; overflow: hidden; border-radius: inherit;
+      pointer-events: none; z-index: 0;
+    }
+    .header-topo > *:not(.header-hero-bg) { position: relative; z-index: 1; }
+    /* A linha de botões (sino) precisa ficar acima do bloco do título —
+       senão o dropdown de notificações abre "atrás" do título/badges, que
+       tem sua própria pilha de contexto por causa do z-index acima. */
+    .header-topo > .header-top-actions { z-index: 2 !important; }
+    .hero-dots {
+      position: absolute; top: 14%; right: 30%; width: 110px; height: 64px;
+      background-image: radial-gradient(rgba(240,201,135,.45) 1.6px, transparent 1.6px);
+      background-size: 14px 14px;
+      display: none;
+    }
+    .hero-foto-sim {
+      position: absolute; inset: 0; left: 52%;
+      clip-path: url(#heroWaveClip);
+      background:
+        radial-gradient(circle at 28% 28%, rgba(255,224,178,.55), transparent 32%),
+        radial-gradient(circle at 72% 52%, rgba(255,255,255,.3), transparent 26%),
+        radial-gradient(circle at 55% 82%, rgba(255,196,120,.4), transparent 32%),
+        radial-gradient(circle at 88% 22%, rgba(255,255,255,.22), transparent 22%),
+        linear-gradient(135deg, rgba(0,0,0,.1), rgba(0,0,0,.28));
+      display: none;
+    }
+    .hero-hearts {
+      position: absolute; top: 10%; right: 3%; width: 150px; height: auto; display: none;
+    }
+    /* Efeito de "desenhar" o contorno: a linha some (dashoffset positivo),
+       vai sendo traçada até completar o coração, segura um instante e
+       depois apaga a partir do início — e recomeça em loop. O 2º coração
+       começa um pouco depois do 1º pra dar sensação de sequência. */
+    .hero-hearts path {
+      stroke-dasharray: 1000;
+      stroke-dashoffset: 1000;
+      animation: heroHeartsDraw 7s ease-in-out infinite;
+    }
+    .hero-hearts path:nth-of-type(2) { animation-delay: 1.2s; }
+    @keyframes heroHeartsDraw {
+      0%   { stroke-dashoffset: 1000; }
+      42%  { stroke-dashoffset: 0; }
+      65%  { stroke-dashoffset: 0; }
+      100% { stroke-dashoffset: -1000; }
+    }
+    @media (min-width: 768px) {
+      .hero-dots, .hero-foto-sim, .hero-hearts { display: block; }
+    }
+
+    .info-contato-evento > div { padding-right: 1.5rem; border-right: 1px solid #e5e7eb; }
+    .info-contato-evento > div:last-child { padding-right: 0; border-right: 0; }
+    .min-width-0 { min-width: 0; }
+    /* E-mail e WhatsApp sempre na mesma linha (não quebram entre si); o
+       e-mail trunca com "..." se não couber, o WhatsApp nunca quebra. */
+    .info-contato-fixa { min-width: 0; }
+    .info-contato-fixa > div:first-child { padding-right: 1rem; border-right: 1px solid #e5e7eb; margin-right: 1rem; }
+    @media (max-width: 767.98px) {
+      .contato-email-val { max-width: 46vw; }
+      /* Contrato fica oculto no mobile (d-none d-md-flex) — o item antes
+         dele (que passa a ser o último visível) não deve mostrar a
+         divisória à direita que sobraria solta. */
+      .info-contato-evento > div:nth-last-child(2) { padding-right: 0; border-right: 0; }
+    }
 
     /* ---- PAGAMENTO FORNECEDOR ---- */
     .forn-pago-row {
@@ -1071,7 +1211,6 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
       box-shadow: 0 3px 8px rgba(169,116,79,.35);
     }
     .checklist-title-text { letter-spacing: -.3px; color: #1e293b; font-size: 1.1rem; }
-    .ring-wrap-canto { position: absolute; right: 1.5rem; bottom: 1.25rem; }
     .checklist-title-band {
       background: linear-gradient(135deg, var(--color-primary-light) 0%, #fff 100%);
       border: 1px solid rgba(169,116,79,.18);
@@ -1115,6 +1254,11 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
     /* ---- AJUSTES GERAIS PARA MOBILE ---- */
     @media (max-width: 767.98px) {
       .navbar .navbar-brand img { height: 32px; }
+
+      /* Aviso de checklist vazio: menor e mais compacto no mobile. */
+      .checklist-vazio { padding-top: 1.5rem !important; padding-bottom: 1.5rem !important; }
+      .checklist-vazio-icon { font-size: 1.6rem !important; }
+      .checklist-vazio-txt { font-size: .8rem; }
 
       .fin-chip { flex: 1 1 0; min-width: 0; padding: .5rem .4rem; }
       .fin-chip-val { font-size: .72rem; }
@@ -1249,8 +1393,23 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
 
   <div class="card border-0 shadow-sm mb-4" style="border-radius: var(--radius); backdrop-filter: none; animation: none; transform: none;">
     <div class="header-topo p-3 p-md-4" style="position:relative;">
+      <div class="header-hero-bg" aria-hidden="true">
+        <svg width="0" height="0" style="position:absolute;">
+          <defs>
+            <clipPath id="heroWaveClip" clipPathUnits="objectBoundingBox">
+              <path d="M0.31,0 C0.20,0.12 0.10,0.20 0.15,0.35 C0.20,0.50 0.24,0.55 0.19,0.68 C0.15,0.80 0.09,0.88 0.09,1 L1,1 L1,0 Z" />
+            </clipPath>
+          </defs>
+        </svg>
+        <span class="hero-dots"></span>
+        <span class="hero-foto-sim"></span>
+        <svg class="hero-hearts" viewBox="0 0 200 160">
+          <path d="M62,42 C42,20 8,32 8,58 C8,84 42,98 62,120 C82,98 116,84 116,58 C116,32 82,20 62,42 Z" fill="none" stroke="rgba(255,222,160,.95)" stroke-width="3.5"/>
+          <path d="M104,74 C90,60 68,68 68,86 C68,104 90,112 104,128 C118,112 140,104 140,86 C140,68 118,60 104,74 Z" fill="none" stroke="rgba(255,222,160,.8)" stroke-width="3.5"/>
+        </svg>
+      </div>
       <div class="d-flex flex-wrap align-items-center gap-2 mb-3 header-top-actions">
-        <button type="button" class="btn btn-sm btn-danger rounded-3 header-btn-exportar"
+        <button type="button" class="btn btn-sm rounded-pill fw-bold header-btn-exportar"
                 data-bs-toggle="modal" data-bs-target="#modalExportarPdf">
           <i class="bi bi-file-earmark-pdf-fill me-1"></i> Exportar PDF
         </button>
@@ -1259,7 +1418,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
           <button class="btn btn-sm btn-outline-light rounded-circle position-relative" type="button" data-bs-toggle="dropdown" aria-expanded="false" style="width:40px;height:40px;">
             <i class="bi bi-bell-fill"></i>
             <?php if ($nao_lidas > 0): ?>
-              <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" style="font-size:.62rem;">
+              <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill" style="font-size:.62rem;">
                 <?= $nao_lidas > 9 ? '9+' : $nao_lidas ?>
               </span>
             <?php endif; ?>
@@ -1288,88 +1447,102 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
         </div>
       </div>
 
-      <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
-        <div class="d-flex align-items-center gap-3">
-          <?php if (!empty($evento['foto_casal_ativa']) && !empty($evento['foto_casal'])): ?>
-            <img src="uploads/<?= htmlspecialchars($evento['foto_casal'], ENT_QUOTES, 'UTF-8') ?>" alt="Foto do casal" class="foto-casal-header">
+      <div class="header-hero-accent">
+        <div class="d-flex align-items-center justify-content-between gap-2">
+          <div class="header-hero-label mb-0">Casamento de</div>
+          <?php if ($dias > 0): ?>
+            <span class="dias-pill-mobile d-md-none"><i class="bi bi-calendar-check-fill me-1"></i>Faltam <?= $dias ?> dia<?= $dias > 1 ? 's' : '' ?></span>
+          <?php elseif ($dias === 0): ?>
+            <span class="dias-pill-mobile dias-pill-hoje d-md-none"><i class="bi bi-stars me-1"></i>É hoje!</span>
+          <?php else: ?>
+            <span class="dias-pill-mobile dias-pill-passado d-md-none">Há <?= abs($dias) ?> dia<?= abs($dias) > 1 ? 's' : '' ?></span>
           <?php endif; ?>
-          <div>
-            <div class="text-white-50 small text-uppercase fw-semibold mb-1" style="letter-spacing:.06em;">
-              <i class="bi bi-rings text-warning me-1"></i> Casamento de
-            </div>
-            <h2 class="fw-bold mb-1 text-white nome-noivos-titulo" style="letter-spacing:-.5px;">
-              <?= htmlspecialchars($evento['nome'], ENT_QUOTES, 'UTF-8') ?>
-            </h2>
-            <p class="text-white-50 mb-3 small">Painel de controle do evento</p>
-            <div class="d-flex flex-nowrap gap-2 badges-info-evento">
-              <span class="badge bg-white bg-opacity-10 text-white px-3 py-2 rounded-pill text-nowrap">
-                <i class="bi bi-calendar-event me-1 text-warning"></i>
-                <?= date('d/m/Y', strtotime($evento['data_evento'])) ?>
-              </span>
-              <?php if (!empty($evento['hora_evento'])): ?>
-              <span class="badge bg-white bg-opacity-10 text-white px-3 py-2 rounded-pill text-nowrap">
-                <i class="bi bi-clock me-1 text-warning"></i>
-                <?= date('H:i', strtotime($evento['hora_evento'])) ?>
-              </span>
-              <?php endif; ?>
-              <?php if ($dias > 0): ?>
-                <span class="badge bg-success bg-opacity-25 text-white border border-success border-opacity-25 px-3 py-2 rounded-pill fw-bold text-nowrap">
-                  Faltam <?= $dias ?> dias!
-                </span>
-              <?php elseif ($dias === 0): ?>
-                <span class="badge bg-warning bg-opacity-25 text-warning border border-warning border-opacity-25 px-3 py-2 rounded-pill fw-bold text-nowrap">
-                  É Hoje! <i class="bi bi-stars"></i>
-                </span>
-              <?php else: ?>
-                <span class="badge bg-secondary bg-opacity-25 text-white border border-secondary border-opacity-25 px-3 py-2 rounded-pill fw-bold text-nowrap">
-                  Realizado há <?= abs($dias) ?> dias
-                </span>
-              <?php endif; ?>
+        </div>
+        <h2 class="mb-1 text-white nome-noivos-titulo">
+          <?= htmlspecialchars($evento['nome'], ENT_QUOTES, 'UTF-8') ?>
+        </h2>
+        <p class="header-hero-subtitle mb-0">Painel de controle do evento</p>
+
+        <div class="d-flex flex-wrap gap-2 info-tiles">
+          <div class="info-tile">
+            <span class="info-tile-icon"><i class="bi bi-calendar-event"></i></span>
+            <div>
+              <div class="info-tile-val"><?= date('d/m/Y', strtotime($evento['data_evento'])) ?></div>
+              <div class="info-tile-lbl">Data do evento</div>
             </div>
           </div>
-        </div>
-        <?php if ($total_g > 0):
-          $r_  = 28;
-          $circ = 2 * M_PI * $r_;
-          $off  = $circ - ($circ * $pct_g / 100); ?>
-        <div class="ring-wrap ring-wrap-canto d-none d-md-block" title="<?= $pct_g ?>% do checklist concluído">
-          <svg width="72" height="72" viewBox="0 0 72 72">
-            <circle cx="36" cy="36" r="<?= $r_ ?>" fill="none" stroke="rgba(255,255,255,.2)" stroke-width="6"/>
-            <circle cx="36" cy="36" r="<?= $r_ ?>" fill="none" stroke="#22c55e" stroke-width="6"
-              stroke-dasharray="<?= number_format($circ, 2, '.', '') ?>"
-              stroke-dashoffset="<?= number_format($off, 2, '.', '') ?>"
-              stroke-linecap="round"
-              transform="rotate(-90 36 36)"/>
-          </svg>
-          <div class="ring-label">
-            <span id="ring-pct"><?= $pct_g ?>%</span>
-            <span style="font-size:.5rem;opacity:.7;">feito</span>
+          <?php if (!empty($evento['hora_evento'])): ?>
+          <div class="info-tile">
+            <span class="info-tile-icon"><i class="bi bi-clock"></i></span>
+            <div>
+              <div class="info-tile-val"><?= date('H:i', strtotime($evento['hora_evento'])) ?></div>
+              <div class="info-tile-lbl">Horário do evento</div>
+            </div>
           </div>
+          <?php endif; ?>
+          <?php if ($dias > 0): ?>
+          <div class="info-tile info-tile-destaque d-none d-md-flex">
+            <span class="info-tile-icon"><i class="bi bi-calendar-check-fill"></i></span>
+            <div>
+              <div class="info-tile-val">Faltam <?= $dias ?> dia<?= $dias > 1 ? 's' : '' ?>!</div>
+              <div class="info-tile-lbl">Contagem regressiva</div>
+            </div>
+          </div>
+          <?php elseif ($dias === 0): ?>
+          <div class="info-tile info-tile-destaque hoje d-none d-md-flex">
+            <span class="info-tile-icon"><i class="bi bi-stars"></i></span>
+            <div>
+              <div class="info-tile-val">É hoje!</div>
+              <div class="info-tile-lbl">Contagem regressiva</div>
+            </div>
+          </div>
+          <?php else: ?>
+          <div class="info-tile info-tile-destaque passado d-none d-md-flex">
+            <span class="info-tile-icon"><i class="bi bi-check2-circle"></i></span>
+            <div>
+              <div class="info-tile-val">Há <?= abs($dias) ?> dia<?= abs($dias) > 1 ? 's' : '' ?></div>
+              <div class="info-tile-lbl">Evento realizado</div>
+            </div>
+          </div>
+          <?php endif; ?>
         </div>
-        <?php endif; ?>
       </div>
     </div>
     <div class="bg-white p-3 border-top" style="border-radius: 0 0 var(--radius) var(--radius);">
-      <div class="d-flex flex-wrap row-gap-2 column-gap-4 info-contato-evento">
-        <div class="d-flex align-items-center gap-2 text-muted small">
-          <span class="bg-light rounded-circle p-2 d-flex"><i class="bi bi-envelope-fill text-primary"></i></span>
-          <?= htmlspecialchars($evento['email'], ENT_QUOTES, 'UTF-8') ?>
+      <div class="d-flex flex-wrap row-gap-3 info-contato-evento">
+        <div class="d-flex flex-nowrap info-contato-fixa">
+          <div class="d-flex align-items-center gap-2 min-width-0">
+            <span class="bg-light rounded-circle p-2 d-flex flex-shrink-0"><i class="bi bi-envelope-fill text-primary"></i></span>
+            <div class="min-width-0">
+              <div class="fw-bold small text-truncate contato-email-val"><?= htmlspecialchars($evento['email'], ENT_QUOTES, 'UTF-8') ?></div>
+              <div class="text-muted text-truncate" style="font-size:.68rem;">E-mail do responsável</div>
+            </div>
+          </div>
+          <?php if (!empty($evento['telefone'])): ?>
+          <div class="d-flex align-items-center gap-2 flex-shrink-0">
+            <span class="bg-light rounded-circle p-2 d-flex flex-shrink-0"><i class="bi bi-whatsapp text-success"></i></span>
+            <div>
+              <div class="fw-bold small text-nowrap"><?= htmlspecialchars($evento['telefone'], ENT_QUOTES, 'UTF-8') ?></div>
+              <div class="text-muted" style="font-size:.68rem;">WhatsApp</div>
+            </div>
+          </div>
+          <?php endif; ?>
         </div>
-        <?php if (!empty($evento['telefone'])): ?>
-        <div class="d-flex align-items-center gap-2 text-muted small">
-          <span class="bg-light rounded-circle p-2 d-flex"><i class="bi bi-whatsapp text-success"></i></span>
-          <?= htmlspecialchars($evento['telefone'], ENT_QUOTES, 'UTF-8') ?>
-        </div>
-        <?php endif; ?>
         <?php if (!empty($evento['cpf'])): ?>
-        <div class="d-flex align-items-center gap-2 text-muted small">
+        <div class="d-flex align-items-center gap-2">
           <span class="bg-light rounded-circle p-2 d-flex"><i class="bi bi-person-vcard text-secondary"></i></span>
-          <?= htmlspecialchars($evento['cpf'], ENT_QUOTES, 'UTF-8') ?>
+          <div>
+            <div class="fw-bold small"><?= htmlspecialchars($evento['cpf'], ENT_QUOTES, 'UTF-8') ?></div>
+            <div class="text-muted" style="font-size:.68rem;">CPF</div>
+          </div>
         </div>
         <?php endif; ?>
-        <div class="d-flex align-items-center gap-2 text-muted small">
+        <div class="d-none d-md-flex align-items-center gap-2">
           <span class="bg-light rounded-circle p-2 d-flex"><i class="bi bi-file-earmark-text-fill text-secondary"></i></span>
-          Contrato #<?= str_pad($evento['id'], 4, '0', STR_PAD_LEFT) ?>
+          <div>
+            <div class="fw-bold small">Contrato #<?= str_pad($evento['id'], 4, '0', STR_PAD_LEFT) ?></div>
+            <div class="text-muted" style="font-size:.68rem;">Documento associado</div>
+          </div>
         </div>
       </div>
     </div>
@@ -1423,9 +1596,9 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
       </div>
 
       <?php if (empty($passos)): ?>
-        <div class="card border-0 shadow-sm text-center py-5 text-muted" style="border-radius: var(--radius);">
-          <i class="bi bi-info-circle fs-1 mb-2"></i>
-          <p class="mb-0">Checklist vazio. <?= $is_admin ? 'Use os botões acima para importar um modelo ou adicionar tarefas.' : 'O Administrador ainda não adicionou as tarefas.' ?></p>
+        <div class="card border-0 shadow-sm text-center py-5 text-muted checklist-vazio" style="border-radius: var(--radius);">
+          <i class="bi bi-info-circle fs-1 mb-2 checklist-vazio-icon"></i>
+          <p class="mb-0 checklist-vazio-txt">Checklist vazio. <?= $is_admin ? 'Use os botões acima para importar um modelo ou adicionar tarefas.' : 'O Administrador ainda não adicionou as tarefas.' ?></p>
         </div>
       <?php else: ?>
 
@@ -2276,7 +2449,10 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
                   <?php foreach ($momentos_casamento as $momento): ?>
                   <option value="<?= htmlspecialchars($momento, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($momento, ENT_QUOTES, 'UTF-8') ?></option>
                   <?php endforeach; ?>
+                  <option value="__outro__">✏️ Outro (digitar)</option>
                 </select>
+                <input type="text" id="musica-momento-outro" class="form-control mt-2 d-none"
+                       placeholder="Ex: Cerimônia · Troca de Alianças" maxlength="150">
               </div>
               <div class="col-12 col-sm-6">
                 <label class="form-label small fw-bold text-secondary">
@@ -2611,6 +2787,13 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
 <script>
 const SELF       = window.location.href;
 const CSRF_TOKEN  = <?= json_encode($csrf_token) ?>;
+
+/* ---- Ao abrir "Convidados" ou "Equipe Contratada", rola a página até as opções aparecerem ---- */
+['collapseConvidados', 'collapseEquipe'].forEach(id => {
+  document.getElementById(id)?.addEventListener('shown.bs.collapse', function () {
+    this.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+});
 
 /* ---- SINO DE NOTIFICAÇÕES ---- */
 
@@ -3842,15 +4025,31 @@ function inserirMusicaSugerida(m) {
 document.querySelectorAll('.btn-confirmar-musica').forEach(btn => bindConfirmarMusica(btn));
 document.querySelectorAll('.btn-excluir-musica').forEach(btn => bindExcluirMusica(btn));
 
+// Momento da Celebração: "Outro (digitar)" revela um campo de texto livre
+document.getElementById('musica-momento')?.addEventListener('change', function () {
+  const campoOutro = document.getElementById('musica-momento-outro');
+  const ehOutro = this.value === '__outro__';
+  campoOutro.classList.toggle('d-none', !ehOutro);
+  if (ehOutro) campoOutro.focus();
+});
+
 // Adicionar música
 document.getElementById('btn-add-musica')?.addEventListener('click', async () => {
-  const titulo  = document.getElementById('musica-titulo').value.trim();
-  const artista = document.getElementById('musica-artista').value.trim();
-  const link    = document.getElementById('musica-link').value.trim();
-  const momento = document.getElementById('musica-momento').value;
+  const titulo     = document.getElementById('musica-titulo').value.trim();
+  const artista    = document.getElementById('musica-artista').value.trim();
+  const link       = document.getElementById('musica-link').value.trim();
+  const selMomento = document.getElementById('musica-momento');
+  const campoOutro = document.getElementById('musica-momento-outro');
+  const ehOutro    = selMomento.value === '__outro__';
+  const momento    = ehOutro ? campoOutro.value.trim() : selMomento.value;
   if (!titulo) {
     toast('Informe o título da música.', 'warn');
     document.getElementById('musica-titulo').focus();
+    return;
+  }
+  if (ehOutro && !momento) {
+    toast('Digite o momento da celebração.', 'warn');
+    campoOutro.focus();
     return;
   }
   const btn  = document.getElementById('btn-add-musica');
@@ -3864,6 +4063,9 @@ document.getElementById('btn-add-musica')?.addEventListener('click', async () =>
       document.getElementById('musica-titulo').value  = '';
       document.getElementById('musica-artista').value = '';
       document.getElementById('musica-link').value    = '';
+      campoOutro.value = '';
+      campoOutro.classList.add('d-none');
+      selMomento.value = 'Livre / Sem Momento Definido';
       atualizarContadoresMusicas();
       toast('Música sugerida! 💡', 'verde');
       document.getElementById('musica-titulo').focus();

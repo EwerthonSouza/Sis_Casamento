@@ -32,8 +32,12 @@ function verificar_csrf(): void {
     }
 }
 
-// Link público de confirmação de presença para compartilhar com os convidados
-$link_confirmacao_scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://';
+// Link público de confirmação de presença para compartilhar com os convidados.
+// Checa também X-Forwarded-Proto: atrás de proxy/load balancer, $_SERVER['HTTPS']
+// não reflete o protocolo real usado pelo navegador.
+$https_ativo = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+    || (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower($_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https');
+$link_confirmacao_scheme = $https_ativo ? 'https://' : 'http://';
 $link_confirmacao_base   = $link_confirmacao_scheme . $_SERVER['HTTP_HOST'] . rtrim(dirname($_SERVER['PHP_SELF']), '/');
 $link_confirmacao_url    = $link_confirmacao_base . '/confirmar.php?evento=' . $evento_id;
 
@@ -447,6 +451,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o nome e um número de WhatsApp válido (com DDD).']);
             header("Location: noivos.php"); exit;
         }
+        // Número digitado é só DDD+telefone (10/11 dígitos); sem o código do país o
+        // WhatsApp interpreta o DDD como início de um código de outro país.
+        $tel_link_digits_wpp = strlen($tel_link_digits) <= 11 ? '55' . $tel_link_digits : $tel_link_digits;
 
         do {
             $token_link = bin2hex(random_bytes(16));
@@ -475,7 +482,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'id'              => $novo_convidado_id,
                 'nome'            => $nome_link,
                 'telefone'        => $tel_link,
-                'telefone_digits' => $tel_link_digits,
+                'telefone_digits' => $tel_link_digits_wpp,
                 'link'            => $link_confirmacao_url . '&token=' . $token_link,
                 'acompanhantes'   => $acompanhantes_criados,
             ]);
@@ -672,6 +679,154 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     }
     body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-app); }
 
+    /* ---- HERO DO CABEÇALHO (mesmo layout usado em gerenciar.php) ---- */
+    .nome-noivos-titulo {
+      font-size: clamp(1.4rem, 6vw, 2.6rem);
+      font-weight: 800;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: block;
+      max-width: 100%;
+      line-height: 1.05;
+    }
+    .header-btn-exportar {
+      order: 1;
+      background: #fff; color: #b45309; border: none;
+      box-shadow: 0 2px 10px rgba(0,0,0,.15);
+    }
+    .header-btn-exportar:hover { background: #fffaf0; color: #92400e; }
+    .btn-chama-atencao { animation: pulso-convite 2.2s ease-in-out infinite; }
+    .btn-chama-atencao:hover { animation-play-state: paused; }
+    @keyframes pulso-convite {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(255,255,255,.55); }
+      50%      { box-shadow: 0 0 0 7px rgba(255,255,255,0); }
+    }
+    .header-btn-sino {
+      border-color: rgba(255,255,255,.55) !important;
+      background: transparent !important;
+    }
+    .header-btn-sino .badge { background: #f59e0b !important; }
+    .header-actions-noivos { margin-left: auto; order: 2; }
+
+    .header-hero-accent {
+      border-left: 3px solid #f0c987;
+      padding-left: 1rem;
+    }
+    .header-hero-label {
+      font-size: .74rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .12em; color: #f0c987; margin-bottom: .3rem;
+    }
+    .header-hero-subtitle { color: rgba(255,255,255,.75); font-size: .92rem; }
+
+    /* Contagem regressiva no mobile: badge minimalista ao lado do rótulo
+       (no desktop continua o card grande junto com data/hora). */
+    .dias-pill-mobile {
+      display: inline-flex; align-items: center; flex-shrink: 0;
+      font-size: .68rem; font-weight: 700; white-space: nowrap;
+      padding: .3rem .7rem; border-radius: 999px;
+      background: rgba(34,197,94,.2); color: #dcfce7;
+      border: 1px solid rgba(34,197,94,.45);
+    }
+    .dias-pill-mobile.dias-pill-hoje     { background: rgba(245,158,11,.2); color: #fef3c7; border-color: rgba(245,158,11,.45); }
+    .dias-pill-mobile.dias-pill-passado  { background: rgba(148,163,184,.2); color: #e2e8f0; border-color: rgba(148,163,184,.45); }
+
+    .info-tiles { margin-top: 1.1rem; }
+    @media (max-width: 767.98px) {
+      .info-tiles { flex-wrap: nowrap; }
+      .info-tiles .info-tile { flex: 1 1 0; min-width: 0; padding: .5rem .55rem .5rem .5rem; }
+      .info-tiles .info-tile-icon { width: 34px; height: 34px; font-size: .95rem; }
+      .info-tiles .info-tile-val,
+      .info-tiles .info-tile-lbl { overflow: hidden; text-overflow: ellipsis; }
+      .info-tiles .info-tile-val { font-size: .9rem; }
+    }
+    .info-tile {
+      display: flex; align-items: center; gap: .65rem;
+      background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.18);
+      border-radius: 14px; padding: .5rem .9rem .5rem .5rem;
+    }
+    .info-tile-icon {
+      width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(240,201,135,.22); color: #f0c987; font-size: 1.05rem;
+    }
+    .info-tile-val { font-weight: 700; color: #fff; font-size: 1.02rem; line-height: 1.15; white-space: nowrap; }
+    .info-tile-lbl { font-size: .66rem; color: rgba(255,255,255,.65); margin-top: .1rem; white-space: nowrap; }
+
+    .info-tile-destaque { background: rgba(220,252,231,.94); border-color: rgba(220,252,231,.94); }
+    .info-tile-destaque .info-tile-icon { background: #22c55e; color: #fff; }
+    .info-tile-destaque .info-tile-val,
+    .info-tile-destaque .info-tile-lbl  { color: #15803d; }
+
+    .info-tile-destaque.hoje { background: rgba(254,243,199,.94); border-color: rgba(254,243,199,.94); }
+    .info-tile-destaque.hoje .info-tile-icon { background: #f59e0b; }
+    .info-tile-destaque.hoje .info-tile-val,
+    .info-tile-destaque.hoje .info-tile-lbl  { color: #b45309; }
+
+    .info-tile-destaque.passado { background: rgba(226,232,240,.9); border-color: rgba(226,232,240,.9); }
+    .info-tile-destaque.passado .info-tile-icon { background: #64748b; }
+    .info-tile-destaque.passado .info-tile-val,
+    .info-tile-destaque.passado .info-tile-lbl  { color: #334155; }
+
+    /* Fundo decorativo: pontinhos + painel de "luzes desfocadas" + corações
+       em linha — isolado num div de fundo próprio (overflow:hidden só nele),
+       pra não cortar o dropdown do sino. */
+    .header-hero-bg {
+      position: absolute; inset: 0; overflow: hidden; border-radius: inherit;
+      pointer-events: none; z-index: 0;
+    }
+    .header-topo > *:not(.header-hero-bg) { position: relative; z-index: 1; }
+    /* A linha de botões (sino/inspirações) precisa ficar acima do bloco do
+       título — senão o dropdown de notificações abre "atrás" do título/
+       badges, que tem sua própria pilha de contexto por causa do z-index
+       acima. */
+    .header-topo > .header-top-actions { z-index: 2 !important; }
+    .hero-dots {
+      position: absolute; top: 14%; right: 30%; width: 110px; height: 64px;
+      background-image: radial-gradient(rgba(240,201,135,.45) 1.6px, transparent 1.6px);
+      background-size: 14px 14px;
+      display: none;
+    }
+    .hero-foto-sim {
+      position: absolute; inset: 0; left: 52%;
+      clip-path: url(#heroWaveClipNoivos);
+      background:
+        radial-gradient(circle at 28% 28%, rgba(255,224,178,.55), transparent 32%),
+        radial-gradient(circle at 72% 52%, rgba(255,255,255,.3), transparent 26%),
+        radial-gradient(circle at 55% 82%, rgba(255,196,120,.4), transparent 32%),
+        radial-gradient(circle at 88% 22%, rgba(255,255,255,.22), transparent 22%),
+        linear-gradient(135deg, rgba(0,0,0,.1), rgba(0,0,0,.28));
+      display: none;
+    }
+    .hero-hearts {
+      position: absolute; top: 10%; right: 3%; width: 150px; height: auto; display: none;
+    }
+    .hero-hearts path {
+      stroke-dasharray: 1000;
+      stroke-dashoffset: 1000;
+      animation: heroHeartsDraw 7s ease-in-out infinite;
+    }
+    .hero-hearts path:nth-of-type(2) { animation-delay: 1.2s; }
+    @keyframes heroHeartsDraw {
+      0%   { stroke-dashoffset: 1000; }
+      42%  { stroke-dashoffset: 0; }
+      65%  { stroke-dashoffset: 0; }
+      100% { stroke-dashoffset: -1000; }
+    }
+    @media (min-width: 768px) {
+      .hero-dots, .hero-foto-sim, .hero-hearts { display: block; }
+    }
+
+    .info-contato-evento > div { padding-right: 1.5rem; border-right: 1px solid #e5e7eb; }
+    .info-contato-evento > div:last-child { padding-right: 0; border-right: 0; }
+    .min-width-0 { min-width: 0; }
+    .info-contato-fixa { min-width: 0; }
+    .info-contato-fixa > div:first-child { padding-right: 1rem; border-right: 1px solid #e5e7eb; margin-right: 1rem; }
+    @media (max-width: 767.98px) {
+      .contato-email-val { max-width: 46vw; }
+    }
+
     /* TOAST */
     #toast-wrap {
       position: fixed; bottom: 1.5rem; right: 1.5rem;
@@ -723,6 +878,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 
     /* PROGRESS RING */
     .ring-wrap { position: relative; width: 72px; height: 72px; flex-shrink: 0; }
+    .ring-wrap-compact { width: 40px; height: 40px; }
     .ring-wrap svg { transform: rotate(-90deg); }
     .ring-label {
       position: absolute; inset: 0;
@@ -930,14 +1086,19 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 
     /* ---- AJUSTES GERAIS PARA MOBILE (mesmas regras usadas em gerenciar.php) ---- */
     @media (max-width: 767.98px) {
-      .header-topo { flex-direction: column; align-items: stretch !important; position: relative; border-radius: var(--radius) !important; }
-      .header-actions-noivos { width: 100%; justify-content: space-between; margin-top: .1rem; }
-      .header-actions-noivos .btn-inspiracoes-wrap { order: 1; }
-      .header-actions-noivos .ring-wrap { order: 2; }
-      #dropdown-notificacoes { position: absolute; top: 1rem; right: 1rem; }
 
-      .badges-info-evento { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-      .badges-info-evento .badge { font-size: .68rem; padding: .35rem .55rem !important; white-space: nowrap; }
+      /* Aviso de "cronograma ainda vazio": vira uma linha compacta e
+         horizontal em vez do bloco grande e centralizado do desktop, e fica
+         mais colado no título "Nosso Cronograma" acima. */
+      .cronograma-header { padding-bottom: .5rem !important; }
+      .cronograma-body { padding-top: .5rem !important; }
+      .cronograma-vazio {
+        padding: 1rem 1.1rem !important;
+        display: flex; align-items: center; gap: .75rem; text-align: left;
+      }
+      .cronograma-vazio-icon { font-size: 1.5rem !important; color: #cbd5e1; flex-shrink: 0; }
+      .cronograma-vazio-txt { font-size: .8rem; margin-top: 0 !important; }
+      .cronograma-vazio-txt br { display: none; }
 
       .fin-summary-val { font-size: .78rem; white-space: nowrap; }
       .fin-summary-label { font-size: .55rem; }
@@ -1168,7 +1329,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
         </div>
 
         <div id="lista-links-especificos" class="d-flex flex-column gap-2 mb-3" style="max-height:260px;overflow-y:auto;">
-          <?php foreach ($links_especificos as $c): $linkEsp = $link_confirmacao_url . '&token=' . $c['token_convite']; $telDigitsC = preg_replace('/\D+/', '', $c['telefone'] ?? ''); $acompC = $acompanhantes_por_principal[$c['id']] ?? []; ?>
+          <?php foreach ($links_especificos as $c): $linkEsp = $link_confirmacao_url . '&token=' . $c['token_convite']; $telDigitsC = preg_replace('/\D+/', '', $c['telefone'] ?? ''); if (strlen($telDigitsC) <= 11) { $telDigitsC = '55' . $telDigitsC; } $acompC = $acompanhantes_por_principal[$c['id']] ?? []; ?>
           <div class="linha-link-especifico border rounded-3 p-2" data-id="<?= (int)$c['id'] ?>">
             <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
               <div class="small fw-bold text-truncate"><?= htmlspecialchars($c['nome'], ENT_QUOTES, 'UTF-8') ?></div>
@@ -1185,7 +1346,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               <input type="text" class="form-control campo-link-esp" value="<?= htmlspecialchars($linkEsp, ENT_QUOTES, 'UTF-8') ?>" readonly>
               <button class="btn btn-outline-secondary btn-copiar-link-esp" type="button" title="Copiar"><i class="bi bi-clipboard"></i></button>
               <a class="btn btn-outline-success btn-whatsapp-link-esp" target="_blank" title="Enviar por WhatsApp"
-                 href="https://wa.me/<?= htmlspecialchars($telDigitsC, ENT_QUOTES, 'UTF-8') ?>?text=<?= rawurlencode('Oi ' . $c['nome'] . '! Confirme sua presença no nosso casamento por aqui: ' . $linkEsp) ?>">
+                 href="https://wa.me/<?= htmlspecialchars($telDigitsC, ENT_QUOTES, 'UTF-8') ?>?text=<?= rawurlencode('Oi ' . $c['nome'] . '! Confirme sua presença no casamento de ' . $evento['nome'] . ' por aqui: ' . $linkEsp) ?>">
                 <i class="bi bi-whatsapp"></i>
               </a>
               <button class="btn btn-outline-danger btn-remover-link-esp" type="button" title="Remover link"><i class="bi bi-trash"></i></button>
@@ -1294,111 +1455,162 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 <div class="container my-4 my-md-5">
 
   <div class="card border-0 shadow-sm mb-4" style="border-radius: var(--radius); backdrop-filter: none; animation: none; transform: none;">
-    <div class="header-topo p-3 p-md-4 d-flex flex-wrap justify-content-between align-items-start gap-3">
-      <div>
-        <h2 class="fw-bold mb-1 text-white fs-4 fs-md-2" style="letter-spacing:-.5px;">
-          <i class="bi bi-rings text-warning me-2"></i> Nosso Casamento
-        </h2>
-        <p class="text-white-50 mb-3 small">Bem-vindos, <?= htmlspecialchars($evento['nome']) ?>!</p>
-        <div class="d-flex flex-wrap gap-2 badges-info-evento">
-          <span class="badge bg-white bg-opacity-10 text-white px-3 py-2 rounded-pill">
-            <i class="bi bi-calendar-event me-1 text-warning"></i>
-            <?= date('d/m/Y', strtotime($evento['data_evento'])) ?>
-          </span>
-          <?php if (!empty($evento['hora_evento'])): ?>
-          <span class="badge bg-white bg-opacity-10 text-white px-3 py-2 rounded-pill">
-            <i class="bi bi-clock me-1 text-warning"></i>
-            <?= date('H:i', strtotime($evento['hora_evento'])) ?>
-          </span>
+    <div class="header-topo p-3 p-md-4" style="position:relative;">
+      <div class="header-hero-bg" aria-hidden="true">
+        <svg width="0" height="0" style="position:absolute;">
+          <defs>
+            <clipPath id="heroWaveClipNoivos" clipPathUnits="objectBoundingBox">
+              <path d="M0.31,0 C0.20,0.12 0.10,0.20 0.15,0.35 C0.20,0.50 0.24,0.55 0.19,0.68 C0.15,0.80 0.09,0.88 0.09,1 L1,1 L1,0 Z" />
+            </clipPath>
+          </defs>
+        </svg>
+        <span class="hero-dots"></span>
+        <span class="hero-foto-sim"></span>
+        <svg class="hero-hearts" viewBox="0 0 200 160">
+          <path d="M62,42 C42,20 8,32 8,58 C8,84 42,98 62,120 C82,98 116,84 116,58 C116,32 82,20 62,42 Z" fill="none" stroke="rgba(255,222,160,.95)" stroke-width="3.5"/>
+          <path d="M104,74 C90,60 68,68 68,86 C68,104 90,112 104,128 C118,112 140,104 140,86 C140,68 118,60 104,74 Z" fill="none" stroke="rgba(255,222,160,.8)" stroke-width="3.5"/>
+        </svg>
+      </div>
+
+      <div class="d-flex flex-wrap align-items-center gap-2 mb-3 header-top-actions">
+        <a href="inspiracoes.php?id=<?= $evento_id ?>" class="btn btn-sm rounded-pill fw-bold header-btn-exportar btn-chama-atencao">
+          <i class="bi bi-stars me-1"></i> Inspirações
+        </a>
+
+        <div class="d-flex align-items-center gap-2 header-actions-noivos">
+          <?php if ($total_g > 0):
+            $r_   = 28;
+            $circ = 2 * M_PI * $r_;
+            $off  = $circ - ($circ * $pct_g / 100); ?>
+          <div class="ring-wrap ring-wrap-compact" title="<?= $pct_g ?>% do cronograma concluído">
+            <svg width="40" height="40" viewBox="0 0 72 72">
+              <circle cx="36" cy="36" r="<?= $r_ ?>" fill="none" stroke="rgba(255,255,255,.2)" stroke-width="6"/>
+              <circle cx="36" cy="36" r="<?= $r_ ?>" fill="none" stroke="#22c55e" stroke-width="6"
+                stroke-dasharray="<?= number_format($circ, 2, '.', '') ?>"
+                stroke-dashoffset="<?= number_format($off, 2, '.', '') ?>"
+                stroke-linecap="round"/>
+            </svg>
+            <div class="ring-label" style="font-size:.55rem;">
+              <span id="ring-pct"><?= $pct_g ?>%</span>
+            </div>
+          </div>
           <?php endif; ?>
-          <?php if ($dias > 0): ?>
-            <span class="badge bg-success bg-opacity-25 text-white border border-success border-opacity-25 px-3 py-2 rounded-pill fw-bold">
-              Faltam <?= $dias ?> dias!
-            </span>
-          <?php elseif ($dias === 0): ?>
-            <span class="badge bg-warning bg-opacity-25 text-warning border border-warning border-opacity-25 px-3 py-2 rounded-pill fw-bold">
-              É Hoje! <i class="bi bi-stars"></i>
-            </span>
-          <?php else: ?>
-            <span class="badge bg-secondary bg-opacity-25 text-white border border-secondary border-opacity-25 px-3 py-2 rounded-pill fw-bold">
-              Casados há <?= abs($dias) ?> dias!
-            </span>
-          <?php endif; ?>
+
+          <div class="dropdown header-btn-sino" id="dropdown-notificacoes">
+            <button class="btn btn-sm btn-outline-light rounded-circle position-relative" type="button" data-bs-toggle="dropdown" aria-expanded="false" style="width:40px;height:40px;">
+              <i class="bi bi-bell-fill"></i>
+              <?php if ($nao_lidas > 0): ?>
+                <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill" style="font-size:.62rem;">
+                  <?= $nao_lidas > 9 ? '9+' : $nao_lidas ?>
+                </span>
+              <?php endif; ?>
+            </button>
+            <div class="dropdown-menu dropdown-menu-end shadow-lg border-0 p-0" style="width:340px;max-height:420px;overflow-y:auto;">
+              <div class="px-3 py-2 border-bottom bg-light d-flex justify-content-between align-items-center">
+                <span class="fw-bold small text-uppercase text-muted"><i class="bi bi-bell me-1"></i> Notificações da Assessoria</span>
+                <button type="button" id="btn-marcar-lidas" class="btn btn-link btn-sm p-0 text-decoration-none">Marcar lidas</button>
+              </div>
+              <div id="lista-notificacoes">
+              <?php if (empty($notificacoes)): ?>
+                <div class="text-center text-muted p-4 small">
+                  <i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.
+                </div>
+              <?php else: foreach ($notificacoes as $n): ?>
+                <div class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom" style="cursor:pointer;">
+                  <i class="bi bi-chat-left-text-fill text-primary mt-1"></i>
+                  <div class="flex-fill" style="min-width:0;">
+                    <div class="small fw-bold text-dark"><?= htmlspecialchars(!empty($n['etapa_nome']) ? 'Etapa: ' . $n['etapa_nome'] : 'Tarefa: ' . $n['tarefa'], ENT_QUOTES, 'UTF-8') ?></div>
+                    <div class="small text-body"><?= htmlspecialchars($n['comentario'], ENT_QUOTES, 'UTF-8') ?></div>
+                    <div class="text-muted" style="font-size:.7rem;"><?= tempo_relativo($n['data_cadastro']) ?></div>
+                  </div>
+                </div>
+              <?php endforeach; endif; ?>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="d-flex align-items-center gap-3 header-actions-noivos">
-        <div class="dropdown" id="dropdown-notificacoes">
-          <button class="btn btn-sm btn-outline-light rounded-circle position-relative" type="button" data-bs-toggle="dropdown" aria-expanded="false" style="width:40px;height:40px;">
-            <i class="bi bi-bell-fill"></i>
-            <?php if ($nao_lidas > 0): ?>
-              <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" style="font-size:.62rem;">
-                <?= $nao_lidas > 9 ? '9+' : $nao_lidas ?>
-              </span>
-            <?php endif; ?>
-          </button>
-          <div class="dropdown-menu dropdown-menu-end shadow-lg border-0 p-0" style="width:340px;max-height:420px;overflow-y:auto;">
-            <div class="px-3 py-2 border-bottom bg-light d-flex justify-content-between align-items-center">
-              <span class="fw-bold small text-uppercase text-muted"><i class="bi bi-bell me-1"></i> Notificações da Assessoria</span>
-              <button type="button" id="btn-marcar-lidas" class="btn btn-link btn-sm p-0 text-decoration-none">Marcar lidas</button>
-            </div>
-            <div id="lista-notificacoes">
-            <?php if (empty($notificacoes)): ?>
-              <div class="text-center text-muted p-4 small">
-                <i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.
-              </div>
-            <?php else: foreach ($notificacoes as $n): ?>
-              <div class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom" style="cursor:pointer;">
-                <i class="bi bi-chat-left-text-fill text-primary mt-1"></i>
-                <div class="flex-fill" style="min-width:0;">
-                  <div class="small fw-bold text-dark"><?= htmlspecialchars(!empty($n['etapa_nome']) ? 'Etapa: ' . $n['etapa_nome'] : 'Tarefa: ' . $n['tarefa'], ENT_QUOTES, 'UTF-8') ?></div>
-                  <div class="small text-body"><?= htmlspecialchars($n['comentario'], ENT_QUOTES, 'UTF-8') ?></div>
-                  <div class="text-muted" style="font-size:.7rem;"><?= tempo_relativo($n['data_cadastro']) ?></div>
-                </div>
-              </div>
-            <?php endforeach; endif; ?>
+
+      <div class="header-hero-accent">
+        <div class="d-flex align-items-center justify-content-between gap-2">
+          <div class="header-hero-label mb-0">Nosso Casamento</div>
+          <?php if ($dias > 0): ?>
+            <span class="dias-pill-mobile d-md-none"><i class="bi bi-calendar-check-fill me-1"></i>Faltam <?= $dias ?> dia<?= $dias > 1 ? 's' : '' ?></span>
+          <?php elseif ($dias === 0): ?>
+            <span class="dias-pill-mobile dias-pill-hoje d-md-none"><i class="bi bi-stars me-1"></i>É hoje!</span>
+          <?php else: ?>
+            <span class="dias-pill-mobile dias-pill-passado d-md-none">Casados há <?= abs($dias) ?> dia<?= abs($dias) > 1 ? 's' : '' ?></span>
+          <?php endif; ?>
+        </div>
+        <h2 class="mb-1 text-white nome-noivos-titulo">
+          <?= htmlspecialchars($evento['nome'], ENT_QUOTES, 'UTF-8') ?>
+        </h2>
+        <p class="header-hero-subtitle mb-0">Bem-vindos! Acompanhe aqui os preparativos do seu grande dia.</p>
+
+        <div class="d-flex flex-wrap gap-2 info-tiles">
+          <div class="info-tile">
+            <span class="info-tile-icon"><i class="bi bi-calendar-event"></i></span>
+            <div>
+              <div class="info-tile-val"><?= date('d/m/Y', strtotime($evento['data_evento'])) ?></div>
+              <div class="info-tile-lbl">Data do evento</div>
             </div>
           </div>
-        </div>
-        <?php if ($total_g > 0):
-          $r_   = 28;
-          $circ = 2 * M_PI * $r_;
-          $off  = $circ - ($circ * $pct_g / 100); ?>
-        <div class="ring-wrap" title="<?= $pct_g ?>% do cronograma concluído">
-          <svg width="72" height="72" viewBox="0 0 72 72">
-            <circle cx="36" cy="36" r="<?= $r_ ?>" fill="none" stroke="rgba(255,255,255,.2)" stroke-width="6"/>
-            <circle cx="36" cy="36" r="<?= $r_ ?>" fill="none" stroke="#22c55e" stroke-width="6"
-              stroke-dasharray="<?= number_format($circ, 2, '.', '') ?>"
-              stroke-dashoffset="<?= number_format($off, 2, '.', '') ?>"
-              stroke-linecap="round"/>
-          </svg>
-          <div class="ring-label">
-            <span id="ring-pct"><?= $pct_g ?>%</span>
-            <span style="font-size:.5rem;opacity:.7;">feito</span>
+          <?php if (!empty($evento['hora_evento'])): ?>
+          <div class="info-tile">
+            <span class="info-tile-icon"><i class="bi bi-clock"></i></span>
+            <div>
+              <div class="info-tile-val"><?= date('H:i', strtotime($evento['hora_evento'])) ?></div>
+              <div class="info-tile-lbl">Horário do evento</div>
+            </div>
           </div>
-        </div>
-        <?php endif; ?>
-        <div class="d-flex flex-column gap-2 btn-inspiracoes-wrap">
-          <a href="inspiracoes.php?id=<?= $evento_id ?>" class="btn btn-outline-light btn-sm rounded-3">
-            <i class="bi bi-stars text-warning"></i> Inspirações
-          </a>
+          <?php endif; ?>
+          <?php if ($dias > 0): ?>
+          <div class="info-tile info-tile-destaque d-none d-md-flex">
+            <span class="info-tile-icon"><i class="bi bi-calendar-check-fill"></i></span>
+            <div>
+              <div class="info-tile-val">Faltam <?= $dias ?> dia<?= $dias > 1 ? 's' : '' ?>!</div>
+              <div class="info-tile-lbl">Contagem regressiva</div>
+            </div>
+          </div>
+          <?php elseif ($dias === 0): ?>
+          <div class="info-tile info-tile-destaque hoje d-none d-md-flex">
+            <span class="info-tile-icon"><i class="bi bi-stars"></i></span>
+            <div>
+              <div class="info-tile-val">É hoje!</div>
+              <div class="info-tile-lbl">Contagem regressiva</div>
+            </div>
+          </div>
+          <?php else: ?>
+          <div class="info-tile info-tile-destaque passado d-none d-md-flex">
+            <span class="info-tile-icon"><i class="bi bi-check2-circle"></i></span>
+            <div>
+              <div class="info-tile-val">Casados há <?= abs($dias) ?> dia<?= abs($dias) > 1 ? 's' : '' ?></div>
+              <div class="info-tile-lbl">Contagem regressiva</div>
+            </div>
+          </div>
+          <?php endif; ?>
         </div>
       </div>
     </div>
-    <div class="bg-white p-3 border-top d-none d-md-block" style="border-radius: 0 0 var(--radius) var(--radius);">
-      <div class="d-flex flex-wrap row-gap-2 column-gap-4">
-        <div class="d-flex align-items-center gap-2 text-muted small">
-          <span class="bg-light rounded-circle p-2 d-flex"><i class="bi bi-envelope-fill text-primary"></i></span>
-          <?= htmlspecialchars($evento['email']) ?>
-        </div>
-        <?php if (!empty($evento['telefone'])): ?>
-        <div class="d-flex align-items-center gap-2 text-muted small">
-          <span class="bg-light rounded-circle p-2 d-flex"><i class="bi bi-whatsapp text-success"></i></span>
-          <?= htmlspecialchars($evento['telefone']) ?>
-        </div>
-        <?php endif; ?>
-        <div class="d-flex align-items-center gap-2 text-muted small">
-          <span class="bg-light rounded-circle p-2 d-flex"><i class="bi bi-file-earmark-text-fill text-secondary"></i></span>
-          Contrato #<?= str_pad($evento['id'], 4, '0', STR_PAD_LEFT) ?>
+    <div class="bg-white p-3 border-top" style="border-radius: 0 0 var(--radius) var(--radius);">
+      <div class="d-flex flex-wrap row-gap-3 info-contato-evento">
+        <div class="d-flex flex-nowrap info-contato-fixa">
+          <div class="d-flex align-items-center gap-2 min-width-0">
+            <span class="bg-light rounded-circle p-2 d-flex flex-shrink-0"><i class="bi bi-envelope-fill text-primary"></i></span>
+            <div class="min-width-0">
+              <div class="fw-bold small text-truncate contato-email-val"><?= htmlspecialchars($evento['email'], ENT_QUOTES, 'UTF-8') ?></div>
+              <div class="text-muted text-truncate" style="font-size:.68rem;">E-mail do responsável</div>
+            </div>
+          </div>
+          <?php if (!empty($evento['telefone'])): ?>
+          <div class="d-flex align-items-center gap-2 flex-shrink-0">
+            <span class="bg-light rounded-circle p-2 d-flex flex-shrink-0"><i class="bi bi-whatsapp text-success"></i></span>
+            <div>
+              <div class="fw-bold small text-nowrap"><?= htmlspecialchars($evento['telefone'], ENT_QUOTES, 'UTF-8') ?></div>
+              <div class="text-muted" style="font-size:.68rem;">WhatsApp</div>
+            </div>
+          </div>
+          <?php endif; ?>
         </div>
       </div>
     </div>
@@ -1409,7 +1621,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 
     <div class="col-lg-8">
       <div class="card shadow-sm border-0 mb-4" style="border-radius: var(--radius);">
-        <div class="card-header bg-white border-bottom pt-4 pb-3 text-center">
+        <div class="card-header bg-white border-bottom pt-4 pb-3 text-center cronograma-header">
           <h5 class="fw-bold mb-1">
             <i class="bi bi-calendar-check text-primary me-2"></i> Nosso Cronograma
           </h5>
@@ -1425,11 +1637,11 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
           </div>
           <?php endif; ?>
         </div>
-        <div class="card-body p-4 bg-light">
+        <div class="card-body p-4 bg-light cronograma-body">
           <?php if (empty($passos)): ?>
-            <div class="text-center py-5 text-muted bg-white rounded-3 shadow-sm">
-              <i class="bi bi-clock-history fs-1"></i>
-              <p class="mt-3 mb-0">A assessoria ainda está montando o cronograma.<br>Em breve aparecerá aqui!</p>
+            <div class="text-center py-5 text-muted bg-white rounded-3 shadow-sm cronograma-vazio">
+              <i class="bi bi-clock-history fs-1 cronograma-vazio-icon"></i>
+              <p class="mt-3 mb-0 cronograma-vazio-txt">A assessoria ainda está montando o cronograma.<br>Em breve aparecerá aqui!</p>
             </div>
           <?php else: ?>
 
@@ -1624,7 +1836,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               </div>
               <div class="text-start">
                 <h6 class="mb-0 fw-bold text-dark">Gerenciar Convidados</h6>
-                <small class="text-dark" style="font-size:.78rem;opacity:.6;">Adicionar, editar e enviar o link por WhatsApp</small>
+                <small class="text-dark text-nowrap" style="font-size:.78rem;opacity:.6;">Adicione, edite e envie pelo WhatsApp</small>
               </div>
             </div>
             <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:#0891b2; border:none; color:#fff;">
@@ -1668,25 +1880,6 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
             </span>
           </div>
         </a>
-
-        <button type="button" class="btn-musicas-sidebar mt-0 mb-0" style="background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); border-color: #fca5a5;"
-                data-bs-toggle="modal" data-bs-target="#modalLinkConfirmacao">
-          <div class="d-flex justify-content-between align-items-center p-3">
-            <div class="d-flex align-items-center gap-3">
-              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0"
-                   style="width:44px;height:44px;">
-                <i class="bi bi-envelope-check-fill fs-4" style="color:#dc2626;"></i>
-              </div>
-              <div class="text-start">
-                <h6 class="mb-0 fw-bold text-dark">Confirmação de Presença</h6>
-                <small class="text-dark" style="font-size:.78rem;opacity:.6;">Link para enviar aos convidados</small>
-              </div>
-            </div>
-            <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:#dc2626; border:none; color:#fff;">
-              Ver link <i class="bi bi-arrow-right ms-1"></i>
-            </span>
-          </div>
-        </button>
 
         <div class="card shadow-sm border-0" style="border-radius: var(--radius);">
           <div class="card-header bg-white border-0 pt-4 pb-0 text-center">
@@ -1878,11 +2071,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               <i class="bi bi-person-plus-fill me-1"></i> Criar Convite
             </button>
 
-            <button class="btn btn-outline-primary btn-sm w-100 fw-bold rounded-pill shadow-sm collapsed"
-                    type="button" data-bs-toggle="collapse" data-bs-target="#colapso-convidados">
-              <i class="bi bi-list-ul me-1"></i> Ver Lista Completa
-              (<span id="cnt-total"><?= count($lista_convidados) ?></span>)
-            </button>
+            <span id="cnt-total" class="d-none"><?= count($lista_convidados) ?></span>
 
             <div class="collapse mt-2" id="colapso-convidados">
               <div class="d-flex align-items-center gap-1 justify-content-center text-muted mb-2 dica-status-conv" style="font-size:.68rem;">
@@ -2155,7 +2344,7 @@ document.getElementById('lista-acompanhantes-link-esp')?.addEventListener('click
 });
 
 function linhaLinkEspecificoHtml(r) {
-  const msgWpp = encodeURIComponent('Oi ' + r.nome + '! Confirme sua presença no nosso casamento por aqui: ' + r.link);
+  const msgWpp = encodeURIComponent('Oi ' + r.nome + '! Confirme sua presença no casamento de ' + NOME_CASAL + ' por aqui: ' + r.link);
   const acompHtml = (r.acompanhantes && r.acompanhantes.length)
     ? '<div class="text-muted mb-1" style="font-size:.72rem;"><i class="bi bi-people-fill me-1"></i>' + escapeHtmlLinkEsp(r.acompanhantes.map(a => a.nome).join(', ')) + '</div>'
     : '';
@@ -2313,6 +2502,7 @@ function toast(msg, tipo = 'verde') {
 }
 
 const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;
+const NOME_CASAL = <?= json_encode($evento['nome']) ?>;
 
 async function ajax(obj) {
   obj.is_ajax = '1';

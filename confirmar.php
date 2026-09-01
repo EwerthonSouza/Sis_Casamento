@@ -10,7 +10,7 @@ $evento_id = (int)$_GET['evento'];
 // Essa página é aberta por CADA convidado que clica no link (sem login/sessão),
 // então rodar essas verificações em toda visita pesa muito no banco à toa —
 // uma vez confirmado que o schema está OK, marca em disco e nunca mais checa.
-if (!schema_ja_verificado('confirmar')) {
+if (!schema_ja_verificado('confirmar_v2')) {
     try { $pdo->query("SELECT resposta_rsvp FROM convidados LIMIT 1"); }
     catch (Exception $e) { $pdo->exec("ALTER TABLE convidados ADD COLUMN resposta_rsvp VARCHAR(20) NULL"); }
     try { $pdo->query("SELECT mensagem_rsvp FROM convidados LIMIT 1"); }
@@ -29,11 +29,17 @@ if (!schema_ja_verificado('confirmar')) {
     catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal_ativa TINYINT(1) NOT NULL DEFAULT 0"); }
     try { $pdo->query("SELECT cor_convite FROM eventos LIMIT 1"); }
     catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN cor_convite VARCHAR(7) NULL"); }
+    try { $pdo->query("SELECT mensagem_convite FROM eventos LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN mensagem_convite VARCHAR(500) NULL"); }
+    try { $pdo->query("SELECT cor_btn_sim FROM eventos LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN cor_btn_sim VARCHAR(7) NULL"); }
+    try { $pdo->query("SELECT cor_btn_nao FROM eventos LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN cor_btn_nao VARCHAR(7) NULL"); }
     try { $pdo->query("SELECT token_convite FROM convidados LIMIT 1"); }
     catch (Exception $e) { $pdo->exec("ALTER TABLE convidados ADD COLUMN token_convite VARCHAR(64) NULL"); }
     try { $pdo->query("SELECT convidado_principal_id FROM convidados LIMIT 1"); }
     catch (Exception $e) { $pdo->exec("ALTER TABLE convidados ADD COLUMN convidado_principal_id INT NULL"); }
-    marcar_schema_verificado('confirmar');
+    marcar_schema_verificado('confirmar_v2');
 }
 
 /** Clareia (percent > 0) ou escurece (percent < 0) uma cor hex, mantendo o mesmo tom */
@@ -61,68 +67,6 @@ const FAIXAS_ETARIAS = [
     'Adulto (11+ anos)',
 ];
 
-/**
- * Tenta achar, neste evento, uma "vaga" ainda sem resposta (resposta_rsvp IS NULL) que
- * corresponda a uma resposta sem id do navegador (link aberto de novo em outro aparelho,
- * cache limpo, ou nome já cadastrado manualmente pela assessoria). Só considera convidados
- * que ainda NÃO responderam, pra nunca sobrescrever quem já confirmou/recusou por engano —
- * se dois convidados diferentes tiverem o mesmo nome, casar por nome poderia juntar as duas
- * pessoas; restringindo às vagas pendentes, o pior caso vira um registro duplicado (visível
- * e fácil de mesclar pela assessoria), nunca a perda silenciosa da resposta de outra pessoa.
- * Se houver mais de uma vaga pendente com o mesmo nome, exige telefone batendo com
- * exatamente uma delas pra desambiguar; sem isso, retorna null (cria um registro novo).
- */
-function buscarConvidadoPorNome(PDO $pdo, int $evento_id, string $nome, string $telefone, array $idsExcluir): ?int {
-    if (empty($idsExcluir)) {
-        $stmt = $pdo->prepare("SELECT id, telefone FROM convidados WHERE evento_id = ? AND resposta_rsvp IS NULL AND LOWER(TRIM(nome)) = LOWER(TRIM(?))");
-        $stmt->execute([$evento_id, $nome]);
-    } else {
-        $ph = implode(',', array_fill(0, count($idsExcluir), '?'));
-        $stmt = $pdo->prepare("SELECT id, telefone FROM convidados WHERE evento_id = ? AND resposta_rsvp IS NULL AND LOWER(TRIM(nome)) = LOWER(TRIM(?)) AND id NOT IN ($ph)");
-        $stmt->execute(array_merge([$evento_id, $nome], $idsExcluir));
-    }
-    $candidatos = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    if (count($candidatos) === 1) {
-        return (int)$candidatos[0]['id'];
-    }
-
-    if (count($candidatos) > 1 && $telefone !== '') {
-        $comTelefoneIgual = array_values(array_filter($candidatos, function ($c) use ($telefone) {
-            return trim((string)$c['telefone']) !== '' && trim((string)$c['telefone']) === $telefone;
-        }));
-        if (count($comTelefoneIgual) === 1) {
-            return (int)$comTelefoneIgual[0]['id'];
-        }
-    }
-
-    return null;
-}
-
-/**
- * Segunda linha de defesa contra duplicatas: quando não há vaga pendente (o convidado
- * já respondeu antes), procura um registro deste evento com o MESMO nome e MESMO
- * telefone que já respondeu — sinal forte de que é a mesma pessoa reenviando o
- * formulário (duplo clique, nova aba/aparelho, cache limpo antes de salvar o id local).
- * Exige telefone não vazio e batendo exatamente, pra nunca juntar duas pessoas
- * diferentes que só coincidem no nome.
- */
-function buscarConvidadoJaRespondido(PDO $pdo, int $evento_id, string $nome, string $telefone, array $idsExcluir): ?int {
-    if ($telefone === '') return null;
-
-    $sql    = "SELECT id FROM convidados WHERE evento_id = ? AND resposta_rsvp IS NOT NULL AND LOWER(TRIM(nome)) = LOWER(TRIM(?)) AND TRIM(telefone) = ?";
-    $params = [$evento_id, $nome, $telefone];
-    if (!empty($idsExcluir)) {
-        $ph = implode(',', array_fill(0, count($idsExcluir), '?'));
-        $sql .= " AND id NOT IN ($ph)";
-        $params = array_merge($params, $idsExcluir);
-    }
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    $candidatos = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    return count($candidatos) === 1 ? (int)$candidatos[0]['id'] : null;
-}
 
 $stmt = $pdo->prepare("SELECT e.*, c.nome AS nome_cliente FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
 $stmt->execute([$evento_id]);
@@ -132,15 +76,98 @@ if (!$evento) {
     die("<div class='container mt-5 alert alert-danger'>Evento não encontrado.</div>");
 }
 
+$cor_convite_base = (!empty($evento['cor_convite']) && preg_match('/^#[0-9a-fA-F]{6}$/', $evento['cor_convite']))
+    ? $evento['cor_convite'] : '#8b5e3c';
+$cor_convite_1 = ajustar_cor($cor_convite_base, -0.22);
+$cor_convite_2 = $cor_convite_base;
+$cor_convite_3 = ajustar_cor($cor_convite_base, 0.22);
+
+$cor_btn_sim = (!empty($evento['cor_btn_sim']) && preg_match('/^#[0-9a-fA-F]{6}$/', $evento['cor_btn_sim']))
+    ? $evento['cor_btn_sim'] : '#16a34a';
+$cor_btn_sim_1 = ajustar_cor($cor_btn_sim, -0.18);
+$cor_btn_sim_2 = ajustar_cor($cor_btn_sim, 0.18);
+$cor_btn_nao = (!empty($evento['cor_btn_nao']) && preg_match('/^#[0-9a-fA-F]{6}$/', $evento['cor_btn_nao']))
+    ? $evento['cor_btn_nao'] : '#64748b';
+$cor_btn_nao_borda = ajustar_cor($cor_btn_nao, 0.75);
+
+/** Gera (se preciso) e devolve o token_convite de um convidado — mesmo
+ *  padrão usado em convidados.php pro botão de WhatsApp/copiar link. */
+function garantirTokenConvite(PDO $pdo, int $convidadoId): string {
+    $stmt = $pdo->prepare("SELECT token_convite FROM convidados WHERE id = ?");
+    $stmt->execute([$convidadoId]);
+    $token = $stmt->fetchColumn();
+    if (!empty($token)) return $token;
+
+    do {
+        $token = bin2hex(random_bytes(16));
+        $chk = $pdo->prepare("SELECT id FROM convidados WHERE token_convite = ?");
+        $chk->execute([$token]);
+    } while ($chk->fetch());
+    $pdo->prepare("UPDATE convidados SET token_convite = ? WHERE id = ?")->execute([$token, $convidadoId]);
+    return $token;
+}
+
 /* ============================================================
-   LINK ESPECÍFICO — quando vem com &token=, trava a identidade
-   (nome + WhatsApp) no convidado dono do token, pra impedir que
-   o link de uma pessoa seja usado pra confirmar em nome de outra.
+   LINK ESPECÍFICO (&token=) — trava a identidade (nome + WhatsApp) no
+   convidado dono do link, pra impedir que o link de uma pessoa seja
+   usado pra confirmar em nome de outra.
+
+   LINK GERAL (sem &token=) — um único link pra todo mundo: o convidado
+   digita o próprio nome, o sistema procura na lista (só entre titulares,
+   nunca acompanhantes — cada família responde a partir do titular) e,
+   achando exatamente um, gera (ou reaproveita) o token dele e redireciona
+   pro link específico — a partir daí é o MESMO fluxo de sempre.
+
+   Exceção: a prévia "somente visual" do modal Personalizar Convite
+   (convidados.php) carrega essa página com &_preview=1 e sem token,
+   só pra mostrar cor/foto/mensagem — não é uma resposta de verdade
+   (o iframe já bloqueia clique via pointer-events:none). Nesse caso
+   usa um convidado placeholder só pra o template ter o que exibir.
    ============================================================ */
-$token_convite       = trim($_GET['token'] ?? '');
-$convidado_travado   = null;
-$acompanhantes_travados = [];
-if ($token_convite !== '') {
+$token_convite = trim($_GET['token'] ?? '');
+$preview_admin = isset($_GET['_preview']);
+
+if ($token_convite === '') {
+    if ($preview_admin) {
+        $convidado_travado      = ['id' => 0, 'nome' => 'Convidado', 'telefone' => ''];
+        $acompanhantes_travados = [];
+    } else {
+        $busca_nome = trim($_GET['buscar'] ?? '');
+        $busca_erro = null;
+        $busca_candidatos = [];
+
+        if ($busca_nome !== '') {
+            $stmt = $pdo->prepare("SELECT id, nome FROM convidados WHERE evento_id = ? AND convidado_principal_id IS NULL AND LOWER(TRIM(nome)) = LOWER(TRIM(?)) ORDER BY id ASC");
+            $stmt->execute([$evento_id, $busca_nome]);
+            $candidatos = $stmt->fetchAll();
+
+            $idEscolhido = null;
+            $escolherId  = (int)($_GET['escolher'] ?? 0);
+            if ($escolherId > 0) {
+                foreach ($candidatos as $c) {
+                    if ((int)$c['id'] === $escolherId) { $idEscolhido = $escolherId; break; }
+                }
+            } elseif (count($candidatos) === 1) {
+                $idEscolhido = (int)$candidatos[0]['id'];
+            }
+
+            if ($idEscolhido !== null) {
+                $token = garantirTokenConvite($pdo, $idEscolhido);
+                header('Location: confirmar.php?evento=' . $evento_id . '&token=' . $token);
+                exit;
+            }
+
+            if (count($candidatos) > 1) {
+                $busca_candidatos = $candidatos;
+            } else {
+                $busca_erro = 'Não encontramos esse nome na lista de convidados. Confira se digitou igual ao convite, ou fale com os noivos/assessoria.';
+            }
+        }
+
+        require 'confirmar_busca_nome.inc.php';
+        exit;
+    }
+} else {
     $stmt = $pdo->prepare("SELECT * FROM convidados WHERE evento_id = ? AND token_convite = ?");
     $stmt->execute([$evento_id, $token_convite]);
     $convidado_travado = $stmt->fetch() ?: null;
@@ -152,12 +179,6 @@ if ($token_convite !== '') {
     $stmt->execute([$convidado_travado['id']]);
     $acompanhantes_travados = $stmt->fetchAll();
 }
-
-$cor_convite_base = (!empty($evento['cor_convite']) && preg_match('/^#[0-9a-fA-F]{6}$/', $evento['cor_convite']))
-    ? $evento['cor_convite'] : '#8b5e3c';
-$cor_convite_1 = ajustar_cor($cor_convite_base, -0.22);
-$cor_convite_2 = $cor_convite_base;
-$cor_convite_3 = ajustar_cor($cor_convite_base, 0.22);
 
 $dias = null;
 if (!empty($evento['data_evento'])) {
@@ -173,197 +194,46 @@ $resposta_dados = [];
 $erro           = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $acao        = $_POST['acao'] ?? '';
-    $ids_antigos = array_filter(array_map('intval', explode(',', $_POST['ids_todos_anteriores'] ?? '')));
+    $acao = $_POST['acao'] ?? '';
 
     try {
         $pdo->beginTransaction();
-        $ids_mantidos = [];
 
-        if ($acao === 'confirmar') {
-            $nomes      = $_POST['nome_convidado']     ?? [];
-            $faixas     = $_POST['faixa_etaria']       ?? [];
-            $telefones  = $_POST['telefone_convidado'] ?? [];
-            $id_ant_arr = $_POST['id_anterior']        ?? [];
-
-            for ($i = 0; $i < count($nomes); $i++) {
-                $nome = trim($nomes[$i]);
-                if ($nome === '') continue;
-
-                $faixa = in_array($faixas[$i] ?? '', FAIXAS_ETARIAS, true) ? $faixas[$i] : FAIXAS_ETARIAS[2];
-                $tel   = trim($telefones[$i] ?? '');
-                $idAnt = (int)($id_ant_arr[$i] ?? 0);
-                $atualizou = false;
-
-                // Link específico: a primeira linha é sempre o dono do link — força o id
-                // para SEMPRE atualizar o mesmo convidado, mesmo que o navegador mande outra
-                // coisa. Nome e telefone continuam sendo os que o convidado preencheu agora.
-                if ($convidado_travado && $i === 0) {
-                    $idAnt = (int)$convidado_travado['id'];
-                }
-
-                if ($idAnt > 0) {
-                    $chk = $pdo->prepare("SELECT id FROM convidados WHERE id = ? AND evento_id = ?");
-                    $chk->execute([$idAnt, $evento_id]);
-                    if ($chk->fetch()) {
-                        $pdo->prepare("UPDATE convidados SET nome = ?, faixa_etaria = ?, telefone = ?, confirmado = 1, resposta_rsvp = 'confirmado', mensagem_rsvp = NULL, data_confirmacao = NOW() WHERE id = ? AND evento_id = ?")
-                            ->execute([$nome, $faixa, $tel, $idAnt, $evento_id]);
-                        $ids_mantidos[]    = $idAnt;
-                        $resposta_dados[]  = ['id' => $idAnt, 'nome' => $nome, 'faixa_etaria' => $faixa, 'telefone' => $tel];
-                        $atualizou = true;
-                    }
-                }
-
-                // Sem id do navegador: tenta casar por nome (só quando único no evento, ou
-                // desambiguado por telefone) antes de criar um registro novo.
-                if (!$atualizou) {
-                    $idExistente = buscarConvidadoPorNome($pdo, $evento_id, $nome, $tel, $ids_mantidos);
-                    if ($idExistente !== null) {
-                        $pdo->prepare("UPDATE convidados SET nome = ?, faixa_etaria = ?, telefone = ?, confirmado = 1, resposta_rsvp = 'confirmado', mensagem_rsvp = NULL, data_confirmacao = NOW() WHERE id = ? AND evento_id = ?")
-                            ->execute([$nome, $faixa, $tel, $idExistente, $evento_id]);
-                        $ids_mantidos[]   = $idExistente;
-                        $resposta_dados[] = ['id' => $idExistente, 'nome' => $nome, 'faixa_etaria' => $faixa, 'telefone' => $tel];
-                        $atualizou = true;
-                    }
-                }
-
-                // Ainda sem casar: talvez já tenha respondido antes (mesmo nome e telefone) e
-                // esteja reenviando o formulário — evita criar mais uma linha duplicada.
-                if (!$atualizou && $tel !== '') {
-                    $idExistente = buscarConvidadoJaRespondido($pdo, $evento_id, $nome, $tel, $ids_mantidos);
-                    if ($idExistente !== null) {
-                        $pdo->prepare("UPDATE convidados SET nome = ?, faixa_etaria = ?, telefone = ?, confirmado = 1, resposta_rsvp = 'confirmado', mensagem_rsvp = NULL, data_confirmacao = NOW() WHERE id = ? AND evento_id = ?")
-                            ->execute([$nome, $faixa, $tel, $idExistente, $evento_id]);
-                        $ids_mantidos[]   = $idExistente;
-                        $resposta_dados[] = ['id' => $idExistente, 'nome' => $nome, 'faixa_etaria' => $faixa, 'telefone' => $tel];
-                        $atualizou = true;
-                    }
-                }
-
-                if (!$atualizou) {
-                    $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, telefone, confirmado, resposta_rsvp, data_confirmacao) VALUES (?, ?, ?, ?, 1, 'confirmado', NOW())")
-                        ->execute([$evento_id, $nome, $faixa, $tel]);
-                    $novoId = (int)$pdo->lastInsertId();
-                    $ids_mantidos[]   = $novoId;
-                    $resposta_dados[] = ['id' => $novoId, 'nome' => $nome, 'faixa_etaria' => $faixa, 'telefone' => $tel];
-                }
-            }
-
-            // Link específico: acompanhantes já cadastrados que o convidado disse que
-            // NÃO vão comparecer — marca a resposta deles em vez de deixar pendente,
-            // e protege as linhas da limpeza de "ids não reaproveitados" logo abaixo.
-            if ($convidado_travado) {
-                $ids_recusados = array_filter(array_map('intval', $_POST['ids_recusados'] ?? []));
-                foreach ($ids_recusados as $idRecusado) {
-                    $chkRec = $pdo->prepare("SELECT id FROM convidados WHERE id = ? AND evento_id = ? AND convidado_principal_id = ?");
-                    $chkRec->execute([$idRecusado, $evento_id, $convidado_travado['id']]);
-                    if ($chkRec->fetch()) {
-                        $pdo->prepare("UPDATE convidados SET confirmado = 0, resposta_rsvp = 'recusado', data_confirmacao = NOW() WHERE id = ?")
-                            ->execute([$idRecusado]);
-                        $ids_mantidos[] = $idRecusado;
-                    }
-                }
-            }
-
-            if (empty($resposta_dados)) {
-                throw new Exception('validacao:Informe ao menos um nome.');
-            }
-            $resposta_tipo = 'confirmado';
-
-        } elseif ($acao === 'recusar') {
-            $nome  = trim($_POST['nome_responsavel'] ?? '');
-            $msg   = trim($_POST['mensagem_recusa']   ?? '');
-            $idAnt = (int)($_POST['id_anterior_recusa'] ?? 0);
-
-            // Link específico: força a resposta a cair sempre no mesmo convidado.
-            if ($convidado_travado) {
-                $idAnt = (int)$convidado_travado['id'];
-            }
-
-            if ($nome === '') {
-                throw new Exception('validacao:Informe o nome do responsável.');
-            }
-
-            if ($idAnt > 0) {
-                $chk = $pdo->prepare("SELECT id FROM convidados WHERE id = ? AND evento_id = ?");
-                $chk->execute([$idAnt, $evento_id]);
-                if ($chk->fetch()) {
-                    $pdo->prepare("UPDATE convidados SET nome = ?, confirmado = 0, resposta_rsvp = 'recusado', mensagem_rsvp = ?, data_confirmacao = NOW() WHERE id = ? AND evento_id = ?")
-                        ->execute([$nome, $msg !== '' ? $msg : null, $idAnt, $evento_id]);
-                    $ids_mantidos[] = $idAnt;
-                }
-            }
-
-            // Mesmo reforço do fluxo de confirmação: sem id do navegador, tenta casar
-            // por nome (só quando único no evento) antes de criar um registro novo.
-            if (empty($ids_mantidos)) {
-                $idExistente = buscarConvidadoPorNome($pdo, $evento_id, $nome, '', []);
-                if ($idExistente !== null) {
-                    $pdo->prepare("UPDATE convidados SET nome = ?, confirmado = 0, resposta_rsvp = 'recusado', mensagem_rsvp = ?, data_confirmacao = NOW() WHERE id = ? AND evento_id = ?")
-                        ->execute([$nome, $msg !== '' ? $msg : null, $idExistente, $evento_id]);
-                    $ids_mantidos[] = $idExistente;
-                }
-            }
-
-            if (empty($ids_mantidos)) {
-                $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, confirmado, resposta_rsvp, mensagem_rsvp, data_confirmacao) VALUES (?, ?, ?, 0, 'recusado', ?, NOW())")
-                    ->execute([$evento_id, $nome, FAIXAS_ETARIAS[2], $msg !== '' ? $msg : null]);
-                $ids_mantidos[] = (int)$pdo->lastInsertId();
-            }
-
-            $resposta_dados = ['nome' => $nome, 'mensagem' => $msg];
-            $resposta_tipo  = 'recusado';
-
-        } elseif ($acao === 'resposta_especifico') {
-            // Link específico: a resposta do titular e de cada acompanhante é
-            // independente — cada um recebe seu próprio Sim/Não, sem ligação
-            // automática entre eles (o titular pode ir mesmo que o acompanhante não vá, e vice-versa).
-            if (!$convidado_travado) {
-                throw new Exception('validacao:Link inválido.');
-            }
-
-            $idsPermitidos = array_map('intval', array_merge(
-                [$convidado_travado['id']],
-                array_column($acompanhantes_travados, 'id')
-            ));
-            $ids_sim = array_values(array_intersect(array_filter(array_map('intval', $_POST['ids_sim'] ?? [])), $idsPermitidos));
-            $ids_nao = array_values(array_intersect(array_filter(array_map('intval', $_POST['ids_nao'] ?? [])), $idsPermitidos));
-
-            if (empty($ids_sim) && empty($ids_nao)) {
-                throw new Exception('validacao:Nenhuma resposta recebida.');
-            }
-
-            $mapaNomes = [(int)$convidado_travado['id'] => $convidado_travado['nome']];
-            foreach ($acompanhantes_travados as $a) { $mapaNomes[(int)$a['id']] = $a['nome']; }
-
-            foreach ($ids_sim as $id) {
-                $pdo->prepare("UPDATE convidados SET confirmado = 1, resposta_rsvp = 'confirmado', mensagem_rsvp = NULL, data_confirmacao = NOW() WHERE id = ? AND evento_id = ?")
-                    ->execute([$id, $evento_id]);
-                $ids_mantidos[] = $id;
-            }
-            foreach ($ids_nao as $id) {
-                $pdo->prepare("UPDATE convidados SET confirmado = 0, resposta_rsvp = 'recusado', mensagem_rsvp = NULL, data_confirmacao = NOW() WHERE id = ? AND evento_id = ?")
-                    ->execute([$id, $evento_id]);
-                $ids_mantidos[] = $id;
-            }
-
-            $resposta_dados = [
-                'sim' => array_map(fn($id) => ['id' => $id, 'nome' => $mapaNomes[$id] ?? ''], $ids_sim),
-                'nao' => array_map(fn($id) => ['id' => $id, 'nome' => $mapaNomes[$id] ?? ''], $ids_nao),
-            ];
-            $resposta_tipo = 'misto';
-
-        } else {
+        if ($acao !== 'resposta_especifico') {
             throw new Exception('validacao:Ação inválida.');
         }
 
-        // Remove registros antigos desta mesma "resposta" que não foram reaproveitados
-        $ids_remover = array_diff($ids_antigos, $ids_mantidos);
-        if (!empty($ids_remover)) {
-            $ph     = implode(',', array_fill(0, count($ids_remover), '?'));
-            $params = array_merge(array_values($ids_remover), [$evento_id]);
-            $pdo->prepare("DELETE FROM convidados WHERE id IN ($ph) AND evento_id = ?")->execute($params);
+        // A resposta do titular e de cada acompanhante é independente — cada
+        // um recebe seu próprio Sim/Não, sem ligação automática entre eles
+        // (o titular pode ir mesmo que o acompanhante não vá, e vice-versa).
+        $idsPermitidos = array_map('intval', array_merge(
+            [$convidado_travado['id']],
+            array_column($acompanhantes_travados, 'id')
+        ));
+        $ids_sim = array_values(array_intersect(array_filter(array_map('intval', $_POST['ids_sim'] ?? [])), $idsPermitidos));
+        $ids_nao = array_values(array_intersect(array_filter(array_map('intval', $_POST['ids_nao'] ?? [])), $idsPermitidos));
+
+        if (empty($ids_sim) && empty($ids_nao)) {
+            throw new Exception('validacao:Nenhuma resposta recebida.');
         }
+
+        $mapaNomes = [(int)$convidado_travado['id'] => $convidado_travado['nome']];
+        foreach ($acompanhantes_travados as $a) { $mapaNomes[(int)$a['id']] = $a['nome']; }
+
+        foreach ($ids_sim as $id) {
+            $pdo->prepare("UPDATE convidados SET confirmado = 1, resposta_rsvp = 'confirmado', mensagem_rsvp = NULL, data_confirmacao = NOW() WHERE id = ? AND evento_id = ?")
+                ->execute([$id, $evento_id]);
+        }
+        foreach ($ids_nao as $id) {
+            $pdo->prepare("UPDATE convidados SET confirmado = 0, resposta_rsvp = 'recusado', mensagem_rsvp = NULL, data_confirmacao = NOW() WHERE id = ? AND evento_id = ?")
+                ->execute([$id, $evento_id]);
+        }
+
+        $resposta_dados = [
+            'sim' => array_map(fn($id) => ['id' => $id, 'nome' => $mapaNomes[$id] ?? ''], $ids_sim),
+            'nao' => array_map(fn($id) => ['id' => $id, 'nome' => $mapaNomes[$id] ?? ''], $ids_nao),
+        ];
+        $resposta_tipo = 'misto';
 
         $pdo->commit();
         $sucesso = true;
@@ -381,7 +251,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 ?>
 <!DOCTYPE html>
-<html lang="pt-br" data-view="<?= $sucesso ? 'sucesso' : 'auto' ?>">
+<html lang="pt-br" data-view="<?= $sucesso ? 'sucesso' : (isset($_GET['_preview']) ? 'escolha' : 'auto') ?>">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -392,7 +262,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <script>
         // Decide qual "view" mostrar antes da página pintar, evitando flash de conteúdo errado.
         (function () {
-            var chave = 'rsvp_evento_<?= $evento_id ?><?= $convidado_travado ? '_t' . (int)$convidado_travado['id'] : '' ?>';
+            var chave = 'rsvp_evento_<?= $evento_id ?>_t<?= (int)$convidado_travado['id'] ?>';
             var salvo = null;
             try { salvo = JSON.parse(localStorage.getItem(chave)); } catch (e) {}
             var modo = document.documentElement.getAttribute('data-view');
@@ -405,6 +275,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             --vinho-1: <?= $cor_convite_1 ?>;
             --vinho-2: <?= $cor_convite_2 ?>;
             --vinho-3: <?= $cor_convite_3 ?>;
+            --btn-sim-1: <?= $cor_btn_sim_1 ?>;
+            --btn-sim-2: <?= $cor_btn_sim_2 ?>;
+            --btn-nao: <?= $cor_btn_nao ?>;
+            --btn-nao-borda: <?= $cor_btn_nao_borda ?>;
         }
         body {
             min-height: 100vh;
@@ -446,8 +320,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .view { display: none; }
         html[data-view="escolha"]        #view-escolha        { display: block; }
         html[data-view="resumo"]         #view-resumo          { display: block; }
-        html[data-view="form-confirmar"] #view-form-confirmar  { display: block; }
-        html[data-view="form-recusar"]   #view-form-recusar    { display: block; }
         html[data-view="sucesso"]        #view-sucesso         { display: block; }
         html[data-view="especifico-acompanhantes"] #view-especifico-acompanhantes { display: block; }
 
@@ -458,8 +330,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         .btn-escolha:hover { transform: translateY(-2px); }
         .btn-escolha small { display: block; font-weight: 500; opacity: .85; font-size: .78rem; margin-top: .15rem; }
-        .btn-sim { background: linear-gradient(135deg, #16a34a, #22c55e); color: #fff; }
-        .btn-nao { background: #f8fafc; color: #64748b; border: 1.5px solid #e2e8f0 !important; }
+        .btn-sim { background: linear-gradient(135deg, var(--btn-sim-1), var(--btn-sim-2)); color: #fff; }
+        .btn-nao { background: #f8fafc; color: var(--btn-nao); border: 1.5px solid var(--btn-nao-borda) !important; }
 
         .texto-convite-rsvp {
             font-size: clamp(.85rem, 4vw, .95rem);
@@ -519,26 +391,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <!-- ESCOLHA INICIAL -->
             <div class="view" id="view-escolha">
                 <p class="text-center text-muted mb-4 texto-convite-rsvp">
-                    <?php if ($convidado_travado): $primeiro_nome = trim(explode(' ', trim($convidado_travado['nome']))[0]); ?>
+                    <?php if (!empty($evento['mensagem_convite'])): ?>
+                        <?= nl2br(htmlspecialchars($evento['mensagem_convite'], ENT_QUOTES, 'UTF-8')) ?>
+                    <?php else: $primeiro_nome = trim(explode(' ', trim($convidado_travado['nome']))[0]); ?>
                         Olá, <?= htmlspecialchars($primeiro_nome, ENT_QUOTES, 'UTF-8') ?>! Contamos com a sua presença! Você poderá comparecer ao nosso grande dia?
-                    <?php else: ?>
-                        Contamos com a sua presença! Você e sua família poderão comparecer ao nosso grande dia?
                     <?php endif; ?>
                 </p>
                 <div class="d-flex flex-column gap-3">
                     <button type="button" class="btn-escolha btn-sim" id="btn-ir-confirmar">
-                        <i class="bi bi-emoji-heart-eyes-fill me-2"></i> Sim, <?= $convidado_travado ? 'poderei' : 'poderemos' ?> ir! 🎉
-                        <small><?= $convidado_travado ? 'Confirmar sua presença' : 'Confirmar presença da família' ?></small>
+                        <i class="bi bi-emoji-heart-eyes-fill me-2"></i> Sim, poderei ir! 🎉
+                        <small>Confirmar sua presença</small>
                     </button>
                     <button type="button" class="btn-escolha btn-nao" id="btn-ir-recusar">
-                        <i class="bi bi-emoji-frown me-2"></i> Não <?= $convidado_travado ? 'poderei' : 'poderemos' ?> ir
+                        <i class="bi bi-emoji-frown me-2"></i> Não poderei ir
                         <small>Avisar os noivos que não poderá comparecer</small>
                     </button>
                 </div>
             </div>
 
-            <?php if ($convidado_travado): ?>
-            <!-- LINK ESPECÍFICO — pergunta individual sobre cada acompanhante já cadastrado.
+            <!-- Pergunta individual sobre cada acompanhante já cadastrado.
                  Nome/telefone não são pedidos: o link já identifica o convidado direto. -->
             <?php if (!empty($acompanhantes_travados)): ?>
             <div class="view" id="view-especifico-acompanhantes">
@@ -569,101 +440,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <?php endif; ?>
 
             <form id="form-especifico-final" method="POST" action="" hidden></form>
-            <?php else: ?>
-            <!-- FORMULÁRIO: CONFIRMAR (link geral) -->
-            <div class="view" id="view-form-confirmar">
-                <p class="text-center text-muted mb-4">Que alegria! Preencha o nome de todos os membros da família que irão ao evento.</p>
-                <form method="POST" action="" id="form-confirmar">
-                    <input type="hidden" name="acao" value="confirmar">
-                    <input type="hidden" name="ids_todos_anteriores" id="ids-todos-anteriores-conf" value="">
-
-                    <div id="container-familia" class="d-flex flex-column gap-2 mb-3">
-                        <div class="familiar-linha row g-2 align-items-end">
-                            <input type="hidden" name="id_anterior[]" class="campo-id-anterior" value="">
-                            <div class="col-md-6">
-                                <label class="form-label small fw-bold">Nome Completo</label>
-                                <input type="text" name="nome_convidado[]" class="form-control campo-nome" placeholder="Ex: João Silva" required>
-                            </div>
-                            <div class="col-md-3">
-                                <label class="form-label small fw-bold">Faixa Etária</label>
-                                <select name="faixa_etaria[]" class="form-select campo-faixa">
-                                    <option value="Criança de Colo (0-5 anos)">Criança de Colo (0-5 anos)</option>
-                                    <option value="Criança (6-10 anos)">Criança (6-10 anos)</option>
-                                    <option value="Adulto (11+ anos)" selected>Adulto (11+ anos)</option>
-                                </select>
-                            </div>
-                            <div class="col-md-3">
-                                <label class="form-label small fw-bold">Telefone</label>
-                                <input type="text" name="telefone_convidado[]" class="form-control campo-telefone" placeholder="(00) 00000-0000">
-                            </div>
-                        </div>
-                    </div>
-
-                    <button type="button" class="btn btn-outline-secondary btn-sm mb-4" id="btn-add-familiar">
-                        <i class="bi bi-person-plus-fill"></i> Adicionar Acompanhante / Familiar
-                    </button>
-
-                    <div class="d-grid">
-                        <button type="submit" class="btn btn-success btn-lg fw-bold">
-                            <i class="bi bi-check-circle-fill me-1"></i> Confirmar Nossa Presença
-                        </button>
-                    </div>
-                    <div class="text-center mt-3">
-                        <a href="#" class="link-trocar" id="link-mudar-para-recusar">Na verdade, não poderemos comparecer</a>
-                    </div>
-                </form>
-            </div>
-            <?php endif; ?>
-
-            <!-- FORMULÁRIO: RECUSAR -->
-            <div class="view" id="view-form-recusar">
-                <p class="text-center text-muted mb-4">Sentiremos sua falta! Se puder, deixe uma mensagem carinhosa para os noivos.</p>
-                <form method="POST" action="" id="form-recusar">
-                    <input type="hidden" name="acao" value="recusar">
-                    <input type="hidden" name="ids_todos_anteriores" id="ids-todos-anteriores-rec" value="">
-                    <input type="hidden" name="id_anterior_recusa" id="id-anterior-recusa" value="">
-
-                    <div class="mb-3">
-                        <label class="form-label small fw-bold">Seu nome</label>
-                        <input type="text" name="nome_responsavel" id="campo-nome-responsavel" class="form-control" placeholder="Ex: João Silva" required>
-                    </div>
-                    <div class="mb-4">
-                        <label class="form-label small fw-bold">Mensagem para os noivos (opcional)</label>
-                        <textarea name="mensagem_recusa" id="campo-mensagem-recusa" class="form-control" rows="3" placeholder="Deixe um recadinho carinhoso..."></textarea>
-                    </div>
-
-                    <div class="d-grid">
-                        <button type="submit" class="btn btn-dark btn-lg fw-bold">
-                            <i class="bi bi-send-fill me-1"></i> Enviar Resposta
-                        </button>
-                    </div>
-                    <div class="text-center mt-3">
-                        <a href="#" class="link-trocar" id="link-mudar-para-confirmar">Na verdade, poderemos comparecer!</a>
-                    </div>
-                </form>
-            </div>
 
             <!-- SUCESSO -->
             <div class="view" id="view-sucesso">
-                <?php if ($resposta_tipo === 'confirmado'): ?>
-                    <div class="text-center py-3">
-                        <i class="bi bi-check-circle-fill text-success" style="font-size: 4rem;"></i>
-                        <h4 class="mt-3 text-success fw-bold">Presença Confirmada!</h4>
-                        <p class="text-muted">Registramos a presença de:</p>
-                        <div class="mb-3">
-                            <?php foreach ($resposta_dados as $p): ?>
-                                <span class="resumo-nome-chip"><i class="bi bi-person-fill"></i> <?= htmlspecialchars($p['nome'], ENT_QUOTES, 'UTF-8') ?></span>
-                            <?php endforeach; ?>
-                        </div>
-                        <p class="text-muted small">Mal podemos esperar para celebrar com vocês! 💍</p>
-                    </div>
-                <?php elseif ($resposta_tipo === 'recusado'): ?>
-                    <div class="text-center py-3">
-                        <i class="bi bi-heart text-danger" style="font-size: 4rem;"></i>
-                        <h4 class="mt-3 fw-bold">Resposta registrada</h4>
-                        <p class="text-muted">Obrigado por avisar, <?= htmlspecialchars($resposta_dados['nome'] ?? '', ENT_QUOTES, 'UTF-8') ?>. Sentiremos sua falta!</p>
-                    </div>
-                <?php elseif ($resposta_tipo === 'misto'): ?>
+                <?php if ($resposta_tipo === 'misto'): ?>
                     <div class="text-center py-3">
                         <i class="bi bi-check-circle-fill text-success" style="font-size: 4rem;"></i>
                         <h4 class="mt-3 text-success fw-bold">Respostas registradas!</h4>
@@ -720,13 +500,12 @@ const RESPOSTA_SERVIDOR = <?= json_encode(['tipo' => $resposta_tipo, 'dados' => 
 <?php endif; ?>
 
 <script>
-const CHAVE_LS  = 'rsvp_evento_<?= $evento_id ?><?= $convidado_travado ? '_t' . (int)$convidado_travado['id'] : '' ?>';
-const CONVIDADO_TRAVADO = <?= json_encode($convidado_travado ? [
+const CHAVE_LS  = 'rsvp_evento_<?= $evento_id ?>_t<?= (int)$convidado_travado['id'] ?>';
+const CONVIDADO_TRAVADO = <?= json_encode([
     'id'       => (int)$convidado_travado['id'],
     'nome'     => $convidado_travado['nome'],
     'telefone' => $convidado_travado['telefone'],
-] : null, JSON_UNESCAPED_UNICODE) ?>;
-let idsAnterioresGlobal = [];
+], JSON_UNESCAPED_UNICODE) ?>;
 
 function carregarLocal() {
     try { return JSON.parse(localStorage.getItem(CHAVE_LS)); } catch (e) { return null; }
@@ -740,95 +519,27 @@ function mudarView(nome) {
     document.documentElement.setAttribute('data-view', nome);
 }
 
-function idsDoSalvo(salvo) {
-    if (!salvo) return [];
-    if (salvo.tipo === 'confirmado') return (salvo.dados || []).map(p => p.id).filter(Boolean);
-    if (salvo.tipo === 'recusado' && salvo.dados && salvo.dados.id) return [salvo.dados.id];
-    if (salvo.tipo === 'misto') return [...(salvo.dados.sim || []), ...(salvo.dados.nao || [])].map(p => p.id).filter(Boolean);
-    return [];
-}
-
 function montarResumo(salvo) {
     const el = document.getElementById('resumo-conteudo');
-    if (!salvo) { el.innerHTML = ''; return; }
-    if (salvo.tipo === 'confirmado') {
-        const chips = (salvo.dados || []).map(p =>
-            `<span class="resumo-nome-chip"><i class="bi bi-person-fill"></i> ${escapeHtml(p.nome)}</span>`
-        ).join('');
-        el.innerHTML = `<p>Você confirmou presença de:</p><div>${chips}</div>`;
-    } else if (salvo.tipo === 'recusado') {
-        el.innerHTML = `<p>Você avisou que <strong>${escapeHtml(salvo.dados.nome || '')}</strong> não poderá comparecer.</p>`;
-    } else if (salvo.tipo === 'misto') {
-        let html = '';
-        const sim = salvo.dados.sim || [];
-        const nao = salvo.dados.nao || [];
-        if (sim.length) {
-            const chips = sim.map(p => `<span class="resumo-nome-chip"><i class="bi bi-person-fill"></i> ${escapeHtml(p.nome)}</span>`).join('');
-            html += `<p>Vão comparecer:</p><div>${chips}</div>`;
-        }
-        if (nao.length) {
-            const chips2 = nao.map(p => `<span class="resumo-nome-chip" style="background:#f1f5f9;color:#64748b;border-color:#e2e8f0;"><i class="bi bi-person-fill"></i> ${escapeHtml(p.nome)}</span>`).join('');
-            html += `<p class="mt-2">Não vão comparecer:</p><div>${chips2}</div>`;
-        }
-        el.innerHTML = html;
+    if (!salvo || salvo.tipo !== 'misto') { el.innerHTML = ''; return; }
+    let html = '';
+    const sim = salvo.dados.sim || [];
+    const nao = salvo.dados.nao || [];
+    if (sim.length) {
+        const chips = sim.map(p => `<span class="resumo-nome-chip"><i class="bi bi-person-fill"></i> ${escapeHtml(p.nome)}</span>`).join('');
+        html += `<p>Vão comparecer:</p><div>${chips}</div>`;
     }
+    if (nao.length) {
+        const chips2 = nao.map(p => `<span class="resumo-nome-chip" style="background:#f1f5f9;color:#64748b;border-color:#e2e8f0;"><i class="bi bi-person-fill"></i> ${escapeHtml(p.nome)}</span>`).join('');
+        html += `<p class="mt-2">Não vão comparecer:</p><div>${chips2}</div>`;
+    }
+    el.innerHTML = html;
 }
 
 function escapeHtml(str) {
     const d = document.createElement('div');
     d.appendChild(document.createTextNode(str || ''));
     return d.innerHTML;
-}
-
-/* ---- Repetidor de familiares (link geral) ---- */
-function novaLinhaFamiliar(dados) {
-    dados = dados || {};
-    const div = document.createElement('div');
-    div.className = 'familiar-linha row g-2 align-items-end';
-    div.innerHTML = `
-        <input type="hidden" name="id_anterior[]" class="campo-id-anterior" value="${dados.id || ''}">
-        <div class="col-md-5">
-            <label class="form-label small fw-bold text-secondary">Nome do Acompanhante</label>
-            <input type="text" name="nome_convidado[]" class="form-control campo-nome" placeholder="Ex: Maria Silva" required>
-        </div>
-        <div class="col-md-3">
-            <label class="form-label small fw-bold text-secondary">Faixa Etária</label>
-            <select name="faixa_etaria[]" class="form-select campo-faixa">
-                <option value="Criança de Colo (0-5 anos)">Criança de Colo (0-5 anos)</option>
-                <option value="Criança (6-10 anos)">Criança (6-10 anos)</option>
-                <option value="Adulto (11+ anos)" selected>Adulto (11+ anos)</option>
-            </select>
-        </div>
-        <div class="col-md-3">
-            <label class="form-label small fw-bold text-secondary">Telefone (Opcional)</label>
-            <input type="text" name="telefone_convidado[]" class="form-control campo-telefone" placeholder="(00) 00000-0000">
-        </div>
-        <div class="col-md-1 text-end">
-            <button type="button" class="btn btn-outline-danger btn-sm w-100 btn-remover-familiar">
-                <i class="bi bi-trash-fill"></i>
-            </button>
-        </div>
-    `;
-    div.querySelector('.campo-nome').value     = dados.nome || '';
-    div.querySelector('.campo-faixa').value    = dados.faixa_etaria || 'Adulto (11+ anos)';
-    div.querySelector('.campo-telefone').value = dados.telefone || '';
-    return div;
-}
-
-document.getElementById('btn-add-familiar')?.addEventListener('click', () => {
-    document.getElementById('container-familia').appendChild(novaLinhaFamiliar());
-});
-
-document.getElementById('container-familia')?.addEventListener('click', function (e) {
-    const btn = e.target.closest('.btn-remover-familiar');
-    if (btn) btn.closest('.familiar-linha').remove();
-});
-
-function preencherFormConfirmar(lista) {
-    const container = document.getElementById('container-familia');
-    if (!container) return;
-    container.innerHTML = '';
-    (lista && lista.length ? lista : [{}]).forEach(p => container.appendChild(novaLinhaFamiliar(p)));
 }
 
 /* ---- Link específico: a resposta do titular e de cada acompanhante é
@@ -903,23 +614,13 @@ function enviarRespostaEspecifico() {
 }
 
 /* ---- Navegação entre telas ---- */
-document.getElementById('btn-ir-confirmar').addEventListener('click', () => {
-    if (CONVIDADO_TRAVADO) { registrarRespostaPrimario('sim'); } else { mudarView('form-confirmar'); }
-});
-document.getElementById('btn-ir-recusar').addEventListener('click', () => {
-    if (CONVIDADO_TRAVADO) { registrarRespostaPrimario('nao'); } else { mudarView('form-recusar'); }
-});
+document.getElementById('btn-ir-confirmar').addEventListener('click', () => registrarRespostaPrimario('sim'));
+document.getElementById('btn-ir-recusar').addEventListener('click', () => registrarRespostaPrimario('nao'));
 
-document.getElementById('link-mudar-para-recusar')?.addEventListener('click', e => { e.preventDefault(); mudarView('form-recusar'); });
 document.getElementById('link-especifico-mudar-para-recusar')?.addEventListener('click', e => { e.preventDefault(); mudarView('escolha'); });
-document.getElementById('link-mudar-para-confirmar').addEventListener('click', e => {
-    e.preventDefault();
-    if (CONVIDADO_TRAVADO) { registrarRespostaPrimario('sim'); } else { mudarView('form-confirmar'); }
-});
 document.getElementById('link-alterar-do-sucesso')?.addEventListener('click', e => {
     e.preventDefault();
-    const salvo = carregarLocal();
-    aplicarEdicao(salvo);
+    aplicarEdicao(carregarLocal());
 });
 
 document.getElementById('btn-alterar-resposta').addEventListener('click', () => {
@@ -927,64 +628,25 @@ document.getElementById('btn-alterar-resposta').addEventListener('click', () => 
 });
 
 function aplicarEdicao(salvo) {
-    idsAnterioresGlobal = idsDoSalvo(salvo);
-    const idsStr = idsAnterioresGlobal.join(',');
-    const campoIdsConf = document.getElementById('ids-todos-anteriores-conf');
-    if (campoIdsConf) campoIdsConf.value = idsStr;
-    document.getElementById('ids-todos-anteriores-rec').value = idsStr;
+    const idsSimAntes = (salvo && salvo.tipo === 'misto' ? (salvo.dados.sim || []) : []).map(p => String(p.id));
+    const idsNaoAntes = (salvo && salvo.tipo === 'misto' ? (salvo.dados.nao || []) : []).map(p => String(p.id));
+    const temAcompanhantes = document.querySelectorAll('.pergunta-acompanhante').length > 0;
 
-    if (salvo && salvo.tipo === 'recusado') {
-        document.getElementById('id-anterior-recusa').value = salvo.dados.id || '';
-        document.getElementById('campo-nome-responsavel').value = salvo.dados.nome || '';
-        document.getElementById('campo-mensagem-recusa').value  = salvo.dados.mensagem || '';
-        mudarView('form-recusar');
-        return;
-    }
+    respostaPrimarioTravado = idsNaoAntes.includes(String(CONVIDADO_TRAVADO.id)) ? 'nao' : 'sim';
 
-    if (CONVIDADO_TRAVADO) {
-        const idsSimAntes = (salvo && salvo.tipo === 'misto' ? (salvo.dados.sim || []) : []).map(p => String(p.id));
-        const idsNaoAntes = (salvo && salvo.tipo === 'misto' ? (salvo.dados.nao || []) : []).map(p => String(p.id));
-        const temAcompanhantes = document.querySelectorAll('.pergunta-acompanhante').length > 0;
+    document.querySelectorAll('.pergunta-acompanhante').forEach(l => {
+        delete l.dataset.resposta;
+        l.querySelector('.btn-acomp-sim').classList.remove('btn-success');
+        l.querySelector('.btn-acomp-sim').classList.add('btn-outline-success');
+        l.querySelector('.btn-acomp-nao').classList.remove('btn-secondary');
+        l.querySelector('.btn-acomp-nao').classList.add('btn-outline-secondary');
+        if (idsSimAntes.includes(l.dataset.id)) l.querySelector('.btn-acomp-sim').click();
+        else if (idsNaoAntes.includes(l.dataset.id)) l.querySelector('.btn-acomp-nao').click();
+    });
 
-        respostaPrimarioTravado = idsNaoAntes.includes(String(CONVIDADO_TRAVADO.id)) ? 'nao' : 'sim';
-
-        document.querySelectorAll('.pergunta-acompanhante').forEach(l => {
-            delete l.dataset.resposta;
-            l.querySelector('.btn-acomp-sim').classList.remove('btn-success');
-            l.querySelector('.btn-acomp-sim').classList.add('btn-outline-success');
-            l.querySelector('.btn-acomp-nao').classList.remove('btn-secondary');
-            l.querySelector('.btn-acomp-nao').classList.add('btn-outline-secondary');
-            if (idsSimAntes.includes(l.dataset.id)) l.querySelector('.btn-acomp-sim').click();
-            else if (idsNaoAntes.includes(l.dataset.id)) l.querySelector('.btn-acomp-nao').click();
-        });
-
-        // Sem acompanhantes não há nada pra reeditar além do próprio Sim/Não.
-        mudarView(temAcompanhantes ? 'especifico-acompanhantes' : 'escolha');
-        return;
-    }
-
-    preencherFormConfirmar(salvo && salvo.tipo === 'confirmado' ? salvo.dados : []);
-    mudarView('form-confirmar');
+    // Sem acompanhantes não há nada pra reeditar além do próprio Sim/Não.
+    mudarView(temAcompanhantes ? 'especifico-acompanhantes' : 'escolha');
 }
-
-/* ---- Ao enviar, garante que os ids antigos vão junto (mesmo sem passar por "alterar") ---- */
-/* Trava o botão de envio pra evitar duplo clique/reenvio criando registros duplicados. */
-function travarEnvio(form) {
-    const btn = form.querySelector('button[type="submit"]');
-    if (btn) {
-        btn.disabled = true;
-        btn.dataset.textoOriginal = btn.innerHTML;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Enviando...';
-    }
-}
-document.getElementById('form-confirmar')?.addEventListener('submit', function (e) {
-    document.getElementById('ids-todos-anteriores-conf').value = idsAnterioresGlobal.join(',');
-    travarEnvio(this);
-});
-document.getElementById('form-recusar').addEventListener('submit', function (e) {
-    document.getElementById('ids-todos-anteriores-rec').value = idsAnterioresGlobal.join(',');
-    travarEnvio(this);
-});
 
 /* ---- Estado inicial da página ---- */
 (function () {
@@ -994,7 +656,6 @@ document.getElementById('form-recusar').addEventListener('submit', function (e) 
         salvarLocal(RESPOSTA_SERVIDOR);
     <?php else: ?>
         if (salvoAntes) {
-            idsAnterioresGlobal = idsDoSalvo(salvoAntes);
             montarResumo(salvoAntes);
         }
     <?php endif; ?>

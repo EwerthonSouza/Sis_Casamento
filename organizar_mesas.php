@@ -48,7 +48,7 @@ if ($eh_noivos) {
 // Essa página faz um monte de chamadas AJAX (arrastar convidado, mover mesa,
 // confirmar presença...) e cada uma reexecutava CREATE TABLE + todos os checks
 // de coluna abaixo. Uma vez confirmado, marca em disco e pula tudo isso.
-if (!schema_ja_verificado('organizar_mesas')) {
+if (!schema_ja_verificado('organizar_mesas_v2')) {
     try {
         $pdo->exec("CREATE TABLE IF NOT EXISTS mesas (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -63,11 +63,13 @@ if (!schema_ja_verificado('organizar_mesas')) {
         "SELECT mesa_id FROM convidados LIMIT 1"                => "ALTER TABLE convidados ADD COLUMN mesa_id INT NULL",
         "SELECT convidado_principal_id FROM convidados LIMIT 1" => "ALTER TABLE convidados ADD COLUMN convidado_principal_id INT NULL",
         "SELECT ordem FROM mesas LIMIT 1"                       => "ALTER TABLE mesas ADD COLUMN ordem INT DEFAULT 0",
+        "SELECT pos_x FROM mesas LIMIT 1"                       => "ALTER TABLE mesas ADD COLUMN pos_x FLOAT NULL",
+        "SELECT pos_y FROM mesas LIMIT 1"                       => "ALTER TABLE mesas ADD COLUMN pos_y FLOAT NULL",
     ];
     foreach ($schema_checks as $check => $alter) {
         try { $pdo->query($check); } catch (Exception $e) { try { $pdo->exec($alter); } catch (Exception $x) {} }
     }
-    marcar_schema_verificado('organizar_mesas');
+    marcar_schema_verificado('organizar_mesas_v2');
 }
 
 const FAIXAS_ETARIAS_CONVIDADOS = ['Adulto (11+ anos)', 'Criança (6-10 anos)', 'Criança de Colo (0-5 anos)'];
@@ -183,6 +185,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             foreach ($ordem as $i => $id) $st->execute([$i, (int)$id, $evento_id]);
         }
         json_out(['ok' => true]);
+    }
+
+    // AJAX: Salvar posição (x/y em %) da mesa no mapa arrastável
+    if (isset($_POST['salvar_posicao_mesa'])) {
+        $mid = (int)($_POST['mesa_id'] ?? 0);
+        $px  = max(0, min(100, (float)($_POST['pos_x'] ?? 0)));
+        $py  = max(0, min(100, (float)($_POST['pos_y'] ?? 0)));
+        $pdo->prepare("UPDATE mesas SET pos_x = ?, pos_y = ? WHERE id = ? AND evento_id = ?")
+            ->execute([$px, $py, $mid, $evento_id]);
+        json_out(['ok' => true]);
+    }
+
+    // AJAX: ocupação atual de cada mesa — usado pra atualizar o Mapa de Mesas
+    // toda vez que ele é aberto, sem precisar recarregar a página.
+    if (isset($_POST['obter_ocupacao_mesas'])) {
+        $stM = $pdo->prepare("SELECT id, capacidade FROM mesas WHERE evento_id = ?");
+        $stM->execute([$evento_id]);
+        $mesasOcup = $stM->fetchAll(PDO::FETCH_ASSOC);
+
+        $stC = $pdo->prepare("SELECT mesa_id, COUNT(*) AS qtd FROM convidados WHERE evento_id = ? AND mesa_id IS NOT NULL GROUP BY mesa_id");
+        $stC->execute([$evento_id]);
+        $porMesa = [];
+        foreach ($stC->fetchAll(PDO::FETCH_ASSOC) as $r) $porMesa[$r['mesa_id']] = (int)$r['qtd'];
+
+        $out = [];
+        foreach ($mesasOcup as $m) {
+            $cap  = (int)$m['capacidade'];
+            $ocup = $porMesa[$m['id']] ?? 0;
+            if ($ocup === 0)          $cor = '#94a3b8';
+            elseif ($ocup < $cap * .75) $cor = '#10b981';
+            elseif ($ocup < $cap)     $cor = '#f59e0b';
+            else                      $cor = '#ef4444';
+            $out[] = ['id' => (int)$m['id'], 'ocup' => $ocup, 'cap' => $cap, 'cor' => $cor];
+        }
+        json_out(['ok' => true, 'mesas' => $out]);
     }
 
     // 1. Adicionar Mesa
@@ -498,33 +535,37 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     #overlay .spinner-border { width: 1.1rem; height: 1.1rem; border-width: 2px; }
 
     .hdr { background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); border-radius: var(--radius); }
-    .stat {
-      background: var(--color-primary-light); border: 1px solid rgba(0,0,0,.08);
-      border-radius: var(--radius); padding: .85rem 1rem; color: var(--color-primary-dark);
-      display: flex; align-items: center; gap: .75rem;
-      transition: box-shadow .2s ease, transform .15s ease;
-    }
-    .stat:hover { box-shadow: 0 6px 16px rgba(0,0,0,.14); transform: translateY(-2px); }
-    .stat-icon {
-      width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
-      display: flex; align-items: center; justify-content: center;
-      background: rgba(255,255,255,.7); font-size: 1.05rem;
-    }
-    .stat .val { font-size: 1.75rem; font-weight: 700; line-height: 1; }
-    .stat .lbl { font-size: .65rem; opacity: .7; text-transform: uppercase; letter-spacing: .05em; margin-top: .3rem; }
 
-    @media (min-width: 768px) {
-      .stat { position: relative; justify-content: center; }
-      .stat-icon { position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); }
-      .stat-body { text-align: center; }
+    .stat-card {
+      background: #fff; border: 1px solid rgba(15,23,42,.06); border-left: 4px solid transparent;
+      border-radius: var(--radius); padding: .9rem 1rem; height: 100%;
+      display: flex; align-items: center; gap: .75rem;
+      transition: box-shadow .15s, transform .15s;
     }
+    .stat-card:hover { box-shadow: 0 .5rem 1.2rem rgba(15,23,42,.08); transform: translateY(-2px); }
+    .stat-card .stat-icon {
+      width: 40px; height: 40px; border-radius: 12px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center; font-size: 1.1rem;
+    }
+    .stat-card .val { font-size: 1.45rem; font-weight: 700; line-height: 1; }
+    .stat-card .lbl { font-size: .65rem; color: #94a3b8; text-transform: uppercase; letter-spacing: .05em; margin-top: .25rem; }
+
+    .stat-card.stat-total       { border-left-color: var(--color-primary); }
+    .stat-card.stat-total       .stat-icon { background: var(--color-primary-light); color: var(--color-primary-dark); }
+    .stat-card.stat-confirmado  { border-left-color: #10b981; }
+    .stat-card.stat-confirmado  .stat-icon { background: #ecfdf5; color: #047857; }
+    .stat-card.stat-recusado    { border-left-color: #94a3b8; }
+    .stat-card.stat-recusado    .stat-icon { background: #f8fafc; color: #64748b; }
+    .stat-card.stat-sem-mesa    { border-left-color: #ef4444; }
+    .stat-card.stat-sem-mesa    .stat-icon { background: #fef2f2; color: #dc2626; }
+    .stat-card.stat-livres-ok      { border-left-color: #10b981; }
+    .stat-card.stat-livres-ok      .stat-icon { background: #ecfdf5; color: #047857; }
+    .stat-card.stat-livres-warn    { border-left-color: #f59e0b; }
+    .stat-card.stat-livres-warn    .stat-icon { background: #fffbeb; color: #b45309; }
+    .stat-card.stat-livres-danger  { border-left-color: #ef4444; }
+    .stat-card.stat-livres-danger  .stat-icon { background: #fef2f2; color: #dc2626; }
 
     @media (max-width: 767.98px) {
-      .stat { flex-direction: column; align-items: flex-start; gap: 0; padding: .75rem; }
-      .stat-icon { width: 26px; height: 26px; font-size: .75rem; border-radius: 7px; }
-      .stat-body { width: 100%; text-align: center; }
-      .stat-body .val { margin-top: -1rem; }
-
       .titulo-mesas-wrap { width: 100%; text-align: center; }
       .header-actions-mesas { justify-content: center; width: 100%; }
       .header-actions-mesas .btn-nova-mesa        { order: 1; }
@@ -568,6 +609,15 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     .conv-item:hover      { background: #f0f9ff !important; }
     .conv-item.recusado:hover { background: #fff !important; }
 
+    /* min-w-0 não existe no Bootstrap padrão — sem isso, o título da mesa
+       (flex item) nunca encolhe abaixo do próprio conteúdo, então um nome
+       de mesa muito grande empurra os botões de ação (editar/adicionar/
+       excluir) pra fora da largura visível do card, "sumindo" com eles. */
+    .mesa-card .min-w-0 { min-width: 0; }
+    /* Nome da mesa sempre aparece por inteiro — quebra em várias linhas em
+       vez de truncar com "...", já que os botões agora ficam garantidos
+       (flex-shrink:0) e não dependem mais do título encolher pra caber. */
+    .nome-mesa-completo { white-space: normal; overflow-wrap: anywhere; line-height: 1.25; }
     .mesa-card { border-radius: var(--radius) !important; border: 1px solid #e2e8f0 !important; transition: box-shadow .2s, border-color .3s; }
     .mesa-card:hover { box-shadow: 0 .5rem 1.5rem rgba(0,0,0,.1) !important; }
     .mesa-card.s-empty { border-top: 3px solid #94a3b8 !important; }
@@ -604,6 +654,49 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     .drop-empty { border: 2px dashed #cbd5e1; border-radius: 8px; padding: 1rem .75rem; text-align: center; color: #94a3b8; font-size: .74rem; pointer-events: none; }
     .legend-dot { display: inline-block; width: 11px; height: 11px; border-radius: 2px; vertical-align: middle; }
 
+    /* Mapa de mesas arrastável */
+    .mapa-mesas-area {
+      position: relative; width: 100%; aspect-ratio: 16 / 10; min-height: 320px;
+      background-image:
+        linear-gradient(#eef1f5 1px, transparent 1px),
+        linear-gradient(90deg, #eef1f5 1px, transparent 1px);
+      background-size: 5% 5%;
+      background-color: #fbfbfd;
+      border: 2px dashed #cbd5e1; border-radius: var(--radius);
+      overflow: hidden; touch-action: none;
+    }
+    .mapa-mesa-chip {
+      --chip-size: 68px;
+      position: absolute; width: var(--chip-size); height: var(--chip-size);
+      margin: calc(var(--chip-size) / -2) 0 0 calc(var(--chip-size) / -2);
+      border-radius: 50%; background: #fff; border: 3px solid #94a3b8;
+      box-shadow: 0 4px 10px rgba(0,0,0,.12);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      cursor: grab; user-select: none; text-align: center; padding: .2rem;
+      transition: box-shadow .15s;
+    }
+    .mapa-mesa-chip:hover { box-shadow: 0 6px 16px rgba(0,0,0,.2); }
+    .mapa-mesa-chip.arrastando { cursor: grabbing; z-index: 10; box-shadow: 0 10px 24px rgba(0,0,0,.28); transition: none; }
+    .mapa-mesa-nome { font-size: .62rem; font-weight: 700; color: #1e293b; max-width: calc(var(--chip-size) - 12px); line-height: 1.1; }
+    /* Mesas menores no mobile — na tela pequena, o mesmo tamanho de desktop
+       fazia as mesas ficarem coladas/sobrepostas umas nas outras. */
+    @media (max-width: 575.98px) {
+      .mapa-mesa-chip { --chip-size: 48px; border-width: 2px; padding: .1rem; }
+      .mapa-mesa-nome { font-size: .5rem; line-height: 1.05; }
+      .mapa-mesa-ocup { font-size: .44rem !important; margin-top: 0 !important; }
+    }
+
+    /* Marcador fixo (não arrastável) indicando a entrada do espaço */
+    .mapa-entrada {
+      position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+      display: flex; align-items: center; gap: .35rem; z-index: 1;
+      background: #1e293b; color: #fff; font-size: .66rem; font-weight: 700;
+      padding: .35rem .85rem; border-radius: 20px; letter-spacing: .03em; text-transform: uppercase;
+      box-shadow: 0 3px 10px rgba(0,0,0,.2); pointer-events: none; white-space: nowrap;
+      -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    }
+    .mapa-mesa-ocup { font-size: .58rem; font-weight: 600; margin-top: .1rem; }
+
     /* Estilo sutil de Hover pros botões transparentes */
     .btn-acao-convidado { transition: opacity 0.15s, transform 0.1s; }
     .btn-acao-convidado:hover { opacity: 0.7; transform: scale(1.1); }
@@ -630,6 +723,18 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       .mesa-card { break-inside: avoid; page-break-inside: avoid; }
       .scroll-m  { max-height: none !important; overflow: visible !important; }
       .hdr { background: #8b5e3c !important; -webkit-print-color-adjust: exact; }
+
+      /* Impressão do Mapa de Mesas (aberto no modal) — usa uma classe no body
+         pra não brigar com o layout dedicado de "Exportar PDF" da lista, que
+         também é forçado visível em qualquer impressão desta página. */
+      .only-print { display: none; }
+      body.imprimindo-mapa .print-mapa-mesas { display: none !important; }
+      body.imprimindo-mapa .only-print { display: block !important; }
+      .modal-backdrop { display: none !important; }
+      #modalMapaMesas { position: static !important; }
+      #modalMapaMesas .modal-dialog { max-width: 100% !important; margin: 0 !important; }
+      #modalMapaMesas .modal-content { border: 0 !important; box-shadow: none !important; }
+      #modalMapaMesas .mapa-mesas-area { break-inside: avoid; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
       /* Layout dedicado de impressão/PDF: simples e robusto (motor nativo do navegador,
          sem depender de bibliotecas externas), mostrando mesa, cadeiras e convidados. */
@@ -761,7 +866,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   <!-- =========================================================
        CABEÇALHO
        ========================================================= -->
-  <div class="hdr p-4 mb-4 no-print">
+  <div class="hdr p-4 mb-3 no-print">
     <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
       <div class="titulo-mesas-wrap">
         <h4 class="fw-bold text-white mb-1">
@@ -782,6 +887,9 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         <button class="btn btn-sm btn-success rounded-pill fw-semibold shadow-sm px-3 btn-nova-mesa" data-bs-toggle="modal" data-bs-target="#modalAdd">
           <i class="bi bi-plus-lg me-1"></i> Nova Mesa
         </button>
+        <button class="btn btn-sm btn-outline-light rounded-pill fw-semibold px-3" data-bs-toggle="modal" data-bs-target="#modalMapaMesas">
+          <i class="bi bi-map-fill me-1"></i> Mapa de Mesas
+        </button>
         <div class="w-100 d-md-none quebra-mesas-mobile"></div>
         <button class="btn btn-sm btn-info rounded-pill text-dark fw-semibold shadow-sm px-3 btn-add-convidado-topo" data-bs-toggle="modal" data-bs-target="#modalAddConvidado">
           <i class="bi bi-person-plus-fill me-1"></i> Criar Convite
@@ -791,46 +899,43 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         </a>
       </div>
     </div>
+  </div>
 
-    <!-- Estatísticas -->
-    <?php
-      $cls_sem_mesa = 'text-danger';
-      $cls_livres   = $total_livres < 0 ? 'text-danger' : ($total_livres <= 5 && $total_livres >= 0 ? 'text-warning' : 'text-success');
-    ?>
-    <div class="row row-cols-2 row-cols-sm-5 g-2 mt-3">
-      <div class="col">
-        <div class="stat">
-          <span class="stat-icon text-primary"><i class="bi bi-envelope-fill"></i></span>
-          <div class="stat-body"><div class="val"><?= $total_conv ?></div><div class="lbl">Convites</div></div>
-        </div>
+  <!-- Estatísticas -->
+  <?php $cls_livres = $total_livres < 0 ? 'danger' : ($total_livres <= 5 ? 'warn' : 'ok'); ?>
+  <div class="row row-cols-2 row-cols-sm-5 g-2 mb-4 no-print">
+    <div class="col">
+      <div class="stat-card stat-total">
+        <span class="stat-icon"><i class="bi bi-envelope-fill"></i></span>
+        <div><div class="val"><?= $total_conv ?></div><div class="lbl">Convidados</div></div>
       </div>
-      <div class="col">
-        <div class="stat">
-          <span class="stat-icon text-info"><i class="bi bi-check-circle-fill"></i></span>
-          <div class="stat-body"><div class="val text-info"><?= $total_conf ?></div><div class="lbl">Confirmados</div></div>
-        </div>
+    </div>
+    <div class="col">
+      <div class="stat-card stat-confirmado">
+        <span class="stat-icon"><i class="bi bi-check-circle-fill"></i></span>
+        <div><div class="val"><?= $total_conf ?></div><div class="lbl">Confirmados</div></div>
       </div>
-      <div class="col">
-        <div class="stat">
-          <span class="stat-icon text-secondary"><i class="bi bi-x-circle-fill"></i></span>
-          <div class="stat-body"><div class="val text-secondary"><?= $total_recusado ?></div><div class="lbl">Recusaram</div></div>
-        </div>
+    </div>
+    <div class="col">
+      <div class="stat-card stat-recusado">
+        <span class="stat-icon"><i class="bi bi-x-circle-fill"></i></span>
+        <div><div class="val"><?= $total_recusado ?></div><div class="lbl">Recusaram</div></div>
       </div>
-      <div class="col">
-        <div class="stat">
-          <span class="stat-icon <?= $cls_sem_mesa ?>"><i class="bi bi-exclamation-triangle-fill"></i></span>
-          <div class="stat-body"><div class="val <?= $cls_sem_mesa ?>"><?= count($sem_mesa) ?></div><div class="lbl">Sem Mesa</div></div>
-        </div>
+    </div>
+    <div class="col">
+      <div class="stat-card stat-sem-mesa">
+        <span class="stat-icon"><i class="bi bi-exclamation-triangle-fill"></i></span>
+        <div><div class="val"><?= count($sem_mesa) ?></div><div class="lbl">Sem Mesa</div></div>
       </div>
-      <div class="col">
-        <div class="stat">
-          <span class="stat-icon <?= $cls_livres ?>">
-            <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M4 1.5A1.5 1.5 0 0 1 5.5 0h5A1.5 1.5 0 0 1 12 1.5v6a1.5 1.5 0 0 1-1.5 1.5H11v5.5a.5.5 0 0 1-1 0V11H6v3.5a.5.5 0 0 1-1 0V9h-.5A1.5 1.5 0 0 1 3 7.5v-6A1.5 1.5 0 0 1 4 1.5zm1.5-.5a.5.5 0 0 0-.5.5v6a.5.5 0 0 0 .5.5h5a.5.5 0 0 0 .5-.5v-6a.5.5 0 0 0-.5-.5h-5z"/>
-            </svg>
-          </span>
-          <div class="stat-body"><div class="val <?= $cls_livres ?>"><?= $total_livres ?></div><div class="lbl">Cadeiras Livres</div></div>
-        </div>
+    </div>
+    <div class="col">
+      <div class="stat-card stat-livres-<?= $cls_livres ?>">
+        <span class="stat-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4 1.5A1.5 1.5 0 0 1 5.5 0h5A1.5 1.5 0 0 1 12 1.5v6a1.5 1.5 0 0 1-1.5 1.5H11v5.5a.5.5 0 0 1-1 0V11H6v3.5a.5.5 0 0 1-1 0V9h-.5A1.5 1.5 0 0 1 3 7.5v-6A1.5 1.5 0 0 1 4 1.5zm1.5-.5a.5.5 0 0 0-.5.5v6a.5.5 0 0 0 .5.5h5a.5.5 0 0 0 .5-.5v-6a.5.5 0 0 0-.5-.5h-5z"/>
+          </svg>
+        </span>
+        <div><div class="val"><?= $total_livres ?></div><div class="lbl">Cadeiras Livres</div></div>
       </div>
     </div>
   </div>
@@ -995,7 +1100,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                 <div class="d-flex justify-content-between align-items-center">
                   <h6 class="fw-bold mb-0 text-dark d-flex align-items-center gap-2 min-w-0">
                     <i class="bi bi-arrows-move drag-mesa flex-shrink-0" title="Arraste para reposicionar"></i>
-                    <span class="text-truncate"><?= htmlspecialchars($mesa['nome']) ?></span>
+                    <span class="nome-mesa-completo"><?= htmlspecialchars($mesa['nome']) ?></span>
                   </h6>
 
                   <div class="d-flex gap-1 flex-shrink-0 no-print">
@@ -1271,6 +1376,89 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   </div>
 </div>
 
+<!-- Modal: Mapa de Mesas -->
+<?php
+  $mapa_mesas = [];
+  foreach ($lista_mesas as $i => $m) {
+      $cvsMapa = $na_mesa[$m['id']] ?? [];
+      $ocupMapa = 0;
+      foreach ($cvsMapa as $cm) $ocupMapa += $cm['lugares'];
+      $capMapa = (int)$m['capacidade'];
+
+      if ($ocupMapa === 0)                $corMapa = '#94a3b8';
+      elseif ($ocupMapa < $capMapa * .75) $corMapa = '#10b981';
+      elseif ($ocupMapa < $capMapa)       $corMapa = '#f59e0b';
+      else                                 $corMapa = '#ef4444';
+
+      // Mesa sem posição salva ainda: espalha num grid provisório, pra não
+      // nascer tudo empilhado no canto (0,0) antes do usuário arrastar.
+      $colMapa = $i % 5;
+      $rowMapa = intdiv($i, 5);
+      $defX = min(10 + $colMapa * 20, 90);
+      $defY = min(14 + $rowMapa * 24, 88);
+
+      $mapa_mesas[] = [
+          'id'   => $m['id'],
+          'nome' => $m['nome'],
+          'cap'  => $capMapa,
+          'ocup' => $ocupMapa,
+          'cor'  => $corMapa,
+          'x'    => $m['pos_x'] !== null ? (float)$m['pos_x'] : $defX,
+          'y'    => $m['pos_y'] !== null ? (float)$m['pos_y'] : $defY,
+      ];
+  }
+?>
+<div class="modal fade" id="modalMapaMesas" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-xl">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+      <div class="modal-header border-0 pb-0 no-print">
+        <h6 class="modal-title fw-bold"><i class="bi bi-map-fill text-info me-2"></i>Mapa de Mesas</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body py-3">
+        <div class="d-none only-print text-center mb-3">
+          <h5 class="fw-bold mb-0">Mapa de Mesas</h5>
+          <p class="text-muted mb-0 small"><?= htmlspecialchars($evento['nome']) ?> &bull; <?= date('d/m/Y', strtotime($evento['data_evento'])) ?></p>
+        </div>
+        <p class="text-muted mb-3 no-print" style="font-size:.78rem;">Arraste cada mesa pra representar como elas vão ficar no espaço do evento. A posição é salva sozinha.</p>
+        <?php if (empty($mapa_mesas)): ?>
+          <div class="text-center text-muted py-5 no-print">
+            <i class="bi bi-map fs-1 d-block mb-2"></i> Crie uma mesa primeiro pra poder organizá-la no mapa.
+          </div>
+        <?php else: ?>
+        <div id="mapa-mesas-area" class="mapa-mesas-area">
+          <?php foreach ($mapa_mesas as $mm): ?>
+          <div class="mapa-mesa-chip" data-mesa-id="<?= $mm['id'] ?>"
+               style="left:<?= $mm['x'] ?>%; top:<?= $mm['y'] ?>%; border-color:<?= $mm['cor'] ?>;"
+               title="<?= htmlspecialchars($mm['nome'], ENT_QUOTES, 'UTF-8') ?>">
+            <div class="mapa-mesa-nome text-truncate"><?= htmlspecialchars($mm['nome'], ENT_QUOTES, 'UTF-8') ?></div>
+            <div class="mapa-mesa-ocup" style="color:<?= $mm['cor'] ?>;"><?= $mm['ocup'] ?>/<?= $mm['cap'] ?></div>
+          </div>
+          <?php endforeach; ?>
+          <div class="mapa-entrada" title="Entrada do espaço">
+            <i class="bi bi-box-arrow-in-down"></i> Entrada
+          </div>
+        </div>
+        <div class="d-flex align-items-center gap-3 flex-wrap mt-3" style="font-size:.7rem;color:#64748b;">
+          <span><span class="legend-dot" style="background:#94a3b8;"></span> Vazia</span>
+          <span><span class="legend-dot" style="background:#10b981;"></span> Com lugares</span>
+          <span><span class="legend-dot" style="background:#f59e0b;"></span> Quase cheia</span>
+          <span><span class="legend-dot" style="background:#ef4444;"></span> Lotada</span>
+        </div>
+        <?php endif; ?>
+      </div>
+      <div class="modal-footer border-0 pt-0 no-print">
+        <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Fechar</button>
+        <?php if (!empty($mapa_mesas)): ?>
+        <button type="button" class="btn btn-info btn-sm px-4 rounded-pill fw-semibold" onclick="imprimirMapaMesas()">
+          <i class="bi bi-printer-fill me-1"></i> Imprimir / Exportar
+        </button>
+        <?php endif; ?>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: Add Mesa -->
 <div class="modal fade" id="modalAdd" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered modal-sm">
@@ -1353,6 +1541,95 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 
 <script>
 const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;
+
+/* ---- Mapa de Mesas: imprimir/exportar só o mapa (não a lista em texto) ---- */
+function imprimirMapaMesas() {
+  document.body.classList.add('imprimindo-mapa');
+  window.print();
+}
+window.addEventListener('afterprint', () => document.body.classList.remove('imprimindo-mapa'));
+
+/* ---- Mapa de Mesas: arrastar cada mesa dentro da área e salvar a posição ---- */
+(function initMapaMesas() {
+  const area = document.getElementById('mapa-mesas-area');
+  if (!area) return;
+
+  let chipAtivo = null;
+
+  function posPercent(clientX, clientY) {
+    const rect = area.getBoundingClientRect();
+    let x = ((clientX - rect.left) / rect.width) * 100;
+    let y = ((clientY - rect.top) / rect.height) * 100;
+    x = Math.max(3, Math.min(97, x));
+    y = Math.max(3, Math.min(97, y));
+    return { x, y };
+  }
+
+  function mover(clientX, clientY) {
+    if (!chipAtivo) return;
+    const { x, y } = posPercent(clientX, clientY);
+    chipAtivo.style.left = x + '%';
+    chipAtivo.style.top = y + '%';
+  }
+
+  async function soltar() {
+    if (!chipAtivo) return;
+    const chip = chipAtivo;
+    chip.classList.remove('arrastando');
+    chipAtivo = null;
+
+    const fd = new FormData();
+    fd.append('csrf_token', CSRF_TOKEN);
+    fd.append('salvar_posicao_mesa', '1');
+    fd.append('mesa_id', chip.dataset.mesaId);
+    fd.append('pos_x', parseFloat(chip.style.left));
+    fd.append('pos_y', parseFloat(chip.style.top));
+    try { await fetch(window.location.href, { method: 'POST', body: fd }); } catch (e) {}
+  }
+
+  area.querySelectorAll('.mapa-mesa-chip').forEach(chip => {
+    chip.addEventListener('mousedown', e => {
+      e.preventDefault();
+      chipAtivo = chip;
+      chip.classList.add('arrastando');
+    });
+    chip.addEventListener('touchstart', e => {
+      chipAtivo = chip;
+      chip.classList.add('arrastando');
+    }, { passive: true });
+  });
+
+  document.addEventListener('mousemove', e => mover(e.clientX, e.clientY));
+  document.addEventListener('touchmove', e => {
+    if (!chipAtivo) return;
+    const t = e.touches[0];
+    mover(t.clientX, t.clientY);
+  }, { passive: true });
+  document.addEventListener('mouseup', soltar);
+  document.addEventListener('touchend', soltar);
+
+  // Convidados são movidos de mesa em vários lugares da tela (drag & drop,
+  // modais...) sem recarregar a página — então toda vez que o mapa abre,
+  // busca a ocupação mais recente em vez de confiar no que foi renderizado
+  // no carregamento inicial.
+  async function atualizarOcupacaoMapa() {
+    try {
+      const fd = new FormData();
+      fd.append('csrf_token', CSRF_TOKEN);
+      fd.append('obter_ocupacao_mesas', '1');
+      const r = await fetch(window.location.href, { method: 'POST', body: fd }).then(res => res.json());
+      if (!r.ok) return;
+      r.mesas.forEach(m => {
+        const chip = area.querySelector('.mapa-mesa-chip[data-mesa-id="' + m.id + '"]');
+        if (!chip) return;
+        chip.style.borderColor = m.cor;
+        const ocupEl = chip.querySelector('.mapa-mesa-ocup');
+        if (ocupEl) { ocupEl.textContent = m.ocup + '/' + m.cap; ocupEl.style.color = m.cor; }
+      });
+    } catch (e) {}
+  }
+  document.getElementById('modalMapaMesas')?.addEventListener('shown.bs.modal', atualizarOcupacaoMapa);
+})();
 
 /* ---- Repetidor de acompanhantes (nome + faixa etária) ---- */
 function escapeHtmlConv(str) {

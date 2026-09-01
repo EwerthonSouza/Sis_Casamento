@@ -34,7 +34,8 @@ CREATE TABLE `calendario_anotacoes` (
   `data_nota` date NOT NULL,
   `hora_nota` time DEFAULT NULL,
   `anotacao` text NOT NULL,
-  `data_cadastro` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+  `data_cadastro` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `notificar` tinyint(1) NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
@@ -203,7 +204,9 @@ CREATE TABLE `convidados` (
   `nomes_acompanhantes` varchar(255) DEFAULT NULL,
   `idades_filhos` varchar(255) DEFAULT NULL,
   `resposta_rsvp` varchar(20) DEFAULT NULL,
-  `mensagem_rsvp` text DEFAULT NULL
+  `mensagem_rsvp` text DEFAULT NULL,
+  `token_convite` varchar(64) DEFAULT NULL,
+  `convidado_principal_id` int(11) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
@@ -234,7 +237,11 @@ CREATE TABLE `eventos` (
   `local_festa` varchar(255) DEFAULT NULL,
   `foto_casal` varchar(255) DEFAULT NULL,
   `foto_casal_ativa` tinyint(1) NOT NULL DEFAULT 0,
-  `cor_convite` varchar(7) DEFAULT NULL
+  `cor_convite` varchar(7) DEFAULT NULL,
+  `modo_confirmacao` varchar(20) NOT NULL DEFAULT 'geral',
+  `mensagem_convite` varchar(500) DEFAULT NULL,
+  `cor_btn_sim` varchar(7) DEFAULT NULL,
+  `cor_btn_nao` varchar(7) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
@@ -326,7 +333,9 @@ CREATE TABLE `mesas` (
   `evento_id` int(11) NOT NULL,
   `nome` varchar(100) NOT NULL,
   `capacidade` int(11) NOT NULL DEFAULT 8,
-  `ordem` int(11) DEFAULT 0
+  `ordem` int(11) DEFAULT 0,
+  `pos_x` float DEFAULT NULL,
+  `pos_y` float DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --

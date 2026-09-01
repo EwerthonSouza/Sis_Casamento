@@ -12,6 +12,7 @@ services:
       DB_NAME: sistema_eventos
       DB_USER: root
       DB_PASS: root
+      TZ: America/Manaus
     depends_on:
       db:
         condition: service_healthy
@@ -27,6 +28,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: sistema_eventos
+      TZ: America/Manaus
     ports:
       - "3308:3306"
     volumes:

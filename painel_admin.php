@@ -57,6 +57,12 @@ try {
         $pdo->exec("ALTER TABLE calendario_anotacoes ADD COLUMN hora_nota TIME NULL AFTER data_nota");
     }
 
+    // 2b. Adiciona a coluna 'notificar' — liga/desliga o lembrete no navegador
+    // no horário da anotação (só faz sentido se ela tiver hora_nota).
+    if (!in_array('notificar', $cols)) {
+        $pdo->exec("ALTER TABLE calendario_anotacoes ADD COLUMN notificar TINYINT(1) NOT NULL DEFAULT 0");
+    }
+
     // 3. Remove a restrição única por data (se existir)
     try {
         $pdo->exec("ALTER TABLE calendario_anotacoes DROP INDEX data_nota");
@@ -125,9 +131,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             } else {
                 if ($nota_id > 0) {
-                    // Atualiza anotação existente
-                    $stmt = $pdo->prepare("UPDATE calendario_anotacoes SET hora_nota = ?, anotacao = ? WHERE id = ?");
-                    $stmt->execute([$hora_nota, $anotacao, $nota_id]);
+                    // Atualiza anotação existente. Se o horário foi removido, desliga
+                    // a notificação junto — não faz sentido notificar sem hora marcada.
+                    if ($hora_nota === null) {
+                        $pdo->prepare("UPDATE calendario_anotacoes SET hora_nota = ?, anotacao = ?, notificar = 0 WHERE id = ?")
+                            ->execute([$hora_nota, $anotacao, $nota_id]);
+                        $notificar_final = 0;
+                    } else {
+                        $pdo->prepare("UPDATE calendario_anotacoes SET hora_nota = ?, anotacao = ? WHERE id = ?")
+                            ->execute([$hora_nota, $anotacao, $nota_id]);
+                        $stChk = $pdo->prepare("SELECT notificar FROM calendario_anotacoes WHERE id = ?");
+                        $stChk->execute([$nota_id]);
+                        $notificar_final = (int)$stChk->fetchColumn();
+                    }
                     $id_final = $nota_id;
                     $acao = 'atualizada';
                 } else {
@@ -136,8 +152,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->execute([$data_nota, $hora_nota, $anotacao]);
                     $id_final = $pdo->lastInsertId();
                     $acao = 'criada';
+                    $notificar_final = 0;
                 }
-                
+
                 if ($is_ajax) {
                     header('Content-Type: application/json');
                     echo json_encode([
@@ -147,7 +164,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             'id' => $id_final,
                             'data_nota' => $data_nota,
                             'hora_nota' => $hora_nota,
-                            'anotacao' => $anotacao
+                            'anotacao' => $anotacao,
+                            'notificar' => $notificar_final
                         ]
                     ]);
                     exit;
@@ -185,6 +203,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header("Location: painel_admin.php?mes=$mes_ret&ano=$ano_ret");
             exit;
         }
+    }
+
+    // 2c. LIGAR/DESLIGAR NOTIFICAÇÃO DE UMA ANOTAÇÃO (AJAX) — só permite ativar
+    // se ela já tiver horário marcado, senão não tem quando notificar.
+    if (isset($_POST['alternar_notificacao'])) {
+        validar_csrf();
+        $nota_id = (int)($_POST['nota_id'] ?? 0);
+        $ativar  = ($_POST['ativar'] ?? '0') === '1';
+
+        $stChk = $pdo->prepare("SELECT hora_nota FROM calendario_anotacoes WHERE id = ?");
+        $stChk->execute([$nota_id]);
+        $horaAtual = $stChk->fetchColumn();
+
+        header('Content-Type: application/json');
+        if ($horaAtual === false) {
+            echo json_encode(['sucesso' => false, 'msg' => 'Anotação não encontrada.']);
+            exit;
+        }
+        if ($ativar && empty($horaAtual)) {
+            echo json_encode(['sucesso' => false, 'msg' => 'Defina um horário para essa anotação antes de ativar a notificação.']);
+            exit;
+        }
+
+        $pdo->prepare("UPDATE calendario_anotacoes SET notificar = ? WHERE id = ?")->execute([$ativar ? 1 : 0, $nota_id]);
+        echo json_encode(['sucesso' => true, 'notificar' => $ativar ? 1 : 0]);
+        exit;
     }
 
     // 3. EXCLUIR EVENTO
@@ -434,9 +478,9 @@ foreach ($lista_casamentos as $cas) {
 
 // Carrega TODAS as anotações do mês (múltiplas por dia, ordenadas por horário)
 $stmt_notas = $pdo->prepare("
-    SELECT id, data_nota, hora_nota, anotacao 
-    FROM calendario_anotacoes 
-    WHERE data_nota LIKE ? 
+    SELECT id, data_nota, hora_nota, anotacao, notificar
+    FROM calendario_anotacoes
+    WHERE data_nota LIKE ?
     ORDER BY data_nota ASC, hora_nota ASC
 ");
 $stmt_notas->execute(["$ano_atual-$mes_atual_str-%"]);
@@ -546,39 +590,20 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
             background: #6c757d;
         }
 
-        /* ---- CLASSES CSS PARA TEXTO TRUNCADO E BOTÃO ---- */
+        /* Texto da anotação sempre inteiro, sem cortar — se a lista de
+           anotações do dia ficar grande, quem rola é o wrapper (ver
+           #lista-notas-dia abaixo), não o texto de cada item. */
         .nota-item-texto {
             font-size: 0.88rem;
             color: #343a40;
             white-space: pre-wrap;
             word-break: break-word;
         }
-        .nota-truncada {
-            display: -webkit-box;
-            -webkit-line-clamp: 2; /* Mostra no máximo 2 linhas */
-            -webkit-box-orient: vertical;
-            overflow: hidden;
-        }
-        .nota-expandida {
-            display: block;
-        }
-        .btn-ler-mais {
-            font-size: 0.75rem;
-            cursor: pointer;
-            user-select: none;
-            color: #0d6efd;
-            font-weight: bold;
-            display: inline-block;
-            margin-top: 4px;
-        }
-        .btn-ler-mais:hover {
-            text-decoration: underline;
-        }
-        /* ------------------------------------------------ */
 
-        .btn-editar-nota, .btn-excluir-nota {
+        .btn-acao-nota {
             font-size: 0.78rem;
             padding: 2px 8px;
+            width: 32px;
         }
         .form-nova-nota {
             background: #eaf1ff;
@@ -595,6 +620,16 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
             text-align: center;
             padding: 18px 0 10px;
         }
+        /* Com o texto de cada anotação sempre inteiro (sem "ler mais"), quem
+           tem muitos compromissos no mesmo dia rola essa lista em vez do
+           modal crescer sem limite. */
+        #lista-notas-dia {
+            max-height: 46vh;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+        #lista-notas-dia::-webkit-scrollbar { width: 6px; }
+        #lista-notas-dia::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
 
         /* ---- SINO DE NOTIFICAÇÕES: evita o dropdown estourar a tela em celular ---- */
         @media (max-width: 480px) {
@@ -701,8 +736,12 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                         <div class="text-center text-muted p-4 small">
                             <i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.
                         </div>
-                    <?php else: foreach ($notificacoes as $n): ?>
-                        <a href="gerenciar.php?id=<?= (int)$n['evento_id'] ?>" class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom text-decoration-none">
+                    <?php else: foreach ($notificacoes as $n):
+                        // Lembretes da agenda não pertencem a nenhum evento — o clique
+                        // volta pro próprio painel em vez de tentar abrir "gerenciar.php?id=".
+                        $href = $n['evento_id'] ? 'gerenciar.php?id=' . (int)$n['evento_id'] : 'painel_admin.php';
+                    ?>
+                        <a href="<?= $href ?>" class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom text-decoration-none">
                             <i class="bi <?= htmlspecialchars($n['icone'], ENT_QUOTES, 'UTF-8') ?> mt-1"></i>
                             <div class="flex-fill" style="min-width:0;">
                                 <div class="small fw-bold text-dark"><?= htmlspecialchars($n['evento_nome'], ENT_QUOTES, 'UTF-8') ?></div>
@@ -1295,14 +1334,15 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                 <div id="lista-notas-dia" class="mb-3"></div>
 
                 <div class="form-nova-nota" id="form-nota-wrapper">
-                    <div class="d-flex align-items-center gap-2 mb-3">
+                    <div class="d-flex align-items-center gap-2" id="toggle-form-nota" role="button" style="cursor:pointer;">
                         <i class="bi bi-plus-circle-fill text-primary fs-5"></i>
                         <span class="fw-bold text-primary" id="label-form-nota" style="font-size:0.9rem;">Nova anotação</span>
-                        <button type="button" class="btn btn-sm btn-link text-secondary ms-auto p-0" id="btn-cancelar-edicao" style="display:none;" title="Cancelar edição">
+                        <button type="button" class="btn btn-sm btn-link text-secondary p-0" id="btn-cancelar-edicao" style="display:none;" title="Cancelar edição">
                             <i class="bi bi-x-lg"></i> Cancelar
                         </button>
+                        <i class="bi bi-chevron-down text-primary ms-auto" id="chevron-form-nota" style="transition:transform .2s;"></i>
                     </div>
-                    <form method="POST" action="" id="form-salvar-nota">
+                    <form method="POST" action="" id="form-salvar-nota" class="mt-3" style="display:none;">
                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                         <input type="hidden" name="salvar_anotacao" value="1">
                         <input type="hidden" name="data_nota" id="input-data-modal">
@@ -1537,27 +1577,6 @@ document.addEventListener('DOMContentLoaded', function () {
     // ================================================================
 
     /**
-     * Alterna entre texto expandido e truncado.
-     * Esta função precisa estar disponível globalmente para ser chamada pelo onclick do botão.
-     */
-    window.toggleNota = function(idStr, btnElement) {
-        const divTexto = document.getElementById(idStr);
-        if (!divTexto) return;
-        
-        if (divTexto.classList.contains('nota-truncada')) {
-            // Expandir
-            divTexto.classList.remove('nota-truncada');
-            divTexto.classList.add('nota-expandida');
-            btnElement.innerHTML = 'Ler menos <i class="bi bi-chevron-up"></i>';
-        } else {
-            // Retrair
-            divTexto.classList.remove('nota-expandida');
-            divTexto.classList.add('nota-truncada');
-            btnElement.innerHTML = 'Ler mais <i class="bi bi-chevron-down"></i>';
-        }
-    };
-
-    /**
      * Renderiza a lista de anotações existentes no modal.
      */
     function renderizarNotas(notas) {
@@ -1581,27 +1600,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 ? `<span class="hora-badge"><i class="bi bi-clock-fill me-1"></i>${nota.hora_nota.substring(0,5)}</span>`
                 : `<span class="hora-badge sem-hora"><i class="bi bi-clock me-1"></i>Sem horário</span>`;
 
-            // ---- LÓGICA DE TRUNCAMENTO DE TEXTO ----
-            const divTextoId = `desc-nota-${nota.id}`;
-            const textoEscapado = escapeHtml(nota.anotacao);
-            let btnLerMais = '';
-            
-            // Se o texto for maior que ~80 caracteres, insere o botão de Ler Mais
-            if (textoEscapado.length > 80) {
-                btnLerMais = `
-                    <div class="btn-ler-mais mt-1" onclick="toggleNota('${divTextoId}', this)">
-                        Ler mais <i class="bi bi-chevron-down"></i>
-                    </div>`;
-            }
-            
-            // O texto da anotação começa com a classe 'nota-truncada'
-            const blocoTexto = `
-                <div id="${divTextoId}" class="nota-item-texto mt-1 nota-truncada">
-                    ${textoEscapado}
-                </div>
-                ${btnLerMais}
-            `;
-            // ----------------------------------------
+            const blocoTexto = `<div class="nota-item-texto mt-1">${escapeHtml(nota.anotacao)}</div>`;
 
             const div = document.createElement('div');
             div.className = 'nota-item';
@@ -1613,14 +1612,21 @@ document.addEventListener('DOMContentLoaded', function () {
                         ${blocoTexto}
                     </div>
                     <div class="d-flex flex-column gap-1 flex-shrink-0">
-                        <button type="button" class="btn btn-sm btn-outline-primary btn-editar-nota"
+                        <button type="button" class="btn btn-sm btn-acao-nota ${Number(nota.notificar) ? 'btn-warning' : 'btn-outline-secondary'} btn-notificar-nota"
+                                data-id="${nota.id}"
+                                data-ativo="${Number(nota.notificar) ? '1' : '0'}"
+                                ${nota.hora_nota ? '' : 'disabled'}
+                                title="${nota.hora_nota ? (Number(nota.notificar) ? 'Notificação ativada — clique para desativar' : 'Avisar no horário desta anotação') : 'Defina um horário para poder notificar'}">
+                            <i class="bi ${Number(nota.notificar) ? 'bi-bell-fill' : 'bi-bell'}"></i>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-acao-nota btn-outline-primary btn-editar-nota"
                                 data-id="${nota.id}"
                                 data-hora="${nota.hora_nota || ''}"
                                 data-texto="${escapeAttr(nota.anotacao)}"
                                 title="Editar">
                             <i class="bi bi-pencil-fill"></i>
                         </button>
-                        <button type="button" class="btn btn-sm btn-outline-danger btn-excluir-nota"
+                        <button type="button" class="btn btn-sm btn-acao-nota btn-outline-danger btn-excluir-nota"
                                 data-id="${nota.id}"
                                 title="Excluir">
                             <i class="bi bi-trash-fill"></i>
@@ -1642,6 +1648,118 @@ document.addEventListener('DOMContentLoaded', function () {
         return (str || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
+    // ================================================================
+    // NOTIFICAÇÃO DE ANOTAÇÃO NO HORÁRIO (via Notification API do navegador)
+    // Só funciona enquanto esta aba do painel estiver aberta — não é uma
+    // notificação push de verdade, é um alarme agendado em JS.
+    // ================================================================
+    const timersNotificacaoNota = {};
+
+    function dataLocalHoje() {
+        const d = new Date();
+        const pad = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+
+    // Guarda em localStorage (sobrevive a F5/fechar aba) quais anotações já
+    // dispararam notificação hoje — um Set em memória zerava a cada reload,
+    // fazendo o alarme repetir toda vez que a página recarregava.
+    function jaDisparouHoje(notaId) {
+        try {
+            const dados = JSON.parse(localStorage.getItem('notasNotificadasHoje') || '{}');
+            return Array.isArray(dados[dataLocalHoje()]) && dados[dataLocalHoje()].includes(notaId);
+        } catch (e) { return false; }
+    }
+    function marcarDisparadoHoje(notaId) {
+        try {
+            const hoje = dataLocalHoje();
+            // Guarda só o dia de hoje — dias antigos são descartados sozinhos.
+            let lista = [];
+            try {
+                const dados = JSON.parse(localStorage.getItem('notasNotificadasHoje') || '{}');
+                if (Array.isArray(dados[hoje])) lista = dados[hoje];
+            } catch (e) {}
+            if (!lista.includes(notaId)) lista.push(notaId);
+            localStorage.setItem('notasNotificadasHoje', JSON.stringify({ [hoje]: lista }));
+        } catch (e) {}
+    }
+
+    function dispararNotificacaoNota(nota) {
+        if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+        const texto = nota.anotacao.length > 120 ? nota.anotacao.slice(0, 117) + '...' : nota.anotacao;
+        new Notification('Lembrete — ' + (nota.hora_nota || '').substring(0, 5), {
+            body: texto,
+            icon: 'img/logo MEP1.svg'
+        });
+    }
+
+    /** Agenda (setTimeout) as anotações de HOJE marcadas pra notificar, se o
+     *  horário ainda não passou. Rodar de novo é seguro: não duplica timer
+     *  pra uma anotação já agendada. */
+    function agendarNotificacoesDoDia() {
+        if (typeof Notification === 'undefined') return;
+        const hoje = dataLocalHoje();
+        const celulaHoje = document.querySelector(`.celula-dia[data-date="${hoje}"]`);
+        if (!celulaHoje) return;
+
+        let notas = [];
+        try { notas = JSON.parse(celulaHoje.getAttribute('data-notas') || '[]'); } catch (e) {}
+
+        notas.forEach(nota => {
+            // Sempre reagenda do zero (limpa timer antigo primeiro) — assim, se a
+            // hora foi editada enquanto a notificação estava ativa, não fica um
+            // alarme "fantasma" agendado pro horário antigo.
+            if (timersNotificacaoNota[nota.id]) {
+                clearTimeout(timersNotificacaoNota[nota.id]);
+                delete timersNotificacaoNota[nota.id];
+            }
+            if (!Number(nota.notificar) || !nota.hora_nota) return;
+
+            const [h, m] = nota.hora_nota.split(':').map(Number);
+            const alvo = new Date();
+            alvo.setHours(h, m, 0, 0);
+            const ms = alvo.getTime() - Date.now();
+
+            if (ms <= 0) {
+                // Horário de hoje já passou (ex: ativou o lembrete depois da hora,
+                // ou reabriu a aba mais tarde) — notifica na hora em vez de ficar
+                // quieto, mas só uma vez por dia pra essa anotação (persistido em
+                // localStorage, senão recarregar a página dispara de novo).
+                if (!jaDisparouHoje(nota.id)) {
+                    marcarDisparadoHoje(nota.id);
+                    dispararNotificacaoNota(nota);
+                }
+                return;
+            }
+
+            timersNotificacaoNota[nota.id] = setTimeout(() => {
+                marcarDisparadoHoje(nota.id);
+                dispararNotificacaoNota(nota);
+                delete timersNotificacaoNota[nota.id];
+            }, ms);
+        });
+    }
+
+    if (typeof Notification !== 'undefined') {
+        agendarNotificacoesDoDia();
+    }
+
+    /** Abre/fecha o corpo do formulário de anotação (fica fechado por padrão) */
+    const formNotaBody = document.getElementById('form-salvar-nota');
+    const chevronFormNota = document.getElementById('chevron-form-nota');
+    function abrirFormNota() {
+        formNotaBody.style.display = '';
+        chevronFormNota.style.transform = 'rotate(180deg)';
+    }
+    function fecharFormNota() {
+        formNotaBody.style.display = 'none';
+        chevronFormNota.style.transform = '';
+    }
+    document.getElementById('toggle-form-nota').addEventListener('click', function (e) {
+        if (e.target.closest('#btn-cancelar-edicao')) return;
+        formNotaBody.style.display === 'none' ? abrirFormNota() : fecharFormNota();
+    });
+
     /** Reseta o formulário de nota para o estado "nova anotação" */
     function resetarFormNota() {
         document.getElementById('input-nota-id').value = '0';
@@ -1650,6 +1768,7 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById('label-form-nota').textContent = 'Nova anotação';
         document.getElementById('btn-cancelar-edicao').style.display = 'none';
         document.getElementById('btn-salvar-nota').innerHTML = '<i class="bi bi-floppy-fill me-1"></i> Salvar';
+        fecharFormNota();
     }
 
     // Quando o modal abre, reseta o formulário
@@ -1721,6 +1840,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     // Atualiza a visualização do Modal
                     renderizarNotas(notas);
                     resetarFormNota();
+                    agendarNotificacoesDoDia();
                 } else {
                     alert('Ocorreu um problema ao salvar a anotação.');
                 }
@@ -1739,6 +1859,58 @@ document.addEventListener('DOMContentLoaded', function () {
     // Delegação de cliques para botões editar/excluir dentro da lista de notas
     document.getElementById('lista-notas-dia').addEventListener('click', function (e) {
 
+        // Ativar/desativar notificação da anotação (VIA AJAX)
+        const btnNotif = e.target.closest('.btn-notificar-nota');
+        if (btnNotif) {
+            if (btnNotif.disabled) return;
+            const notaId = btnNotif.dataset.id;
+            const ativarAgora = btnNotif.dataset.ativo !== '1';
+
+            if (ativarAgora && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+                Notification.requestPermission();
+            }
+
+            const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+            const dataModal = document.getElementById('input-data-modal').value;
+            const formData = new FormData();
+            formData.append('csrf_token', csrfToken);
+            formData.append('alternar_notificacao', '1');
+            formData.append('nota_id', notaId);
+            formData.append('ativar', ativarAgora ? '1' : '0');
+
+            fetch('painel_admin.php', {
+                method: 'POST',
+                body: formData,
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.sucesso) { alert(data.msg || 'Não foi possível atualizar a notificação.'); return; }
+                const ativo = !!data.notificar;
+                btnNotif.dataset.ativo = ativo ? '1' : '0';
+                btnNotif.className = 'btn btn-sm ' + (ativo ? 'btn-warning' : 'btn-outline-secondary') + ' btn-notificar-nota';
+                btnNotif.querySelector('i').className = 'bi ' + (ativo ? 'bi-bell-fill' : 'bi-bell');
+                btnNotif.title = ativo ? 'Notificação ativada — clique para desativar' : 'Avisar no horário desta anotação';
+
+                // Mantém a célula do calendário em dia, senão a próxima chamada de
+                // agendarNotificacoesDoDia() usaria um data-notas desatualizado.
+                const celula = document.querySelector(`.celula-dia[data-date="${dataModal}"]`);
+                if (celula) {
+                    let notas = [];
+                    try { notas = JSON.parse(celula.getAttribute('data-notas') || '[]'); } catch (err) {}
+                    const alvo = notas.find(n => String(n.id) === String(notaId));
+                    if (alvo) alvo.notificar = ativo ? 1 : 0;
+                    celula.setAttribute('data-notas', JSON.stringify(notas));
+                }
+
+                // Roda sempre (não só ao ativar): se foi desativada, isso limpa
+                // o timer pendente pra ela dentro da própria função.
+                agendarNotificacoesDoDia();
+            })
+            .catch(() => alert('Erro de conexão.'));
+            return;
+        }
+
         // Editar nota (apenas joga os dados pro formulário)
         const btnEdit = e.target.closest('.btn-editar-nota');
         if (btnEdit) {
@@ -1748,6 +1920,7 @@ document.addEventListener('DOMContentLoaded', function () {
             document.getElementById('label-form-nota').textContent = 'Editando anotação';
             document.getElementById('btn-cancelar-edicao').style.display = 'inline-block';
             document.getElementById('btn-salvar-nota').innerHTML  = '<i class="bi bi-floppy-fill me-1"></i> Atualizar';
+            abrirFormNota();
             document.getElementById('textarea-anotacao-modal').focus();
             return;
         }
@@ -1779,12 +1952,16 @@ document.addEventListener('DOMContentLoaded', function () {
                 .then(response => response.json())
                 .then(data => {
                     if (data.sucesso) {
+                        if (timersNotificacaoNota[notaId]) {
+                            clearTimeout(timersNotificacaoNota[notaId]);
+                            delete timersNotificacaoNota[notaId];
+                        }
                         const celula = document.querySelector(`.celula-dia[data-date="${dataModal}"]`);
                         if (celula) {
                             let notas = JSON.parse(celula.getAttribute('data-notas') || '[]');
                             notas = notas.filter(n => String(n.id) !== String(notaId));
                             celula.setAttribute('data-notas', JSON.stringify(notas));
-                            
+
                             if (notas.length === 0) {
                                 const indicador = celula.querySelector('.indicador-nota');
                                 if (indicador) indicador.remove();

@@ -1,5 +1,46 @@
 <?php
 session_start();
+
+/** Converte um valor de ini (ex: "8M", "1G", "512K") pra bytes. */
+function ini_para_bytes(string $val): int {
+    $val = trim($val);
+    if ($val === '') return 0;
+    $unidade = strtolower(substr($val, -1));
+    $numero  = (int)$val;
+    return match ($unidade) {
+        'g' => $numero * 1024 * 1024 * 1024,
+        'm' => $numero * 1024 * 1024,
+        'k' => $numero * 1024,
+        default => (int)$val,
+    };
+}
+
+// Com envio de várias fotos de uma vez, os dois limites do PHP passam a
+// significar coisas diferentes: upload_max_filesize trava CADA arquivo,
+// post_max_size trava a SOMA de todos no mesmo envio. Guardamos os dois
+// separados pra validar direito no navegador antes de tentar enviar.
+$limite_arquivo_mb = max(1, (int)floor(ini_para_bytes(ini_get('upload_max_filesize') ?: '8M') / 1024 / 1024));
+$limite_total_mb   = max(1, (int)floor(ini_para_bytes(ini_get('post_max_size')        ?: '8M') / 1024 / 1024));
+$limite_upload_mb  = min($limite_arquivo_mb, $limite_total_mb);
+
+// Se o envio veio maior que o limite do servidor, o PHP descarta o corpo da
+// requisição inteiro ($_POST/$_FILES ficam vazios) mas ainda registra o
+// Content-Length original — é assim que dá pra detectar isso aqui e devolver
+// uma mensagem amigável, em vez de deixar cair nas verificações abaixo (que
+// esperam $_POST/$_FILES populados) e gerar avisos feios na tela.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($_POST) && empty($_FILES)
+    && (int)($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
+    // Mensagem mostra o limite REAL configurado no servidor (não um número
+    // fixo no código) — pega direto do php.ini efetivo (uploads.ini na
+    // imagem Docker), então nunca desalinha do que a hospedagem realmente aceita.
+    $limite_ini = ini_get('post_max_size') ?: '?';
+    $recebido_mb = round((int)$_SERVER['CONTENT_LENGTH'] / 1024 / 1024, 2);
+    $_SESSION['msg_erro'] = "Essa imagem ($recebido_mb MB) passou do limite de envio configurado no servidor (post_max_size = $limite_ini). Peça pra assessoria checar a configuração de upload da hospedagem.";
+    $id_redirect = (int)($_GET['id'] ?? 0);
+    header('Location: inspiracoes.php' . ($id_redirect ? '?id=' . $id_redirect : ''));
+    exit;
+}
+
 require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 
@@ -47,6 +88,10 @@ if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 $csrf_token = $_SESSION['csrf_token'];
+
+$msg_erro    = $_SESSION['msg_erro']    ?? '';
+$msg_sucesso = $_SESSION['msg_sucesso'] ?? '';
+unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
 
 function verificar_csrf(): void {
     $token_post    = $_POST['csrf_token']    ?? '';
@@ -97,26 +142,80 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['excluir_foto'])) {
     exit;
 }
 
-// 2. PROCESSAR UPLOAD DA FOTO COM CATEGORIA NOVA (POST)
+// 2. PROCESSAR UPLOAD DE FOTOS — uma ou várias de uma vez (POST)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload_foto'])) {
     verificar_csrf();
-    $titulo = trim($_POST['titulo']);
+    $titulo_base = trim($_POST['titulo']);
     $categoria = !empty($_POST['nova_categoria']) ? trim($_POST['nova_categoria']) : ($_POST['categoria'] ?? '');
-    
-    if (isset($_FILES['foto_arquivo']) && $_FILES['foto_arquivo']['error'] === UPLOAD_ERR_OK) {
-        $fileTmpPath = $_FILES['foto_arquivo']['tmp_name'];
-        $fileName = $_FILES['foto_arquivo']['name'];
+
+    // Com name="foto_arquivo[]", o PHP entrega cada campo do $_FILES como
+    // array paralelo (name[0], name[1]...), não como lista de arquivos.
+    $arquivos = $_FILES['foto_arquivo'] ?? ['name' => []];
+    $total_arquivos = is_array($arquivos['name'] ?? null) ? count($arquivos['name']) : 0;
+
+    // jpg/png/webp/gif/bmp são validados de verdade (getimagesize confirma
+    // que o conteúdo é mesmo uma imagem). heic/heif (padrão da câmera do
+    // iPhone) o GD do PHP não sabe decodificar — o navegador já converte
+    // pra JPEG antes de enviar quando consegue (ver JS); se ainda assim
+    // chegar em heic/heif puro (JS desligado, navegador antigo), aceita
+    // sem essa checagem extra em vez de rejeitar sem explicação.
+    $extensoes_validadas = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'];
+    $extensoes_sem_check = ['heic', 'heif'];
+
+    $sucesso = 0;
+    $erros = [];
+
+    for ($i = 0; $i < $total_arquivos; $i++) {
+        $erro_arquivo = $arquivos['error'][$i] ?? UPLOAD_ERR_NO_FILE;
+        if ($erro_arquivo === UPLOAD_ERR_NO_FILE) continue;
+
+        $fileName = $arquivos['name'][$i];
+
+        if ($erro_arquivo === UPLOAD_ERR_INI_SIZE || $erro_arquivo === UPLOAD_ERR_FORM_SIZE) {
+            $erros[] = "$fileName: imagem grande demais (máx. {$limite_arquivo_mb}MB por foto).";
+            continue;
+        }
+        if ($erro_arquivo !== UPLOAD_ERR_OK) {
+            $erros[] = "$fileName: não foi possível enviar.";
+            continue;
+        }
+
+        $fileTmpPath = $arquivos['tmp_name'][$i];
         $fileExtension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
-        
-        $extensoes_permitidas = ['jpg', 'jpeg', 'png', 'webp'];
-        if (in_array($fileExtension, $extensoes_permitidas) && @getimagesize($fileTmpPath) !== false) {
-            $novo_nome_imagem = "insp_" . $evento_id . "_" . time() . "." . $fileExtension;
-            if (move_uploaded_file($fileTmpPath, './uploads/' . $novo_nome_imagem)) {
-                $stmt = $pdo->prepare("INSERT INTO inspiracoes_fotos (evento_id, categoria, titulo, nome_imagem) VALUES (?, ?, ?, ?)");
-                $stmt->execute([$evento_id, $categoria, $titulo, $novo_nome_imagem]);
-            }
+
+        $valido = in_array($fileExtension, $extensoes_sem_check, true)
+            || (in_array($fileExtension, $extensoes_validadas, true) && @getimagesize($fileTmpPath) !== false);
+
+        if (!$valido) {
+            $erros[] = "$fileName: formato não suportado.";
+            continue;
+        }
+
+        // Mais de uma foto no mesmo envio: numera o título pra não duplicar
+        // o mesmo nome em todas as fotos do lote.
+        $titulo = $total_arquivos > 1 ? ($titulo_base . ' (' . ($sucesso + 1) . ')') : $titulo_base;
+        $novo_nome_imagem = "insp_" . $evento_id . "_" . time() . "_" . $i . "." . $fileExtension;
+
+        if (move_uploaded_file($fileTmpPath, './uploads/' . $novo_nome_imagem)) {
+            $stmt = $pdo->prepare("INSERT INTO inspiracoes_fotos (evento_id, categoria, titulo, nome_imagem) VALUES (?, ?, ?, ?)");
+            $stmt->execute([$evento_id, $categoria, $titulo, $novo_nome_imagem]);
+            $sucesso++;
+        } else {
+            $erros[] = "$fileName: não foi possível salvar no servidor.";
         }
     }
+
+    if ($sucesso === 0 && empty($erros)) {
+        $_SESSION['msg_erro'] = 'Selecione ao menos uma foto para enviar.';
+    } elseif ($sucesso > 0 && empty($erros)) {
+        $_SESSION['msg_sucesso'] = $sucesso === 1 ? 'Foto adicionada ao mural!' : "$sucesso fotos adicionadas ao mural!";
+    } elseif ($sucesso > 0) {
+        $_SESSION['msg_sucesso'] = "$sucesso foto(s) adicionada(s) ao mural.";
+        $_SESSION['msg_erro'] = implode(' | ', $erros);
+    } else {
+        $_SESSION['msg_erro'] = implode(' | ', $erros);
+    }
+
     header("Location: inspiracoes.php?id=" . $evento_id);
     exit;
 }
@@ -196,6 +295,21 @@ $fotos = $stmt_fotos->fetchAll();
   </div>
 </nav>
 
+<div class="container mt-4">
+  <?php if ($msg_erro): ?>
+    <div class="alert alert-danger alert-dismissible fade show shadow-sm" role="alert">
+      <i class="bi bi-exclamation-triangle-fill me-1"></i> <?= htmlspecialchars($msg_erro, ENT_QUOTES, 'UTF-8') ?>
+      <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
+    </div>
+  <?php endif; ?>
+  <?php if ($msg_sucesso): ?>
+    <div class="alert alert-success alert-dismissible fade show shadow-sm" role="alert">
+      <i class="bi bi-check-circle-fill me-1"></i> <?= htmlspecialchars($msg_sucesso, ENT_QUOTES, 'UTF-8') ?>
+      <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
+    </div>
+  <?php endif; ?>
+</div>
+
 <div class="container my-5">
 
     <div class="row g-4 align-items-start">
@@ -212,13 +326,14 @@ $fotos = $stmt_fotos->fetchAll();
                 </div>
                 <div class="collapse d-md-block" id="collapseSugerirRef">
                 <div class="card-body p-4">
-                    <form method="POST" enctype="multipart/form-data">
+                    <form method="POST" enctype="multipart/form-data" id="form-upload-inspiracao">
                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                         <input type="hidden" name="upload_foto" value="1">
                         
                         <div class="mb-3">
                             <label class="form-label small fw-bold text-secondary">Título da Referência</label>
                             <input type="text" name="titulo" class="form-control border-light-subtle bg-light" placeholder="Ex: Buquê de Orquídeas" required>
+                            <div class="form-text small text-muted">Se enviar várias fotos de uma vez, cada uma leva esse título numerado (1), (2)...</div>
                         </div>
                         
                         <div class="mb-3">
@@ -244,12 +359,13 @@ $fotos = $stmt_fotos->fetchAll();
                         </div>
 
                         <div class="mb-4">
-                            <label class="form-label small fw-bold text-secondary">Selecionar Foto</label>
-                            <input type="file" name="foto_arquivo" class="form-control border-light-subtle bg-light" accept="image/*" required>
+                            <label class="form-label small fw-bold text-secondary">Selecionar Foto(s)</label>
+                            <input type="file" name="foto_arquivo[]" id="input-foto-arquivo" class="form-control border-light-subtle bg-light" accept="image/*,.heic,.heif" multiple required>
+                            <div class="form-text small" id="msg-foto-arquivo"></div>
                         </div>
-                        
-                        <button type="submit" class="btn btn-success w-100 fw-bold shadow-sm py-2" style="border-radius: 8px;">
-                            <i class="bi bi-plus-circle me-1"></i> Adicionar ao Catálogo
+
+                        <button type="submit" class="btn btn-success w-100 fw-bold shadow-sm py-2" id="btn-upload-inspiracao" style="border-radius: 8px;">
+                            <i class="bi bi-plus-circle me-1"></i> <span id="txt-btn-upload">Adicionar ao Catálogo</span>
                         </button>
                     </form>
                 </div>
@@ -361,7 +477,111 @@ $fotos = $stmt_fotos->fetchAll();
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
 <script>
+/* ---- Upload de uma ou várias fotos: converte HEIC/HEIF (padrão da câmera
+   do iPhone) pra JPEG no próprio navegador — a maioria dos navegadores não
+   exibe/processa HEIC direto — e barra arquivo(s) grande(s) demais antes de
+   tentar enviar. ---- */
+(function () {
+  // Vêm do upload_max_filesize/post_max_size REAIS do servidor (não números
+  // fixos no código): o primeiro trava CADA foto, o segundo trava a SOMA de
+  // todas as fotos do mesmo envio.
+  const TAMANHO_ARQUIVO_MAX_MB = <?= $limite_arquivo_mb ?>;
+  const TAMANHO_TOTAL_MAX_MB   = <?= $limite_total_mb ?>;
+  const input   = document.getElementById('input-foto-arquivo');
+  const aviso   = document.getElementById('msg-foto-arquivo');
+  const form    = document.getElementById('form-upload-inspiracao');
+  const btnEnv  = document.getElementById('btn-upload-inspiracao');
+  const txtBtn  = document.getElementById('txt-btn-upload');
+  if (!input) return;
+
+  function mostrarAviso(texto, ehErro) {
+    aviso.textContent = texto || '';
+    aviso.classList.toggle('text-danger', !!ehErro);
+    aviso.classList.toggle('text-muted', !ehErro);
+  }
+
+  function ehHeic(file) {
+    const nome = (file.name || '').toLowerCase();
+    return nome.endsWith('.heic') || nome.endsWith('.heif')
+        || file.type === 'image/heic' || file.type === 'image/heif';
+  }
+
+  function substituirArquivosDoInput(arquivos) {
+    const dt = new DataTransfer();
+    arquivos.forEach(f => dt.items.add(f));
+    input.files = dt.files;
+  }
+
+  function tamanhoTotalMB(arquivos) {
+    return arquivos.reduce((soma, f) => soma + f.size, 0) / 1024 / 1024;
+  }
+
+  function atualizarTextoBotao(qtd) {
+    if (!txtBtn) return;
+    txtBtn.textContent = qtd > 1 ? `Adicionar ${qtd} Fotos ao Catálogo` : 'Adicionar ao Catálogo';
+  }
+
+  input.addEventListener('change', async function () {
+    let arquivos = Array.from(input.files);
+    mostrarAviso('');
+    atualizarTextoBotao(arquivos.length);
+    if (!arquivos.length) return;
+
+    if (arquivos.some(ehHeic)) {
+      mostrarAviso('Convertendo foto(s) do iPhone (HEIC) pra JPEG...');
+      if (btnEnv) btnEnv.disabled = true;
+      const convertidos = [];
+      for (const file of arquivos) {
+        if (!ehHeic(file)) { convertidos.push(file); continue; }
+        try {
+          const convertido = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
+          const novoNome = file.name.replace(/\.(heic|heif)$/i, '.jpg');
+          convertidos.push(new File([convertido], novoNome, { type: 'image/jpeg' }));
+        } catch (e) {
+          convertidos.push(file); // mantém original — servidor ainda aceita heic/heif puro
+        }
+      }
+      arquivos = convertidos;
+      substituirArquivosDoInput(arquivos);
+      if (btnEnv) btnEnv.disabled = false;
+      mostrarAviso('Foto(s) convertida(s) — pronta(s) pra enviar.');
+    }
+
+    const grandeDemais = arquivos.find(f => f.size > TAMANHO_ARQUIVO_MAX_MB * 1024 * 1024);
+    if (grandeDemais) {
+      mostrarAviso('"' + grandeDemais.name + '" tem ' + (grandeDemais.size / 1024 / 1024).toFixed(1) + 'MB — o máximo por foto é ' + TAMANHO_ARQUIVO_MAX_MB + 'MB.', true);
+      input.value = '';
+      atualizarTextoBotao(0);
+      return;
+    }
+
+    const totalMB = tamanhoTotalMB(arquivos);
+    if (totalMB > TAMANHO_TOTAL_MAX_MB) {
+      mostrarAviso('O total selecionado (' + totalMB.toFixed(1) + 'MB) passa do limite de ' + TAMANHO_TOTAL_MAX_MB + 'MB por envio. Selecione menos fotos de uma vez.', true);
+      input.value = '';
+      atualizarTextoBotao(0);
+      return;
+    }
+
+    if (arquivos.length > 1) {
+      mostrarAviso(arquivos.length + ' fotos selecionadas.');
+    }
+  });
+
+  form?.addEventListener('submit', function (e) {
+    const arquivos = Array.from(input.files);
+    if (!arquivos.length) return;
+    const grandeDemais = arquivos.find(f => f.size > TAMANHO_ARQUIVO_MAX_MB * 1024 * 1024);
+    const totalMB = tamanhoTotalMB(arquivos);
+    if (grandeDemais || totalMB > TAMANHO_TOTAL_MAX_MB) {
+      e.preventDefault();
+      mostrarAviso('Revise o(s) arquivo(s) selecionado(s): algum passa do limite de tamanho.', true);
+    }
+  });
+})();
+
 function abrirFotoCompleta(caminhoImagem, tituloFoto) {
     document.getElementById('modalTitulo').innerText = tituloFoto;
     document.getElementById('modalImagemReal').src = caminhoImagem;

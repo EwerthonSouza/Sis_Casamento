@@ -126,19 +126,17 @@ body{
     padding:20px 15px;
     position:relative;
     overflow-x:hidden;
-    background:
-        radial-gradient(circle at 50% 22%, rgba(255,218,160,.4) 0%, transparent 40%),
-        repeating-radial-gradient(circle at 50% 22%, rgba(255,255,255,.05) 0px, rgba(255,255,255,.05) 1px, transparent 1px, transparent 34px),
-        radial-gradient(ellipse at 50% 0%, #a9744f 0%, #8b5e3c 42%, #5c3d28 100%);
+    background-image: url('img/fundo_login.webp');
     background-repeat:no-repeat;
     background-attachment:fixed;
+    background-position:center;
     background-size:cover;
 }
 
 .bg-shape{ display:none; }
 
 @media (max-width:767.98px){
-    body{ background-attachment:scroll; }
+    body{ background-attachment:scroll; background-image: url('img/fundo_login_mobile.webp'); }
 
     .login-card{ max-width:340px; border-radius:20px; }
 

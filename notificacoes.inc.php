@@ -106,6 +106,36 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20): array
         ];
     }
 
+    // 4. Lembretes da agenda (calendario_anotacoes com notificação ativada,
+    // cujo horário já chegou) — só existe na visão global, não são de
+    // nenhum evento específico.
+    if (!$evento_id) {
+        try {
+            $sql4 = "
+                SELECT id, anotacao, CONCAT(data_nota, ' ', hora_nota) AS quando
+                FROM calendario_anotacoes
+                WHERE notificar = 1 AND hora_nota IS NOT NULL
+                  AND CONCAT(data_nota, ' ', hora_nota) <= NOW()
+                ORDER BY quando DESC
+                LIMIT " . (int)$limite;
+            foreach ($pdo->query($sql4)->fetchAll() as $r) {
+                $texto = mb_substr($r['anotacao'], 0, 100, 'UTF-8');
+                if (mb_strlen($r['anotacao'], 'UTF-8') > 100) $texto .= '…';
+                $itens[] = [
+                    'tipo'        => 'agenda',
+                    'icone'       => 'bi-alarm-fill text-warning',
+                    'evento_id'   => null,
+                    'evento_nome' => 'Lembrete da agenda',
+                    'texto'       => $texto,
+                    'quando'      => $r['quando'],
+                ];
+            }
+        } catch (Exception $e) {
+            // Coluna 'notificar' pode não existir ainda num deploy antigo;
+            // ignora silenciosamente em vez de quebrar o resto do sino.
+        }
+    }
+
     usort($itens, fn($a, $b) => strcmp($b['quando'], $a['quando']));
     return array_slice($itens, 0, $limite);
 }
@@ -116,7 +146,16 @@ function ultima_visualizacao_notificacoes(PDO $pdo, string $usuario_tipo, int $u
     $stmt = $pdo->prepare("SELECT ultima_visualizacao FROM notificacoes_lidas WHERE usuario_tipo = ? AND usuario_id = ?");
     $stmt->execute([$usuario_tipo, $usuario_id]);
     $v = $stmt->fetchColumn();
-    return $v ?: null;
+    if (!$v) return null;
+
+    // Blindagem: se esse valor ficar no futuro por qualquer motivo (relógio do
+    // servidor bagunçado num deploy, fuso horário mudando, edição manual...),
+    // ele bloquearia silenciosamente TODAS as notificações pra sempre — nada
+    // nunca seria "mais novo" que uma data no futuro. Trata como se nunca
+    // tivesse visto, em vez de propagar o valor quebrado.
+    if ($v > date('Y-m-d H:i:s')) return null;
+
+    return $v;
 }
 
 /** Conta quantos itens da lista são mais recentes que a última visualização */
