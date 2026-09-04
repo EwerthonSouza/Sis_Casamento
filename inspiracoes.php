@@ -142,6 +142,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['excluir_foto'])) {
     exit;
 }
 
+// 1c. EDITAR TÍTULO/CATEGORIA de uma foto já enviada
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['editar_foto'])) {
+    verificar_csrf();
+
+    $foto_id   = (int)($_POST['foto_id'] ?? 0);
+    $titulo    = trim($_POST['titulo_edit'] ?? '');
+    $categoria = !empty($_POST['nova_categoria_edit']) ? trim($_POST['nova_categoria_edit']) : trim($_POST['categoria_edit'] ?? '');
+
+    if ($foto_id > 0 && $titulo !== '' && $categoria !== '') {
+        $pdo->prepare("UPDATE inspiracoes_fotos SET titulo = ?, categoria = ? WHERE id = ? AND evento_id = ?")
+            ->execute([$titulo, $categoria, $foto_id, $evento_id]);
+        $_SESSION['msg_sucesso'] = 'Referência atualizada!';
+    } else {
+        $_SESSION['msg_erro'] = 'Preencha o título e a categoria.';
+    }
+
+    header("Location: inspiracoes.php?id=" . $evento_id . "&cat=" . ($_GET['cat'] ?? 'Todos'));
+    exit;
+}
+
 // 2. PROCESSAR UPLOAD DE FOTOS — uma ou várias de uma vez (POST)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload_foto'])) {
     verificar_csrf();
@@ -338,24 +358,12 @@ $fotos = $stmt_fotos->fetchAll();
                         
                         <div class="mb-3">
                             <label class="form-label small fw-bold text-secondary">Categoria</label>
-                            
-                            <div class="input-group mb-1" id="box-select-categoria">
-                                <select name="categoria" class="form-select border-light-subtle bg-light" id="select-categoria">
-                                    <?php foreach($todas_categorias as $c): ?>
-                                        <option value="<?= htmlspecialchars($c) ?>"><?= htmlspecialchars($c) ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                                <button class="btn btn-primary" type="button" onclick="toggleCategoriaForm()" title="Criar Nova Categoria">
-                                    <i class="bi bi-plus-lg"></i>
-                                </button>
-                            </div>
-                            
-                            <div class="input-group d-none" id="box-nova-categoria">
-                                <input type="text" name="nova_categoria" id="input-nova-categoria" class="form-control border-primary" placeholder="Nova categoria...">
-                                <button class="btn btn-danger" type="button" onclick="toggleCategoriaForm()" title="Cancelar">
-                                    <i class="bi bi-x-lg"></i>
-                                </button>
-                            </div>
+                            <select name="categoria" class="form-select border-light-subtle bg-light" id="select-categoria">
+                                <?php foreach($todas_categorias as $c): ?>
+                                    <option value="<?= htmlspecialchars($c) ?>"><?= htmlspecialchars($c) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <input type="text" name="nova_categoria" id="input-nova-categoria" class="form-control mt-2 d-none" placeholder="Digite a categoria...">
                         </div>
 
                         <div class="mb-4">
@@ -375,7 +383,7 @@ $fotos = $stmt_fotos->fetchAll();
 
         <div class="col-lg-8">
             <div class="card shadow-sm border-0 rounded-4 p-4 mb-4">
-                
+
                 <div class="d-flex flex-wrap gap-2 mb-4 justify-content-center border-bottom pb-4">
                     <a href="inspiracoes.php?id=<?= $evento_id ?>&cat=Todos" class="btn btn-sm <?= $categoria_filtrada == 'Todos' ? 'btn-primary shadow-sm fw-bold' : 'btn-light border text-muted' ?> px-4 rounded-pill transition-all">
                         <i class="bi bi-grid-fill me-1"></i> Tudo
@@ -436,6 +444,11 @@ $fotos = $stmt_fotos->fetchAll();
                                                 </button>
                                             </form>
 
+                                            <button type="button" class="btn p-0 border-0 bg-transparent btn-fav" title="Editar título/categoria"
+                                                    data-bs-toggle="modal" data-bs-target="#modalEditarFoto<?= $f['id'] ?>">
+                                                <i class="bi bi-pencil-fill text-secondary opacity-50 fs-6"></i>
+                                            </button>
+
                                             <?php if ($is_admin): ?>
                                             <form method="POST" action="" class="m-0" onsubmit="return confirm('Excluir esta foto do mural? Esta ação não pode ser desfeita.');">
                                                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
@@ -459,6 +472,53 @@ $fotos = $stmt_fotos->fetchAll();
         </div>
     </div>
 </div>
+
+<!-- Modais de Editar título/categoria — ficam FORA do .card do catálogo de propósito:
+     esse .card tem backdrop-filter (blur) no estilo.css, e isso cria uma "âncora" de
+     posicionamento pra qualquer elemento position:fixed dentro dele — inclusive modais
+     do Bootstrap, que dependem de ser fixed relativo à janela inteira. Um modal preso
+     lá dentro renderiza torto e trava, sem responder a clique nenhum. -->
+<?php foreach ($fotos as $f): ?>
+<div class="modal fade" id="modalEditarFoto<?= $f['id'] ?>" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg rounded-4">
+            <div class="modal-header bg-light">
+                <h5 class="modal-title"><i class="bi bi-pencil-square"></i> Editar Referência</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST" action="">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
+                <input type="hidden" name="editar_foto" value="1">
+                <input type="hidden" name="foto_id" value="<?= $f['id'] ?>">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label small fw-bold text-secondary">Título da Referência</label>
+                        <input type="text" name="titulo_edit" class="form-control" value="<?= htmlspecialchars($f['titulo'], ENT_QUOTES, 'UTF-8') ?>" required>
+                    </div>
+                    <?php $categoriaEstaNaLista = in_array($f['categoria'], $todas_categorias, true); ?>
+                    <div class="mb-1">
+                        <label class="form-label small fw-bold text-secondary">Categoria</label>
+                        <select name="categoria_edit" class="form-select categoria-edit-select">
+                            <?php foreach ($todas_categorias as $c):
+                                $selecionada = $categoriaEstaNaLista ? ($f['categoria'] === $c) : ($c === 'Outros');
+                            ?>
+                            <option value="<?= htmlspecialchars($c, ENT_QUOTES, 'UTF-8') ?>" <?= $selecionada ? 'selected' : '' ?>><?= htmlspecialchars($c, ENT_QUOTES, 'UTF-8') ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <input type="text" name="nova_categoria_edit" class="form-control mt-2 <?= $categoriaEstaNaLista ? 'd-none' : '' ?>"
+                               placeholder="Digite a categoria..."
+                               value="<?= $categoriaEstaNaLista ? '' : htmlspecialchars($f['categoria'], ENT_QUOTES, 'UTF-8') ?>">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-primary">Salvar Alterações</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+<?php endforeach; ?>
 
 <div class="modal fade" id="modalFoto" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered modal-xl">
@@ -589,21 +649,25 @@ function abrirFotoCompleta(caminhoImagem, tituloFoto) {
     meuModal.show();
 }
 
-function toggleCategoriaForm() {
-    var boxSelect = document.getElementById('box-select-categoria');
-    var boxNova = document.getElementById('box-nova-categoria');
+// Categoria "Outros" revela um campo de texto livre pra digitar o nome — nas
+// demais opções o campo some e o valor do <select> é usado direto.
+document.getElementById('select-categoria')?.addEventListener('change', function () {
     var inputNova = document.getElementById('input-nova-categoria');
+    var ehOutros = this.value === 'Outros';
+    inputNova.classList.toggle('d-none', !ehOutros);
+    if (ehOutros) inputNova.focus(); else inputNova.value = '';
+});
 
-    if (boxNova.classList.contains('d-none')) {
-        boxNova.classList.remove('d-none');
-        boxSelect.classList.add('d-none');
-        inputNova.focus();
-    } else {
-        boxNova.classList.add('d-none');
-        boxSelect.classList.remove('d-none');
-        inputNova.value = ''; 
-    }
-}
+// Mesma regra nos modais de "Editar Referência" — um select por foto, cada um
+// com seu próprio campo de texto logo em seguida (nextElementSibling).
+document.querySelectorAll('.categoria-edit-select').forEach(function (sel) {
+  sel.addEventListener('change', function () {
+    var inputNova = this.nextElementSibling;
+    var ehOutros = this.value === 'Outros';
+    inputNova.classList.toggle('d-none', !ehOutros);
+    if (ehOutros) inputNova.focus(); else inputNova.value = '';
+  });
+});
 </script>
 </body>
 </html>

@@ -24,7 +24,7 @@ if (!$evento_id) {
 /* ============================================================
    SEÇÕES SOLICITADAS
    ============================================================ */
-$secoes_disponiveis = ['checklist', 'convidados', 'fornecedores', 'notas', 'musicas'];
+$secoes_disponiveis = ['checklist', 'convidados', 'fornecedores', 'notas', 'musicas', 'inspiracoes'];
 $secoes_param = trim($_GET['secoes'] ?? 'todos');
 
 if ($secoes_param === '' || $secoes_param === 'todos') {
@@ -134,6 +134,16 @@ if (isset($mostrar['musicas'])) {
     } catch (Exception $e) { $lista_musicas = []; }
 }
 
+// Só as fotos marcadas como "Escolhidas" (selecionada = 1) no mural de Inspirações
+$lista_inspiracoes = [];
+if (isset($mostrar['inspiracoes'])) {
+    try {
+        $rs = $pdo->prepare("SELECT * FROM inspiracoes_fotos WHERE evento_id = ? AND selecionada = 1 ORDER BY categoria ASC, data_upload DESC");
+        $rs->execute([$evento_id]);
+        $lista_inspiracoes = $rs->fetchAll();
+    } catch (Exception $e) { $lista_inspiracoes = []; }
+}
+
 /* ============================================================
    MONTAGEM DO HTML DO RELATÓRIO
    ============================================================ */
@@ -177,6 +187,10 @@ ob_start();
   .info-grid .lbl { color: #64748b; width: 140px; font-weight: bold; }
   .footer-pg { position: fixed; bottom: -20px; left: 0; right: 0; font-size: 9px; color: #94a3b8; text-align: center; }
   .vazio { color: #94a3b8; font-style: italic; font-size: 10px; }
+  .insp-grid, .insp-grid td { border: none; }
+  .insp-cel { width: 33.33%; text-align: center; padding: 6px; vertical-align: top; }
+  .insp-img { max-width: 100%; max-height: 150px; border-radius: 6px; border: 1px solid #e2e8f0; }
+  .insp-titulo { font-size: 9px; color: #64748b; margin-top: 3px; }
   .etapa-title { background: #f8fafc; padding: 4px 8px; font-weight: bold; font-size: 11px; border-left: 4px solid #7a1308; margin-top: 8px; }
   .marca { font-size: 10px; font-weight: bold; letter-spacing: 1px; color: #7a1308; text-transform: uppercase; margin-bottom: 6px; }
 </style>
@@ -319,6 +333,39 @@ ob_start();
 <?php endif; ?>
 <?php endif; ?>
 
+<?php if (isset($mostrar['inspiracoes'])): ?>
+<h2>Inspirações Selecionadas</h2>
+<?php if (empty($lista_inspiracoes)): ?>
+  <p class="vazio">Nenhuma inspiração marcada como escolhida.</p>
+<?php else:
+    $grupos_insp = [];
+    foreach ($lista_inspiracoes as $f) { $grupos_insp[$f['categoria']][] = $f; }
+    ksort($grupos_insp);
+    foreach ($grupos_insp as $categoria_insp => $fotos_insp):
+?>
+  <h3><?= h($categoria_insp) ?></h3>
+  <table class="insp-grid">
+    <?php foreach (array_chunk($fotos_insp, 3) as $linha_insp): ?>
+    <tr>
+      <?php foreach ($linha_insp as $f):
+          $caminho_img = __DIR__ . '/uploads/' . $f['nome_imagem'];
+      ?>
+      <td class="insp-cel">
+        <?php if (is_file($caminho_img)): ?>
+        <img src="<?= h($caminho_img) ?>" class="insp-img">
+        <?php endif; ?>
+        <div class="insp-titulo"><?= h($f['titulo']) ?></div>
+      </td>
+      <?php endforeach; ?>
+      <?php for ($i = count($linha_insp); $i < 3; $i++): ?>
+      <td class="insp-cel"></td>
+      <?php endfor; ?>
+    </tr>
+    <?php endforeach; ?>
+  </table>
+<?php endforeach; endif; ?>
+<?php endif; ?>
+
 <div class="footer-pg">Meu Evento PRO &middot; Relatório de <?= h($evento['nome']) ?></div>
 
 </body>
@@ -329,6 +376,10 @@ $html = ob_get_clean();
 $options = new Options();
 $options->set('isRemoteEnabled', false);
 $options->set('defaultFont', 'DejaVu Sans');
+// Por padrão o Dompdf só lê arquivos de dentro da própria pasta dele (vendor/dompdf/dompdf).
+// Sem isso, as fotos de uploads/ (usadas na seção de Inspirações) eram silenciosamente
+// ignoradas — sem erro nenhum, só não apareciam no PDF.
+$options->set('chroot', __DIR__ . '/uploads');
 
 $dompdf = new Dompdf($options);
 $dompdf->loadHtml($html);

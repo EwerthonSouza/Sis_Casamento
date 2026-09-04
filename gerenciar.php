@@ -172,6 +172,29 @@ catch (Exception $e) { $pdo->exec("ALTER TABLE checklist_comentarios ADD COLUMN 
 marcar_schema_verificado('gerenciar');
 }
 
+// Tabela de documentos/uploads (contrato, RG, comprovantes...) — checagem própria
+// porque instalações que já rodaram o bloco 'gerenciar' acima nunca mais passariam
+// por ele de novo (mesmo problema já visto no Mapa de Mesas: marcação presa em "ok"
+// sem a tabela existir). Só marca como verificado se a tabela for criada de fato.
+if (!schema_ja_verificado('gerenciar_documentos_v1')) {
+    try {
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS documentos_evento (
+                id            INT AUTO_INCREMENT PRIMARY KEY,
+                evento_id     INT          NOT NULL,
+                categoria     VARCHAR(50)  NOT NULL DEFAULT 'Outros',
+                nome_original VARCHAR(255) NOT NULL,
+                nome_arquivo  VARCHAR(255) NOT NULL,
+                extensao      VARCHAR(10)  NOT NULL,
+                tamanho       INT          NOT NULL DEFAULT 0,
+                enviado_em    TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_doc_evento (evento_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ");
+        marcar_schema_verificado('gerenciar_documentos_v1');
+    } catch (PDOException $e) {}
+}
+
 require_once 'notificacoes.inc.php';
 
 /* ============================================================
@@ -237,6 +260,12 @@ function sincronizar_acompanhantes(PDO $pdo, int $evento_id, int $principal_id, 
         $ph = implode(',', array_fill(0, count($idsRemover), '?'));
         $pdo->prepare("DELETE FROM convidados WHERE id IN ($ph)")->execute(array_values($idsRemover));
     }
+}
+
+/* Formata um tamanho em bytes pra "KB"/"MB" legível */
+function tamanho_arquivo_fmt(int $bytes): string {
+    if ($bytes >= 1024 * 1024) return number_format($bytes / (1024 * 1024), 1, ',', '.') . ' MB';
+    return number_format(max(1, $bytes) / 1024, 0, ',', '.') . ' KB';
 }
 
 /* Retorna [classe_css, texto] do badge de prazo de uma tarefa */
@@ -701,6 +730,85 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
+    // 20. Enviar documento/arquivo (Apenas Admin) — feito 100% via AJAX (modal de Uploads)
+    if (isset($_POST['upload_documento'])) {
+        if (!$is_admin) json_out(['ok' => false, 'msg' => 'Acesso negado.']);
+
+        $categoria = trim($_POST['categoria_documento'] ?? '') ?: 'Outros';
+        $categoria = mb_substr($categoria, 0, 50);
+
+        $arquivo = $_FILES['arquivo_documento'] ?? null;
+        if (!$arquivo || ($arquivo['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+            json_out(['ok' => false, 'msg' => 'Selecione um arquivo para enviar.']);
+        }
+        if ($arquivo['error'] === UPLOAD_ERR_INI_SIZE || $arquivo['error'] === UPLOAD_ERR_FORM_SIZE) {
+            json_out(['ok' => false, 'msg' => 'Arquivo grande demais para o limite do servidor.']);
+        }
+        if ($arquivo['error'] !== UPLOAD_ERR_OK) {
+            json_out(['ok' => false, 'msg' => 'Não foi possível enviar o arquivo.']);
+        }
+
+        // Assim como no mural de inspirações: a extensão sozinha não garante nada
+        // (um .txt renomeado pra .pdf passaria batido) — getimagesize() confirma
+        // que é mesmo uma imagem, e o PDF é validado pela assinatura binária real
+        // ("%PDF-" nos primeiros bytes) em vez de confiar só no nome do arquivo.
+        $extensoesImagem = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
+        $extensao = strtolower(pathinfo($arquivo['name'], PATHINFO_EXTENSION));
+
+        $valido = false;
+        if (in_array($extensao, $extensoesImagem, true)) {
+            $valido = @getimagesize($arquivo['tmp_name']) !== false;
+        } elseif ($extensao === 'pdf') {
+            $handle = @fopen($arquivo['tmp_name'], 'rb');
+            if ($handle) {
+                $valido = fread($handle, 5) === '%PDF-';
+                fclose($handle);
+            }
+        }
+        if (!$valido) {
+            json_out(['ok' => false, 'msg' => 'Formato não suportado. Envie imagens (jpg, png, webp, gif) ou PDF.']);
+        }
+
+        $nomeArquivo = 'doc_' . $evento_id . '_' . time() . '_' . random_int(1000, 9999) . '.' . $extensao;
+        if (!move_uploaded_file($arquivo['tmp_name'], './uploads/' . $nomeArquivo)) {
+            json_out(['ok' => false, 'msg' => 'Não foi possível salvar o arquivo no servidor.']);
+        }
+
+        $nomeOriginal = mb_substr($arquivo['name'], 0, 255);
+        $pdo->prepare("INSERT INTO documentos_evento (evento_id, categoria, nome_original, nome_arquivo, extensao, tamanho) VALUES (?, ?, ?, ?, ?, ?)")
+            ->execute([$evento_id, $categoria, $nomeOriginal, $nomeArquivo, $extensao, (int)$arquivo['size']]);
+
+        json_out([
+            'ok' => true,
+            'documento' => [
+                'id'            => (int)$pdo->lastInsertId(),
+                'categoria'     => $categoria,
+                'nome_original' => $nomeOriginal,
+                'nome_arquivo'  => $nomeArquivo,
+                'extensao'      => $extensao,
+                'is_imagem'     => in_array($extensao, $extensoesImagem, true),
+                'tamanho_fmt'   => tamanho_arquivo_fmt((int)$arquivo['size']),
+                'enviado_em'    => date('d/m/Y \à\s H:i'),
+            ],
+        ]);
+    }
+
+    // 21. Excluir documento/arquivo (Apenas Admin)
+    if (isset($_POST['excluir_documento'])) {
+        if (!$is_admin) json_out(['ok' => false, 'msg' => 'Acesso negado.']);
+
+        $doc_id = (int)($_POST['documento_id'] ?? 0);
+        $stmt = $pdo->prepare("SELECT nome_arquivo FROM documentos_evento WHERE id = ? AND evento_id = ?");
+        $stmt->execute([$doc_id, $evento_id]);
+        $doc = $stmt->fetch();
+        if ($doc) {
+            $caminho = './uploads/' . $doc['nome_arquivo'];
+            if (is_file($caminho)) @unlink($caminho);
+            $pdo->prepare("DELETE FROM documentos_evento WHERE id = ? AND evento_id = ?")->execute([$doc_id, $evento_id]);
+        }
+        json_out(['ok' => true]);
+    }
+
 } // fim do bloco POST
 
 /* ============================================================
@@ -729,6 +837,21 @@ foreach ($lista_musicas as $m) {
 }
 $cnt_sug  = array_sum(array_map('count', $musicas_sugeridas));
 $cnt_conf = array_sum(array_map('count', $musicas_confirmadas));
+
+// Documentos/uploads do evento (contrato, RG, comprovantes...) — só admin vê/gerencia
+$categorias_documento_padrao = ['Contrato', 'Documento Pessoal', 'Comprovante de Pagamento'];
+$documentos_por_categoria = [];
+$total_documentos = 0;
+if ($is_admin) {
+    $rs_docs = $pdo->prepare("SELECT * FROM documentos_evento WHERE evento_id = ? ORDER BY enviado_em DESC");
+    $rs_docs->execute([$evento_id]);
+    $lista_documentos = $rs_docs->fetchAll();
+    $total_documentos = count($lista_documentos);
+    foreach ($lista_documentos as $doc) {
+        $documentos_por_categoria[$doc['categoria']][] = $doc;
+    }
+    $categorias_documento = array_unique(array_merge($categorias_documento_padrao, array_keys($documentos_por_categoria)));
+}
 
 // Evento
 $s = $pdo->prepare("SELECT e.*, c.nome, c.email, c.telefone, c.cpf FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
@@ -1040,12 +1163,24 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
        e-mail trunca com "..." se não couber, o WhatsApp nunca quebra. */
     .info-contato-fixa { min-width: 0; }
     .info-contato-fixa > div:first-child { padding-right: 1rem; border-right: 1px solid #e5e7eb; margin-right: 1rem; }
+    /* Linha "contato + Uploads" nunca quebra pro mobile — o bloco de contato
+       encolhe/trunca (min-width:0) e o botão Uploads mantém tamanho fixo
+       (flex-shrink:0 no próprio botão), então os dois cabem lado a lado. */
+    .linha-contato-uploads { min-width: 0; }
+    .linha-contato-uploads > .info-contato-evento { min-width: 0; flex-shrink: 1; }
+    .contato-email-val { font-size: .78rem; }
     @media (max-width: 767.98px) {
-      .contato-email-val { max-width: 46vw; }
+      .contato-email-val { max-width: 40vw; }
       /* Contrato fica oculto no mobile (d-none d-md-flex) — o item antes
          dele (que passa a ser o último visível) não deve mostrar a
          divisória à direita que sobraria solta. */
       .info-contato-evento > div:nth-last-child(2) { padding-right: 0; border-right: 0; }
+      /* Uploads bem mais compacto no mobile — sobra espaço pro e-mail dos noivos */
+      .btn-uploads-tile { padding: .3rem .5rem .3rem .35rem; gap: .4rem !important; }
+      .btn-uploads-tile .rounded-circle { width: 26px; height: 26px; padding: 0 !important; display: flex; align-items: center; justify-content: center; }
+      .btn-uploads-tile .rounded-circle i { font-size: .75rem; }
+      .btn-uploads-tile .fw-bold { font-size: .72rem; }
+      .btn-uploads-tile .badge { font-size: .55rem; padding: .25em .45em; }
     }
 
     /* ---- PAGAMENTO FORNECEDOR ---- */
@@ -1189,6 +1324,62 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
       border-color: #7c3aed; box-shadow: 0 0 0 3px rgba(124,58,237,.18);
     }
 
+    /* ---- BOTÃO "UPLOADS" (mesma cara das tiles de contato, com borda fina indicando que é clicável) ---- */
+    .btn-uploads-tile {
+      border: 1px solid #dee2e6; border-radius: 12px; padding: .4rem .8rem .4rem .5rem;
+      background: #fff; transition: border-color .15s, box-shadow .15s, transform .15s;
+    }
+    .btn-uploads-tile:hover { border-color: var(--color-primary); box-shadow: 0 .3rem 0.9rem rgba(15,23,42,.08); transform: translateY(-1px); }
+
+    /* ---- MODAL DE UPLOADS (documentos/arquivos do evento) ---- */
+    /* Filtros de categoria numa linha só, com scroll horizontal em vez de quebrar */
+    .docs-filtros-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: .3rem; scrollbar-width: thin; }
+    .docs-filtros-scroll .doc-filtro-btn { flex-shrink: 0; white-space: nowrap; font-size: .72rem; padding: .3rem .7rem; }
+    .docs-filtros-scroll .doc-filtro-btn .badge { font-size: .6rem; }
+    .docs-filtros-scroll::-webkit-scrollbar { height: 4px; }
+    .docs-filtros-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+    .doc-grupo-header .cnt-grp-doc { font-size: .6rem; }
+    .doc-lista-items { --doc-w: 108px; }
+    .doc-item {
+      width: var(--doc-w); border: 1px solid #e2e8f0; border-radius: 12px;
+      padding: .5rem; cursor: pointer; background: #fff;
+      transition: box-shadow .15s, transform .15s, border-color .15s;
+      animation: notaEntra .3s ease both;
+    }
+    .doc-item:hover { box-shadow: 0 4px 14px rgba(169,116,79,.2); transform: translateY(-1px); border-color: var(--color-primary); }
+    .doc-item-thumb {
+      width: 100%; aspect-ratio: 1 / 1; border-radius: 8px; overflow: hidden;
+      background: #f1f5f9; display: flex; align-items: center; justify-content: center;
+      margin-bottom: .4rem;
+    }
+    .doc-item-thumb img { width: 100%; height: 100%; object-fit: cover; }
+    .doc-item-thumb i { font-size: 1.8rem; color: #dc2626; }
+    .doc-item-nome { font-size: .68rem; font-weight: 600; color: #1e293b; }
+    .doc-item-meta { font-size: .62rem; color: #94a3b8; }
+    .doc-item-remove {
+      position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%;
+      background: #ef4444; color: #fff; border: 2px solid #fff; display: flex; align-items: center; justify-content: center;
+      font-size: .58rem; line-height: 1; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.25); z-index: 2;
+    }
+    #docs-preview-conteudo img { max-width: 100%; max-height: 62vh; border-radius: 10px; box-shadow: 0 4px 18px rgba(0,0,0,.15); }
+    #docs-preview-conteudo iframe { width: 100%; height: 62vh; border: 0; border-radius: 10px; box-shadow: 0 4px 18px rgba(0,0,0,.15); }
+
+    /* Card "Enviar Arquivo" mais compacto no mobile — menos respiro, textos e
+       campos menores, pra sobrar mais espaço de tela pra lista de arquivos. */
+    @media (max-width: 575.98px) {
+      .modal-header-uploads { padding: .9rem 1rem .5rem !important; }
+      .modal-header-uploads-icone { width: 34px !important; height: 34px !important; }
+      .modal-header-uploads .modal-title { font-size: 1rem; }
+      .modal-body-uploads { padding: .5rem 1rem 1rem !important; }
+      .upload-form-card .card-body { padding: .75rem .9rem !important; }
+      .upload-form-titulo { margin-bottom: .6rem !important; font-size: .78rem; }
+      .upload-form-campos { margin-bottom: .5rem !important; row-gap: .6rem !important; }
+      .upload-form-campos .form-label { font-size: .74rem; margin-bottom: .25rem; }
+      .upload-form-campos .form-select,
+      .upload-form-campos .form-control { font-size: .82rem; padding: .4rem .6rem; }
+      #btn-add-doc { font-size: .78rem; padding: .4rem 1rem; }
+    }
+
     /* ---- AJUSTE DE SOBREPOSIÇÃO DOS MODAIS E FUNDOS CINZAS ---- */
     .modal { z-index: 1055 !important; }
     .modal-backdrop { z-index: 1050 !important; }
@@ -1282,8 +1473,8 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
       .forn-input-pago-adm { width: auto; flex: 1 1 auto; min-width: 0; }
 
       .checklist-btns-row { gap: .4rem !important; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-      .checklist-btns-row .btn { font-size: .78rem; padding: .38rem .65rem; }
-      .checklist-btns-row .btn i { font-size: .82rem; }
+      .checklist-btns-row .btn { font-size: .74rem; padding: .35rem .6rem; }
+      .checklist-btns-row .btn i { font-size: .78rem; }
 
       .badges-info-evento { gap: .35rem !important; overflow-x: auto; -webkit-overflow-scrolling: touch; }
       .badges-info-evento .badge { font-size: .68rem; padding: .35rem .55rem !important; }
@@ -1360,6 +1551,10 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
         <div class="form-check mb-2">
           <input class="form-check-input pdf-secao-check" type="checkbox" value="musicas" id="pdfSecaoMusicas">
           <label class="form-check-label" for="pdfSecaoMusicas"><i class="bi bi-music-note-beamed me-1"></i>Playlist</label>
+        </div>
+        <div class="form-check mb-2">
+          <input class="form-check-input pdf-secao-check" type="checkbox" value="inspiracoes" id="pdfSecaoInspiracoes">
+          <label class="form-check-label" for="pdfSecaoInspiracoes"><i class="bi bi-images me-1"></i>Inspirações (fotos escolhidas)</label>
         </div>
       </div>
       <div class="modal-footer border-0 pt-0">
@@ -1508,7 +1703,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
         </div>
       </div>
     </div>
-    <div class="bg-white p-3 border-top" style="border-radius: 0 0 var(--radius) var(--radius);">
+    <div class="bg-white p-3 border-top d-flex flex-nowrap align-items-center gap-2 gap-md-3 linha-contato-uploads" style="border-radius: 0 0 var(--radius) var(--radius);">
       <div class="d-flex flex-wrap row-gap-3 info-contato-evento">
         <div class="d-flex flex-nowrap info-contato-fixa">
           <div class="d-flex align-items-center gap-2 min-width-0">
@@ -1545,6 +1740,20 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
           </div>
         </div>
       </div>
+      <?php if ($is_admin): ?>
+      <button type="button" class="btn d-flex align-items-center gap-2 flex-shrink-0 btn-uploads-tile"
+              data-bs-toggle="modal" data-bs-target="#modalDocumentos"
+              title="Uploads do evento (contrato, RG, comprovantes...) — visível só pra admin">
+        <span class="bg-light rounded-circle p-2 d-flex flex-shrink-0"><i class="bi bi-paperclip text-secondary"></i></span>
+        <div class="text-start">
+          <div class="fw-bold small text-nowrap">
+            Uploads
+            <?php if ($total_documentos > 0): ?><span class="badge rounded-pill bg-primary ms-1"><?= $total_documentos ?></span><?php endif; ?>
+          </div>
+          <div class="text-muted d-none d-md-block" style="font-size:.68rem;">Contrato, RG, comprovantes...</div>
+        </div>
+      </button>
+      <?php endif; ?>
     </div>
   </div>
 
@@ -1950,11 +2159,16 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
 
           <div class="collapse" id="collapseEquipe" data-bs-parent="#accordionAcessos">
             <div class="card shadow-sm border-0" style="border-radius: var(--radius);">
+              <?php if (!$is_admin): ?>
+              <div class="text-center text-muted py-5">
+                <i class="bi bi-lock-fill fs-1 d-block mb-2"></i>
+                <span class="fw-bold">Restrito</span>
+              </div>
+              <?php else: ?>
               <div class="etapa-body bg-white rounded-3">
                 <div class="p-3 border-bottom bg-light rounded-top">
                   <div class="d-flex justify-content-between align-items-center mb-2">
                     <small class="text-muted fw-bold" style="font-size:.68rem;text-transform:uppercase;">Resumo Financeiro</small>
-                    <?php if ($is_admin): ?>
                     <div class="d-flex gap-2">
                       <button class="btn btn-sm btn-primary shadow-sm" data-bs-toggle="modal" data-bs-target="#modalFornecedor">
                         <i class="bi bi-plus-lg me-1"></i> Novo
@@ -1963,11 +2177,6 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
                         <i class="bi bi-gear-fill me-1"></i> Completo
                       </a>
                     </div>
-                    <?php else: ?>
-                    <span class="badge bg-light text-muted border shadow-sm px-2 py-1">
-                      <i class="bi bi-lock-fill me-1"></i> Restrito
-                    </span>
-                    <?php endif; ?>
                   </div>
                 </div>
                 <div class="scroll-lista-pequena">
@@ -1999,7 +2208,6 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
                           </span>
                         </div>
                       </div>
-                      <?php if ($is_admin): ?>
                       <div class="forn-valores">
                         <div class="forn-val-total">R$ <?= number_format($fValor, 2, ',', '.') ?></div>
                         <div class="forn-val-pago-linha">
@@ -2034,18 +2242,16 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
                           <i class="bi bi-x-lg"></i>
                         </button>
                       </div>
-                      <?php endif; ?>
                     </div>
                     <?php endforeach; ?>
-                    <?php if ($is_admin): ?>
                     <div class="px-3 py-2 bg-light border-top d-flex justify-content-between align-items-center" style="font-size:.72rem;">
                       <span class="text-muted fw-bold text-uppercase">Total contratado:</span>
                       <span class="fw-bold text-dark">R$ <?= number_format($total_forn, 2, ',', '.') ?></span>
                     </div>
-                    <?php endif; ?>
                   <?php endif; ?>
                 </div>
               </div>
+              <?php endif; ?>
             </div>
           </div>
 
@@ -2645,6 +2851,133 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
     </div>
   </div>
 </div>
+
+<?php if ($is_admin): ?>
+<div class="modal fade" id="modalDocumentos" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+    <div class="modal-content border-0 shadow-lg rounded-4">
+
+      <div class="modal-header border-0 px-4 pt-4 pb-2 modal-header-uploads">
+        <div class="d-flex align-items-center gap-3">
+          <div class="rounded-3 d-flex align-items-center justify-content-center shadow-sm modal-header-uploads-icone"
+               style="width:42px;height:42px;background:var(--color-primary-light);border:1.5px solid var(--color-primary);">
+            <i class="bi bi-paperclip fs-5" style="color:var(--color-primary-dark);"></i>
+          </div>
+          <div>
+            <h5 class="modal-title fw-bold mb-0 text-dark">Uploads do Evento</h5>
+            <span class="text-muted d-none d-sm-inline" style="font-size:.73rem;">Contrato, documentos e comprovantes · visível só pra equipe</span>
+          </div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+
+      <div class="modal-body px-4 pb-4 pt-2 modal-body-uploads">
+
+        <!-- VIEW: lista + formulário de envio -->
+        <div id="docs-view-lista">
+          <div class="card border-0 shadow-sm rounded-4 mb-4 upload-form-card" style="border:1.5px solid var(--color-primary) !important;">
+            <div class="card-body p-3 p-sm-4">
+              <div class="d-flex align-items-center gap-2 mb-3 upload-form-titulo">
+                <i class="bi bi-cloud-upload-fill" style="color:var(--color-primary-dark);"></i>
+                <span class="fw-bold text-dark small text-uppercase" style="letter-spacing:.06em;">Enviar Arquivo</span>
+              </div>
+              <div class="row g-3 mb-3 upload-form-campos">
+                <div class="col-12 col-sm-6">
+                  <label class="form-label small fw-bold text-secondary">Categoria</label>
+                  <select id="doc-categoria" class="form-select">
+                    <?php foreach ($categorias_documento as $cat): ?>
+                    <option value="<?= htmlspecialchars($cat, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($cat, ENT_QUOTES, 'UTF-8') ?></option>
+                    <?php endforeach; ?>
+                    <option value="__outro__">✏️ Outra categoria (digitar)</option>
+                  </select>
+                  <input type="text" id="doc-categoria-outra" class="form-control mt-2 d-none" placeholder="Ex: Buffet" maxlength="50">
+                </div>
+                <div class="col-12 col-sm-6">
+                  <label class="form-label small fw-bold text-secondary">Arquivo <span class="text-muted fw-normal">(imagem ou PDF)</span></label>
+                  <input type="file" id="doc-arquivo" class="form-control" accept="image/jpeg,image/png,image/webp,image/gif,application/pdf">
+                </div>
+              </div>
+              <div class="text-end">
+                <button type="button" id="btn-add-doc" class="btn btn-sm btn-primary fw-bold rounded-pill px-4 shadow-sm">
+                  <i class="bi bi-upload me-1"></i> Enviar
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="d-flex align-items-center gap-2 mb-3">
+            <i class="bi bi-funnel-fill text-muted flex-shrink-0" style="font-size:.8rem;" title="Filtrar por categoria"></i>
+            <div class="d-flex flex-nowrap gap-2 docs-filtros-scroll" id="docs-filtros">
+              <button type="button" class="btn btn-sm rounded-pill fw-bold doc-filtro-btn active" data-cat="Todos" style="background:var(--color-primary-dark);color:#fff;border:1px solid var(--color-primary-dark);">
+                Todos <span class="badge rounded-pill ms-1" style="background:rgba(255,255,255,.3);color:#fff;"><?= $total_documentos ?></span>
+              </button>
+              <?php foreach ($categorias_documento as $cat): $qtdCat = count($documentos_por_categoria[$cat] ?? []); ?>
+              <button type="button" class="btn btn-sm rounded-pill doc-filtro-btn" data-cat="<?= htmlspecialchars($cat, ENT_QUOTES, 'UTF-8') ?>" style="background:var(--color-primary-light);color:var(--color-primary-dark);border:1px solid var(--color-primary);">
+                <?= htmlspecialchars($cat, ENT_QUOTES, 'UTF-8') ?> <span class="badge rounded-pill ms-1" style="background:rgba(169,116,79,.18);color:var(--color-primary-dark);"><?= $qtdCat ?></span>
+              </button>
+              <?php endforeach; ?>
+            </div>
+          </div>
+
+          <div id="docs-lista-grupos">
+            <?php if (empty($documentos_por_categoria)): ?>
+            <div class="text-center py-5 text-muted" id="docs-vazia">
+              <i class="bi bi-folder2-open fs-1 d-block mb-2" style="opacity:.2;"></i>
+              <small>Nenhum arquivo enviado ainda.</small>
+            </div>
+            <?php else: foreach ($documentos_por_categoria as $categoria => $docs): ?>
+            <div class="doc-grupo mb-4" data-categoria="<?= htmlspecialchars($categoria, ENT_QUOTES, 'UTF-8') ?>">
+              <div class="doc-grupo-header d-flex align-items-center gap-2 px-2 py-2 rounded-3 mb-2" style="background:var(--color-primary-light);">
+                <i class="bi bi-folder-fill" style="color:var(--color-primary-dark);"></i>
+                <span class="fw-bold small" style="color:var(--color-primary-dark);"><?= htmlspecialchars($categoria, ENT_QUOTES, 'UTF-8') ?></span>
+                <span class="badge rounded-pill cnt-grp-doc" style="background:var(--color-primary-dark);"><?= count($docs) ?></span>
+              </div>
+              <div class="doc-lista-items d-flex flex-wrap gap-2">
+                <?php foreach ($docs as $d):
+                  $doc_ehImagem = in_array(strtolower($d['extensao']), ['jpg', 'jpeg', 'png', 'webp', 'gif'], true);
+                ?>
+                <div class="doc-item position-relative" data-id="<?= $d['id'] ?>"
+                     data-arquivo="<?= htmlspecialchars($d['nome_arquivo'], ENT_QUOTES, 'UTF-8') ?>"
+                     data-nome="<?= htmlspecialchars($d['nome_original'], ENT_QUOTES, 'UTF-8') ?>"
+                     data-imagem="<?= $doc_ehImagem ? '1' : '0' ?>"
+                     title="<?= htmlspecialchars($d['nome_original'], ENT_QUOTES, 'UTF-8') ?>">
+                  <span class="doc-item-remove" title="Excluir"><i class="bi bi-x-lg"></i></span>
+                  <div class="doc-item-thumb">
+                    <?php if ($doc_ehImagem): ?>
+                      <img src="./uploads/<?= htmlspecialchars($d['nome_arquivo'], ENT_QUOTES, 'UTF-8') ?>" alt="">
+                    <?php else: ?>
+                      <i class="bi bi-file-earmark-pdf-fill"></i>
+                    <?php endif; ?>
+                  </div>
+                  <div class="doc-item-nome text-truncate"><?= htmlspecialchars($d['nome_original'], ENT_QUOTES, 'UTF-8') ?></div>
+                  <div class="doc-item-meta"><?= tamanho_arquivo_fmt((int)$d['tamanho']) ?></div>
+                </div>
+                <?php endforeach; ?>
+              </div>
+            </div>
+            <?php endforeach; endif; ?>
+          </div>
+        </div>
+
+        <!-- VIEW: prévia do arquivo (mesma modal, sem trocar de página) -->
+        <div id="docs-view-preview" class="d-none">
+          <div class="d-flex align-items-center justify-content-between mb-3">
+            <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill" id="btn-doc-voltar">
+              <i class="bi bi-arrow-left me-1"></i> Voltar
+            </button>
+            <a href="#" target="_blank" rel="noopener noreferrer" id="doc-preview-abrir" class="btn btn-sm rounded-pill" style="color:var(--color-primary-dark);border:1px solid var(--color-primary);">
+              <i class="bi bi-box-arrow-up-right me-1"></i> Abrir em nova aba
+            </a>
+          </div>
+          <div class="text-center" id="docs-preview-conteudo"></div>
+          <div class="mt-3 text-muted small text-center" id="docs-preview-nome"></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+<?php endif; ?>
 
 <div class="modal fade" id="modalNotas" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
@@ -4091,6 +4424,224 @@ document.getElementById('aba-confirmadas')?.addEventListener('click', () => {
   document.getElementById('painel-confirmadas').style.display = '';
   document.getElementById('aba-confirmadas').style.cssText = 'background:#16a34a;color:#fff;border:none;';
   document.getElementById('aba-sugestoes').style.cssText   = 'background:#f5f3ff;color:#7c3aed;border:1.5px solid #a78bfa;';
+});
+
+/* ---- MODAL DE UPLOADS (documentos/arquivos do evento) ---- */
+function escDoc(str) {
+  return String(str || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function docItemHtml(d) {
+  const nomeEsc     = escDoc(d.nome_original);
+  const arquivoEsc  = escDoc(d.nome_arquivo);
+  const thumb = d.is_imagem
+    ? `<img src="./uploads/${arquivoEsc}" alt="">`
+    : '<i class="bi bi-file-earmark-pdf-fill"></i>';
+  return `
+    <div class="doc-item position-relative" data-id="${d.id}" data-arquivo="${arquivoEsc}" data-nome="${nomeEsc}" data-imagem="${d.is_imagem ? '1' : '0'}" title="${nomeEsc}">
+      <span class="doc-item-remove" title="Excluir"><i class="bi bi-x-lg"></i></span>
+      <div class="doc-item-thumb">${thumb}</div>
+      <div class="doc-item-nome text-truncate">${nomeEsc}</div>
+      <div class="doc-item-meta">${d.tamanho_fmt}</div>
+    </div>`;
+}
+
+function garantirGrupoDoc(categoria) {
+  document.getElementById('docs-vazia')?.remove();
+  const wrap = document.getElementById('docs-lista-grupos');
+  let grupo = wrap.querySelector(`.doc-grupo[data-categoria="${cssEscape(categoria)}"]`);
+  if (!grupo) {
+    grupo = document.createElement('div');
+    grupo.className = 'doc-grupo mb-4';
+    grupo.dataset.categoria = categoria;
+    grupo.innerHTML = `
+      <div class="doc-grupo-header d-flex align-items-center gap-2 px-2 py-2 rounded-3 mb-2" style="background:var(--color-primary-light);">
+        <i class="bi bi-folder-fill" style="color:var(--color-primary-dark);"></i>
+        <span class="fw-bold small" style="color:var(--color-primary-dark);">${escDoc(categoria)}</span>
+        <span class="badge rounded-pill cnt-grp-doc" style="background:var(--color-primary-dark);">0</span>
+      </div>
+      <div class="doc-lista-items d-flex flex-wrap gap-2"></div>`;
+    if (filtroDocAtivo !== 'Todos' && filtroDocAtivo !== categoria) grupo.style.display = 'none';
+    wrap.appendChild(grupo);
+    garantirFiltroDocBtn(categoria);
+  }
+  return grupo;
+}
+
+function inserirDocItem(d) {
+  const grupo = garantirGrupoDoc(d.categoria);
+  const lista = grupo.querySelector('.doc-lista-items');
+  lista.insertAdjacentHTML('afterbegin', docItemHtml(d));
+  const cnt = grupo.querySelector('.cnt-grp-doc');
+  if (cnt) cnt.textContent = lista.querySelectorAll('.doc-item').length;
+  atualizarContadorFiltroDoc(d.categoria);
+}
+
+/* ---- Filtro por categoria (barra de pills acima da lista) ---- */
+let filtroDocAtivo = 'Todos';
+
+function aplicarFiltroDocs() {
+  document.querySelectorAll('#docs-lista-grupos .doc-grupo').forEach(g => {
+    g.style.display = (filtroDocAtivo === 'Todos' || g.dataset.categoria === filtroDocAtivo) ? '' : 'none';
+  });
+}
+
+function pintarFiltroDocBtn(btn, ativo) {
+  btn.classList.toggle('active', ativo);
+  btn.style.background   = ativo ? 'var(--color-primary-dark)' : 'var(--color-primary-light)';
+  btn.style.color        = ativo ? '#fff' : 'var(--color-primary-dark)';
+  btn.style.borderColor  = ativo ? 'var(--color-primary-dark)' : 'var(--color-primary)';
+  const badge = btn.querySelector('.badge');
+  if (badge) {
+    badge.style.background = ativo ? 'rgba(255,255,255,.3)' : 'rgba(169,116,79,.18)';
+    badge.style.color      = ativo ? '#fff' : 'var(--color-primary-dark)';
+  }
+}
+
+function bindFiltroDocBtn(btn) {
+  btn.addEventListener('click', function () {
+    filtroDocAtivo = this.dataset.cat;
+    document.querySelectorAll('.doc-filtro-btn').forEach(b => pintarFiltroDocBtn(b, b === this));
+    aplicarFiltroDocs();
+  });
+}
+
+function garantirFiltroDocBtn(categoria) {
+  const wrap = document.getElementById('docs-filtros');
+  if (!wrap) return;
+  let btn = wrap.querySelector(`.doc-filtro-btn[data-cat="${cssEscape(categoria)}"]`);
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-sm rounded-pill doc-filtro-btn';
+    btn.dataset.cat = categoria;
+    btn.innerHTML = `${escDoc(categoria)} <span class="badge rounded-pill ms-1">0</span>`;
+    pintarFiltroDocBtn(btn, false);
+    bindFiltroDocBtn(btn);
+    wrap.appendChild(btn);
+  }
+}
+
+function atualizarContadorFiltroDoc(categoria) {
+  const grupo = document.querySelector(`#docs-lista-grupos .doc-grupo[data-categoria="${cssEscape(categoria)}"]`);
+  const qtd   = grupo ? grupo.querySelectorAll('.doc-item').length : 0;
+  const btn   = document.querySelector(`.doc-filtro-btn[data-cat="${cssEscape(categoria)}"]`);
+  const badge = btn?.querySelector('.badge');
+  if (badge) badge.textContent = qtd;
+
+  const total      = document.querySelectorAll('#docs-lista-grupos .doc-item').length;
+  const badgeTodos = document.querySelector('.doc-filtro-btn[data-cat="Todos"] .badge');
+  if (badgeTodos) badgeTodos.textContent = total;
+}
+
+document.querySelectorAll('.doc-filtro-btn').forEach(bindFiltroDocBtn);
+
+// Categoria: "Outra categoria (digitar)" revela um campo de texto livre
+document.getElementById('doc-categoria')?.addEventListener('change', function () {
+  const campoOutro = document.getElementById('doc-categoria-outra');
+  const ehOutro = this.value === '__outro__';
+  campoOutro.classList.toggle('d-none', !ehOutro);
+  if (ehOutro) campoOutro.focus();
+});
+
+// Enviar arquivo
+document.getElementById('btn-add-doc')?.addEventListener('click', async () => {
+  const selCat     = document.getElementById('doc-categoria');
+  const campoOutro = document.getElementById('doc-categoria-outra');
+  const ehOutro    = selCat.value === '__outro__';
+  const categoria  = ehOutro ? campoOutro.value.trim() : selCat.value;
+  const inputArq   = document.getElementById('doc-arquivo');
+  const arquivo    = inputArq.files[0];
+
+  if (ehOutro && !categoria) { toast('Digite o nome da categoria.', 'warn'); campoOutro.focus(); return; }
+  if (!arquivo) { toast('Selecione um arquivo para enviar.', 'warn'); return; }
+
+  const btn  = document.getElementById('btn-add-doc');
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Enviando…';
+  btn.disabled  = true;
+  try {
+    const r = await ajax({ upload_documento: '1', categoria_documento: categoria, arquivo_documento: arquivo });
+    if (r.ok) {
+      inserirDocItem(r.documento);
+      inputArq.value = '';
+      toast('Arquivo enviado!', 'verde');
+    } else {
+      toast(r.msg || 'Erro ao enviar arquivo.', 'verm');
+    }
+  } catch { toast('Erro de conexão. Tente novamente.', 'verm'); }
+  btn.innerHTML = orig;
+  btn.disabled  = false;
+});
+
+// Clique num arquivo abre a prévia (dentro da própria modal); clique no "x" exclui
+document.getElementById('docs-lista-grupos')?.addEventListener('click', e => {
+  const removeBtn = e.target.closest('.doc-item-remove');
+  if (removeBtn) {
+    const item      = removeBtn.closest('.doc-item');
+    const grupo     = removeBtn.closest('.doc-grupo');
+    const id        = item.dataset.id;
+    const categoria = grupo?.dataset.categoria;
+    showConfirm(
+      'Excluir este arquivo?',
+      'Esta ação não pode ser desfeita.',
+      async () => {
+        try {
+          const r = await ajax({ excluir_documento: '1', documento_id: id });
+          if (r.ok) {
+            item.style.transition = 'opacity .25s, transform .25s';
+            item.style.opacity    = '0';
+            item.style.transform  = 'scale(.9)';
+            setTimeout(() => {
+              item.remove();
+              if (grupo) {
+                const rest = grupo.querySelectorAll('.doc-item').length;
+                const cnt  = grupo.querySelector('.cnt-grp-doc');
+                if (cnt) cnt.textContent = rest;
+                if (rest === 0) grupo.remove();
+              }
+              if (categoria) atualizarContadorFiltroDoc(categoria);
+              if (!document.querySelector('#docs-lista-grupos .doc-item') && !document.getElementById('docs-vazia')) {
+                document.getElementById('docs-lista-grupos').insertAdjacentHTML('afterbegin',
+                  '<div class="text-center py-5 text-muted" id="docs-vazia"><i class="bi bi-folder2-open fs-1 d-block mb-2" style="opacity:.2;"></i><small>Nenhum arquivo enviado ainda.</small></div>');
+              }
+            }, 260);
+            toast('Arquivo excluído.', 'verm');
+          }
+        } catch { toast('Erro ao excluir arquivo.', 'verm'); }
+      },
+      { icon: 'bi bi-trash-fill text-danger fs-4', btnText: 'Excluir' }
+    );
+    return;
+  }
+
+  const item = e.target.closest('.doc-item');
+  if (item) abrirPreviewDoc(item.dataset);
+});
+
+function abrirPreviewDoc(ds) {
+  const caminho   = './uploads/' + encodeURIComponent(ds.arquivo);
+  const conteudo  = document.getElementById('docs-preview-conteudo');
+  conteudo.innerHTML = ds.imagem === '1'
+    ? `<img src="${caminho}" alt="">`
+    : `<iframe src="${caminho}"></iframe>`;
+  document.getElementById('docs-preview-nome').textContent = ds.nome;
+  document.getElementById('doc-preview-abrir').href = caminho;
+  document.getElementById('docs-view-lista').classList.add('d-none');
+  document.getElementById('docs-view-preview').classList.remove('d-none');
+}
+
+document.getElementById('btn-doc-voltar')?.addEventListener('click', () => {
+  document.getElementById('docs-view-preview').classList.add('d-none');
+  document.getElementById('docs-view-lista').classList.remove('d-none');
+  document.getElementById('docs-preview-conteudo').innerHTML = '';
+});
+
+document.getElementById('modalDocumentos')?.addEventListener('hidden.bs.modal', () => {
+  document.getElementById('docs-view-preview')?.classList.add('d-none');
+  document.getElementById('docs-view-lista')?.classList.remove('d-none');
+  const conteudo = document.getElementById('docs-preview-conteudo');
+  if (conteudo) conteudo.innerHTML = '';
 });
 </script>
 </body>

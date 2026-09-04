@@ -5,9 +5,9 @@ verificar_sessao_ativa();
 require_once 'conexao.php';
 
 // ============================================================
-// TRAVA DE SEGURANÇA: Apenas administradores
+// TRAVA DE SEGURANÇA: Admin e assistente (sem dado financeiro nesta página)
 // ============================================================
-if (!isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'admin') {
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente'], true)) {
     header("Location: index.php?sessao_expirada=1");
     exit;
 }

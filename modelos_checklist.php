@@ -3,8 +3,8 @@ session_start();
 require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 
-// Proteção da página: Apenas administradores
-if (!isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'admin') {
+// Proteção da página: admin e assistente (sem dado financeiro nesta página)
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente'], true)) {
     header("Location: index.php?sessao_expirada=1");
     exit;
 }

@@ -72,6 +72,43 @@ if (!schema_ja_verificado('organizar_mesas_v2')) {
     marcar_schema_verificado('organizar_mesas_v2');
 }
 
+// Elementos livres do Mapa de Mesas (por enquanto só o Palco) — tabela separada
+// porque instalações antigas já marcaram 'organizar_mesas_v2' como verificado
+// e nunca mais passariam pelo bloco acima.
+if (!schema_ja_verificado('organizar_mesas_elementos_v1')) {
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS mapa_elementos (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            evento_id INT NOT NULL,
+            tipo VARCHAR(20) NOT NULL DEFAULT 'palco',
+            rotulo VARCHAR(50) NOT NULL DEFAULT 'Palco',
+            pos_x FLOAT NOT NULL DEFAULT 50,
+            pos_y FLOAT NOT NULL DEFAULT 15,
+            largura FLOAT NOT NULL DEFAULT 28,
+            altura FLOAT NOT NULL DEFAULT 16,
+            rotacao FLOAT NOT NULL DEFAULT 0
+        )");
+        // Só marca como verificado se a tabela realmente foi criada — senão, se o
+        // CREATE falhar por qualquer motivo, a marcação ficava presa em "ok" pra
+        // sempre e a página quebrava toda vez tentando usar uma tabela inexistente.
+        marcar_schema_verificado('organizar_mesas_elementos_v1');
+    } catch (PDOException $e) {}
+}
+// Coluna adicionada depois de instalações que já tinham marcado a v1 como
+// verificada (a tabela já existia sem "rotacao") — por isso o ALTER fica
+// numa checagem própria em vez de dentro do CREATE TABLE IF NOT EXISTS acima.
+if (!schema_ja_verificado('organizar_mesas_elementos_v2')) {
+    try {
+        $pdo->query("SELECT rotacao FROM mapa_elementos LIMIT 1");
+        marcar_schema_verificado('organizar_mesas_elementos_v2');
+    } catch (Exception $e) {
+        try {
+            $pdo->exec("ALTER TABLE mapa_elementos ADD COLUMN rotacao FLOAT NOT NULL DEFAULT 0");
+            marcar_schema_verificado('organizar_mesas_elementos_v2');
+        } catch (Exception $x) {}
+    }
+}
+
 const FAIXAS_ETARIAS_CONVIDADOS = ['Adulto (11+ anos)', 'Criança (6-10 anos)', 'Criança de Colo (0-5 anos)'];
 
 /** Sincroniza os acompanhantes (nome + faixa etária) de um convidado titular:
@@ -194,6 +231,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $py  = max(0, min(100, (float)($_POST['pos_y'] ?? 0)));
         $pdo->prepare("UPDATE mesas SET pos_x = ?, pos_y = ? WHERE id = ? AND evento_id = ?")
             ->execute([$px, $py, $mid, $evento_id]);
+        json_out(['ok' => true]);
+    }
+
+    // AJAX: Adicionar elemento livre ao mapa (ex: Palco)
+    if (isset($_POST['adicionar_elemento_mapa'])) {
+        $tipo = trim($_POST['tipo_elemento'] ?? 'palco') ?: 'palco';
+        $rotulo = $tipo === 'palco' ? 'Palco' : ucfirst($tipo);
+        $pdo->prepare("INSERT INTO mapa_elementos (evento_id, tipo, rotulo, pos_x, pos_y, largura, altura, rotacao) VALUES (?, ?, ?, 50, 15, 28, 16, 0)")
+            ->execute([$evento_id, $tipo, $rotulo]);
+        json_out([
+            'ok' => true,
+            'elemento' => ['id' => (int)$pdo->lastInsertId(), 'tipo' => $tipo, 'rotulo' => $rotulo, 'pos_x' => 50, 'pos_y' => 15, 'largura' => 28, 'altura' => 16, 'rotacao' => 0],
+        ]);
+    }
+
+    // AJAX: Salvar posição/tamanho/rotação (x/y/largura/altura em %, rotação em graus) de um elemento do mapa
+    if (isset($_POST['salvar_elemento_mapa'])) {
+        $eid = (int)($_POST['elemento_id'] ?? 0);
+        $px  = max(0, min(100, (float)($_POST['pos_x'] ?? 0)));
+        $py  = max(0, min(100, (float)($_POST['pos_y'] ?? 0)));
+        $lg  = max(6, min(90, (float)($_POST['largura'] ?? 28)));
+        $al  = max(5, min(80, (float)($_POST['altura'] ?? 16)));
+        $rot = fmod((float)($_POST['rotacao'] ?? 0), 360);
+        if ($rot < 0) $rot += 360;
+        $pdo->prepare("UPDATE mapa_elementos SET pos_x = ?, pos_y = ?, largura = ?, altura = ?, rotacao = ? WHERE id = ? AND evento_id = ?")
+            ->execute([$px, $py, $lg, $al, $rot, $eid, $evento_id]);
+        json_out(['ok' => true]);
+    }
+
+    // AJAX: Remover elemento do mapa
+    if (isset($_POST['remover_elemento_mapa'])) {
+        $eid = (int)($_POST['elemento_id'] ?? 0);
+        $pdo->prepare("DELETE FROM mapa_elementos WHERE id = ? AND evento_id = ?")->execute([$eid, $evento_id]);
         json_out(['ok' => true]);
     }
 
@@ -436,6 +506,25 @@ $pdo->prepare("
 $stmtM = $pdo->prepare("SELECT * FROM mesas WHERE evento_id = ? ORDER BY ordem ASC, id ASC");
 $stmtM->execute([$evento_id]);
 $lista_mesas = $stmtM->fetchAll(PDO::FETCH_ASSOC);
+
+$stmtEl = $pdo->prepare("SELECT * FROM mapa_elementos WHERE evento_id = ? ORDER BY id ASC");
+$stmtEl->execute([$evento_id]);
+$lista_elementos_mapa = $stmtEl->fetchAll(PDO::FETCH_ASSOC);
+
+// A Entrada é um marcador único por evento (não tem botão de remover/redimensionar
+// como o Palco) — se ainda não existe uma linha pra ela, cria com a posição padrão
+// de sempre (embaixo, centralizada) na primeira vez que a página carrega.
+$elemento_entrada = null;
+$lista_elementos_palco = [];
+foreach ($lista_elementos_mapa as $el) {
+    if ($el['tipo'] === 'entrada') $elemento_entrada = $el;
+    else $lista_elementos_palco[] = $el;
+}
+if (!$elemento_entrada) {
+    $pdo->prepare("INSERT INTO mapa_elementos (evento_id, tipo, rotulo, pos_x, pos_y, largura, altura) VALUES (?, 'entrada', 'Entrada', 50, 94, 0, 0)")
+        ->execute([$evento_id]);
+    $elemento_entrada = ['id' => (int)$pdo->lastInsertId(), 'tipo' => 'entrada', 'rotulo' => 'Entrada', 'pos_x' => 50, 'pos_y' => 94, 'largura' => 0, 'altura' => 0, 'rotacao' => 0];
+}
 
 $stmtC = $pdo->prepare("
     SELECT id, nome, telefone, categoria, confirmado, mesa_id, convidado_principal_id, faixa_etaria, resposta_rsvp
@@ -686,15 +775,60 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       .mapa-mesa-ocup { font-size: .44rem !important; margin-top: 0 !important; }
     }
 
-    /* Marcador fixo (não arrastável) indicando a entrada do espaço */
+    /* Palco (e outros elementos retangulares livres) do Mapa de Mesas */
+    .mapa-palco-item {
+      position: absolute; box-sizing: border-box;
+      background: repeating-linear-gradient(45deg, #1e293b, #1e293b 10px, #334155 10px, #334155 20px);
+      border: 2px solid #0f172a; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: .72rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+      cursor: grab; user-select: none; box-shadow: 0 4px 10px rgba(0,0,0,.15);
+      transition: box-shadow .15s;
+    }
+    .mapa-palco-item:hover { box-shadow: 0 6px 16px rgba(0,0,0,.25); }
+    .mapa-palco-item.arrastando { cursor: grabbing; z-index: 10; box-shadow: 0 10px 24px rgba(0,0,0,.3); transition: none; }
+    .mapa-palco-item .palco-label { pointer-events: none; text-shadow: 0 1px 2px rgba(0,0,0,.4); }
+    .palco-remove-btn {
+      position: absolute; top: -8px; right: -8px; width: 20px; height: 20px; border-radius: 50%;
+      background: #ef4444; color: #fff; border: 2px solid #fff; display: flex; align-items: center; justify-content: center;
+      font-size: .6rem; line-height: 1; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.25);
+    }
+    .palco-resize-handle {
+      position: absolute; right: -6px; bottom: -6px; width: 16px; height: 16px; border-radius: 4px;
+      background: #fff; border: 2px solid #0f172a; cursor: nwse-resize;
+    }
+    /* Alça de girar — usada tanto no Palco quanto na Entrada; gira junto com o
+       elemento (mesmo transform), então sempre aparece "pra fora" dele. */
+    .elemento-rotate-handle {
+      position: absolute; top: -26px; left: 50%; transform: translateX(-50%);
+      width: 18px; height: 18px; border-radius: 50%;
+      background: #fff; border: 2px solid #0f172a; color: #0f172a;
+      display: flex; align-items: center; justify-content: center;
+      font-size: .62rem; line-height: 1; cursor: grab;
+      box-shadow: 0 2px 6px rgba(0,0,0,.25);
+    }
+    .elemento-rotate-handle::after {
+      content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+      width: 2px; height: 8px; background: #0f172a;
+    }
+    .elemento-rotate-handle:active { cursor: grabbing; }
+    @media (max-width: 575.98px) {
+      .mapa-palco-item { font-size: .58rem; }
+    }
+
+    /* Marcador da entrada do espaço — arrastável, pra indicar de qual lado ela fica */
     .mapa-entrada {
-      position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+      position: absolute; transform: translate(-50%, -50%);
       display: flex; align-items: center; gap: .35rem; z-index: 1;
       background: #1e293b; color: #fff; font-size: .66rem; font-weight: 700;
       padding: .35rem .85rem; border-radius: 20px; letter-spacing: .03em; text-transform: uppercase;
-      box-shadow: 0 3px 10px rgba(0,0,0,.2); pointer-events: none; white-space: nowrap;
+      box-shadow: 0 3px 10px rgba(0,0,0,.2); white-space: nowrap; cursor: grab; user-select: none;
+      transition: box-shadow .15s;
       -webkit-print-color-adjust: exact; print-color-adjust: exact;
     }
+    .mapa-entrada:hover { box-shadow: 0 5px 14px rgba(0,0,0,.3); }
+    .mapa-entrada.arrastando { cursor: grabbing; z-index: 10; box-shadow: 0 10px 24px rgba(0,0,0,.35); transition: none; }
+    .mapa-entrada i { pointer-events: none; }
     .mapa-mesa-ocup { font-size: .58rem; font-weight: 600; margin-top: .1rem; }
 
     /* Estilo sutil de Hover pros botões transparentes */
@@ -1407,6 +1541,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           'y'    => $m['pos_y'] !== null ? (float)$m['pos_y'] : $defY,
       ];
   }
+  $temMapaConteudo = !empty($mapa_mesas) || !empty($lista_elementos_palco);
 ?>
 <div class="modal fade" id="modalMapaMesas" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered modal-xl">
@@ -1420,12 +1555,15 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           <h5 class="fw-bold mb-0">Mapa de Mesas</h5>
           <p class="text-muted mb-0 small"><?= htmlspecialchars($evento['nome']) ?> &bull; <?= date('d/m/Y', strtotime($evento['data_evento'])) ?></p>
         </div>
-        <p class="text-muted mb-3 no-print" style="font-size:.78rem;">Arraste cada mesa pra representar como elas vão ficar no espaço do evento. A posição é salva sozinha.</p>
-        <?php if (empty($mapa_mesas)): ?>
-          <div class="text-center text-muted py-5 no-print">
-            <i class="bi bi-map fs-1 d-block mb-2"></i> Crie uma mesa primeiro pra poder organizá-la no mapa.
-          </div>
-        <?php else: ?>
+        <div class="d-flex align-items-start justify-content-between gap-2 flex-wrap mb-3 no-print">
+          <p class="text-muted mb-0" style="font-size:.78rem;">Arraste cada mesa, o palco ou a entrada pra representar como vão ficar no espaço do evento. A posição é salva sozinha.</p>
+          <button type="button" id="btn-add-palco" class="btn btn-dark btn-sm rounded-pill fw-semibold px-3 flex-shrink-0">
+            <i class="bi bi-square-fill me-1"></i> Adicionar Palco
+          </button>
+        </div>
+        <?php if (!$temMapaConteudo): ?>
+          <p class="text-center text-muted small mb-2 no-print"><i class="bi bi-info-circle me-1"></i>Crie uma mesa ou adicione um palco pra poder organizar o mapa.</p>
+        <?php endif; ?>
         <div id="mapa-mesas-area" class="mapa-mesas-area">
           <?php foreach ($mapa_mesas as $mm): ?>
           <div class="mapa-mesa-chip" data-mesa-id="<?= $mm['id'] ?>"
@@ -1435,8 +1573,22 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
             <div class="mapa-mesa-ocup" style="color:<?= $mm['cor'] ?>;"><?= $mm['ocup'] ?>/<?= $mm['cap'] ?></div>
           </div>
           <?php endforeach; ?>
-          <div class="mapa-entrada" title="Entrada do espaço">
+          <?php foreach ($lista_elementos_palco as $el): $elRot = (float)($el['rotacao'] ?? 0); ?>
+          <div class="mapa-palco-item" data-elemento-id="<?= $el['id'] ?>" data-rotacao="<?= $elRot ?>"
+               style="left:<?= (float)$el['pos_x'] ?>%; top:<?= (float)$el['pos_y'] ?>%; width:<?= (float)$el['largura'] ?>%; height:<?= (float)$el['altura'] ?>%; transform: rotate(<?= $elRot ?>deg);"
+               title="<?= htmlspecialchars($el['rotulo'], ENT_QUOTES, 'UTF-8') ?>">
+            <span class="palco-label"><?= htmlspecialchars($el['rotulo'], ENT_QUOTES, 'UTF-8') ?></span>
+            <span class="elemento-rotate-handle no-print" title="Girar"><i class="bi bi-arrow-repeat"></i></span>
+            <span class="palco-remove-btn no-print" title="Remover"><i class="bi bi-x-lg"></i></span>
+            <span class="palco-resize-handle no-print" title="Redimensionar"></span>
+          </div>
+          <?php endforeach; ?>
+          <?php $entRot = (float)($elemento_entrada['rotacao'] ?? 0); ?>
+          <div class="mapa-entrada" data-elemento-id="<?= $elemento_entrada['id'] ?>" data-rotacao="<?= $entRot ?>"
+               style="left:<?= (float)$elemento_entrada['pos_x'] ?>%; top:<?= (float)$elemento_entrada['pos_y'] ?>%; transform: translate(-50%, -50%) rotate(<?= $entRot ?>deg);"
+               title="Entrada do espaço — arraste para mudar o lado, use a alça pra girar">
             <i class="bi bi-box-arrow-in-down"></i> Entrada
+            <span class="elemento-rotate-handle no-print" title="Girar"><i class="bi bi-arrow-repeat"></i></span>
           </div>
         </div>
         <div class="d-flex align-items-center gap-3 flex-wrap mt-3" style="font-size:.7rem;color:#64748b;">
@@ -1445,15 +1597,12 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           <span><span class="legend-dot" style="background:#f59e0b;"></span> Quase cheia</span>
           <span><span class="legend-dot" style="background:#ef4444;"></span> Lotada</span>
         </div>
-        <?php endif; ?>
       </div>
       <div class="modal-footer border-0 pt-0 no-print">
         <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Fechar</button>
-        <?php if (!empty($mapa_mesas)): ?>
         <button type="button" class="btn btn-info btn-sm px-4 rounded-pill fw-semibold" onclick="imprimirMapaMesas()">
           <i class="bi bi-printer-fill me-1"></i> Imprimir / Exportar
         </button>
-        <?php endif; ?>
       </div>
     </div>
   </div>
@@ -1549,12 +1698,33 @@ function imprimirMapaMesas() {
 }
 window.addEventListener('afterprint', () => document.body.classList.remove('imprimindo-mapa'));
 
-/* ---- Mapa de Mesas: arrastar cada mesa dentro da área e salvar a posição ---- */
+/* ---- Mapa de Mesas: arrastar cada mesa (ou palco) dentro da área e salvar a posição ---- */
 (function initMapaMesas() {
   const area = document.getElementById('mapa-mesas-area');
   if (!area) return;
 
   let chipAtivo = null;
+  let entradaAtivo = null;
+  let palcoAtivo = null;
+  let palcoOffset = null;
+  let palcoResize = null;
+  let resizeInicio = null;
+  let rotAtivo = null;
+  let rotCenter = null;
+  let rotOffset = 0;
+
+  // Ângulo do centro do elemento até o cursor, em graus, onde 0° = cursor
+  // exatamente acima do centro (é daí que a alça de girar começa).
+  function anguloEntre(cx, cy, x, y) {
+    return Math.atan2(x - cx, -(y - cy)) * 180 / Math.PI;
+  }
+
+  function aplicarRotacao(el, deg) {
+    el.dataset.rotacao = deg;
+    el.style.transform = el.classList.contains('mapa-entrada')
+      ? 'translate(-50%, -50%) rotate(' + deg + 'deg)'
+      : 'rotate(' + deg + 'deg)';
+  }
 
   function posPercent(clientX, clientY) {
     const rect = area.getBoundingClientRect();
@@ -1566,25 +1736,174 @@ window.addEventListener('afterprint', () => document.body.classList.remove('impr
   }
 
   function mover(clientX, clientY) {
-    if (!chipAtivo) return;
-    const { x, y } = posPercent(clientX, clientY);
-    chipAtivo.style.left = x + '%';
-    chipAtivo.style.top = y + '%';
+    if (chipAtivo) {
+      const { x, y } = posPercent(clientX, clientY);
+      chipAtivo.style.left = x + '%';
+      chipAtivo.style.top = y + '%';
+      return;
+    }
+    if (entradaAtivo) {
+      const { x, y } = posPercent(clientX, clientY);
+      entradaAtivo.style.left = x + '%';
+      entradaAtivo.style.top = y + '%';
+      return;
+    }
+    if (rotAtivo) {
+      const angulo = anguloEntre(rotCenter.x, rotCenter.y, clientX, clientY);
+      let nova = angulo - rotOffset;
+      nova = ((nova % 360) + 360) % 360;
+      aplicarRotacao(rotAtivo, Math.round(nova));
+      return;
+    }
+    if (palcoResize) {
+      const rect = area.getBoundingClientRect();
+      const deltaXPct = (clientX - resizeInicio.startX) / rect.width * 100;
+      const deltaYPct = (clientY - resizeInicio.startY) / rect.height * 100;
+      const novaLarguraPct = Math.max(8, Math.min(85, resizeInicio.largura + deltaXPct));
+      const novaAlturaPct  = Math.max(6, Math.min(70, resizeInicio.altura + deltaYPct));
+      palcoResize.style.width  = novaLarguraPct + '%';
+      palcoResize.style.height = novaAlturaPct + '%';
+      return;
+    }
+    if (palcoAtivo) {
+      const rect = area.getBoundingClientRect();
+      const largura = parseFloat(palcoAtivo.style.width) || 28;
+      const altura  = parseFloat(palcoAtivo.style.height) || 16;
+      let x = ((clientX - rect.left) / rect.width) * 100 - palcoOffset.ox;
+      let y = ((clientY - rect.top) / rect.height) * 100 - palcoOffset.oy;
+      x = Math.max(0, Math.min(100 - largura, x));
+      y = Math.max(0, Math.min(100 - altura, y));
+      palcoAtivo.style.left = x + '%';
+      palcoAtivo.style.top = y + '%';
+    }
   }
 
   async function soltar() {
-    if (!chipAtivo) return;
-    const chip = chipAtivo;
-    chip.classList.remove('arrastando');
-    chipAtivo = null;
+    if (chipAtivo) {
+      const chip = chipAtivo;
+      chip.classList.remove('arrastando');
+      chipAtivo = null;
 
+      const fd = new FormData();
+      fd.append('csrf_token', CSRF_TOKEN);
+      fd.append('salvar_posicao_mesa', '1');
+      fd.append('mesa_id', chip.dataset.mesaId);
+      fd.append('pos_x', parseFloat(chip.style.left));
+      fd.append('pos_y', parseFloat(chip.style.top));
+      try { await fetch(window.location.href, { method: 'POST', body: fd }); } catch (e) {}
+      return;
+    }
+    if (entradaAtivo) {
+      const el = entradaAtivo;
+      el.classList.remove('arrastando');
+      entradaAtivo = null;
+      await salvarElemento(el);
+      return;
+    }
+    if (rotAtivo) {
+      const el = rotAtivo;
+      el.classList.remove('arrastando');
+      rotAtivo = null;
+      rotCenter = null;
+      await salvarElemento(el);
+      return;
+    }
+    if (palcoAtivo || palcoResize) {
+      const el = palcoAtivo || palcoResize;
+      el.classList.remove('arrastando');
+      palcoAtivo = null;
+      palcoResize = null;
+      resizeInicio = null;
+      await salvarElemento(el);
+    }
+  }
+
+  async function salvarElemento(el) {
     const fd = new FormData();
     fd.append('csrf_token', CSRF_TOKEN);
-    fd.append('salvar_posicao_mesa', '1');
-    fd.append('mesa_id', chip.dataset.mesaId);
-    fd.append('pos_x', parseFloat(chip.style.left));
-    fd.append('pos_y', parseFloat(chip.style.top));
+    fd.append('salvar_elemento_mapa', '1');
+    fd.append('elemento_id', el.dataset.elementoId);
+    fd.append('pos_x', parseFloat(el.style.left));
+    fd.append('pos_y', parseFloat(el.style.top));
+    fd.append('largura', parseFloat(el.style.width));
+    fd.append('altura', parseFloat(el.style.height));
+    fd.append('rotacao', el.dataset.rotacao || '0');
     try { await fetch(window.location.href, { method: 'POST', body: fd }); } catch (e) {}
+  }
+
+  function bindPalco(el) {
+    function calcOffset(clientX, clientY) {
+      const rect = area.getBoundingClientRect();
+      const elRect = el.getBoundingClientRect();
+      return {
+        ox: ((clientX - elRect.left) / rect.width) * 100,
+        oy: ((clientY - elRect.top) / rect.height) * 100,
+      };
+    }
+
+    el.addEventListener('mousedown', e => {
+      if (e.target.closest('.palco-remove-btn') || e.target.closest('.palco-resize-handle') || e.target.closest('.elemento-rotate-handle')) return;
+      e.preventDefault();
+      palcoAtivo = el;
+      palcoOffset = calcOffset(e.clientX, e.clientY);
+      el.classList.add('arrastando');
+    });
+    el.addEventListener('touchstart', e => {
+      if (e.target.closest('.palco-remove-btn') || e.target.closest('.palco-resize-handle') || e.target.closest('.elemento-rotate-handle')) return;
+      palcoAtivo = el;
+      const t = e.touches[0];
+      palcoOffset = calcOffset(t.clientX, t.clientY);
+      el.classList.add('arrastando');
+    }, { passive: true });
+
+    const handle = el.querySelector('.palco-resize-handle');
+    if (handle) {
+      const iniciarResize = (clientX, clientY) => {
+        palcoResize = el;
+        el.classList.add('arrastando');
+        resizeInicio = {
+          largura: parseFloat(el.style.width) || 28,
+          altura: parseFloat(el.style.height) || 16,
+          startX: clientX,
+          startY: clientY,
+        };
+      };
+      handle.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); iniciarResize(e.clientX, e.clientY); });
+      handle.addEventListener('touchstart', e => { e.stopPropagation(); const t = e.touches[0]; iniciarResize(t.clientX, t.clientY); }, { passive: true });
+    }
+
+    const removeBtn = el.querySelector('.palco-remove-btn');
+    if (removeBtn) {
+      removeBtn.addEventListener('click', async e => {
+        e.preventDefault();
+        e.stopPropagation();
+        const fd = new FormData();
+        fd.append('csrf_token', CSRF_TOKEN);
+        fd.append('remover_elemento_mapa', '1');
+        fd.append('elemento_id', el.dataset.elementoId);
+        try { await fetch(window.location.href, { method: 'POST', body: fd }); } catch (err) {}
+        el.remove();
+      });
+    }
+
+    bindRotate(el);
+  }
+
+  function iniciarRotacao(el, clientX, clientY) {
+    const rect = el.getBoundingClientRect();
+    rotCenter = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    const anguloAtualCursor = anguloEntre(rotCenter.x, rotCenter.y, clientX, clientY);
+    const rotAtual = parseFloat(el.dataset.rotacao || '0');
+    rotOffset = anguloAtualCursor - rotAtual;
+    rotAtivo = el;
+    el.classList.add('arrastando');
+  }
+
+  function bindRotate(el) {
+    const handle = el.querySelector('.elemento-rotate-handle');
+    if (!handle) return;
+    handle.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); iniciarRotacao(el, e.clientX, e.clientY); });
+    handle.addEventListener('touchstart', e => { e.stopPropagation(); const t = e.touches[0]; iniciarRotacao(el, t.clientX, t.clientY); }, { passive: true });
   }
 
   area.querySelectorAll('.mapa-mesa-chip').forEach(chip => {
@@ -1599,14 +1918,62 @@ window.addEventListener('afterprint', () => document.body.classList.remove('impr
     }, { passive: true });
   });
 
+  area.querySelectorAll('.mapa-palco-item').forEach(bindPalco);
+
+  const entradaEl = area.querySelector('.mapa-entrada');
+  if (entradaEl) {
+    entradaEl.addEventListener('mousedown', e => {
+      if (e.target.closest('.elemento-rotate-handle')) return;
+      e.preventDefault();
+      entradaAtivo = entradaEl;
+      entradaEl.classList.add('arrastando');
+    });
+    entradaEl.addEventListener('touchstart', e => {
+      if (e.target.closest('.elemento-rotate-handle')) return;
+      entradaAtivo = entradaEl;
+      entradaEl.classList.add('arrastando');
+    }, { passive: true });
+    bindRotate(entradaEl);
+  }
+
   document.addEventListener('mousemove', e => mover(e.clientX, e.clientY));
   document.addEventListener('touchmove', e => {
-    if (!chipAtivo) return;
+    if (!chipAtivo && !entradaAtivo && !rotAtivo && !palcoAtivo && !palcoResize) return;
     const t = e.touches[0];
     mover(t.clientX, t.clientY);
   }, { passive: true });
   document.addEventListener('mouseup', soltar);
   document.addEventListener('touchend', soltar);
+
+  // Botão "Adicionar Palco": cria o elemento no servidor e já pendura ele
+  // arrastável na área, sem precisar recarregar a página.
+  document.getElementById('btn-add-palco')?.addEventListener('click', async () => {
+    const fd = new FormData();
+    fd.append('csrf_token', CSRF_TOKEN);
+    fd.append('adicionar_elemento_mapa', '1');
+    fd.append('tipo_elemento', 'palco');
+    try {
+      const r = await fetch(window.location.href, { method: 'POST', body: fd }).then(res => res.json());
+      if (!r.ok) return;
+      const el = r.elemento;
+      const div = document.createElement('div');
+      div.className = 'mapa-palco-item';
+      div.dataset.elementoId = el.id;
+      div.dataset.rotacao = el.rotacao || 0;
+      div.title = el.rotulo;
+      div.style.left = el.pos_x + '%';
+      div.style.top = el.pos_y + '%';
+      div.style.width = el.largura + '%';
+      div.style.height = el.altura + '%';
+      div.innerHTML = '<span class="palco-label">' + escapeHtmlConv(el.rotulo) + '</span>'
+        + '<span class="elemento-rotate-handle no-print" title="Girar"><i class="bi bi-arrow-repeat"></i></span>'
+        + '<span class="palco-remove-btn no-print" title="Remover"><i class="bi bi-x-lg"></i></span>'
+        + '<span class="palco-resize-handle no-print" title="Redimensionar"></span>';
+      area.appendChild(div);
+      bindPalco(div);
+      document.querySelector('#modalMapaMesas .no-print.small.text-center')?.remove();
+    } catch (e) {}
+  });
 
   // Convidados são movidos de mesa em vários lugares da tela (drag & drop,
   // modais...) sem recarregar a página — então toda vez que o mapa abre,
