@@ -12,6 +12,11 @@ $options = [
     PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     PDO::ATTR_EMULATE_PREPARES   => false,
+    // Fixa o fuso só nesta conexão (não é global, não afeta outros sistemas
+    // que compartilham este mesmo servidor MySQL). Assessoria opera em Boa
+    // Vista/RR (UTC-4). Brasil não tem mais horário de verão desde 2019,
+    // então "-04:00" é seguro e fixo.
+    PDO::MYSQL_ATTR_INIT_COMMAND => "SET time_zone = '-04:00'",
 ];
 
 try {

@@ -48,6 +48,50 @@ docker-compose logs -f app          # acompanhar subida
   `gerenciar/sistema_eventos.sql`, importado automaticamente na 1ª subida do
   container `db`.
 
+## Infraestrutura de produção (servidor)
+
+**Descoberto/confirmado em sessão de debug de 09/09/2026** (bug de fuso
+horário nas notificações — ver Armadilhas item 10). Guardar isso aqui porque
+não é derivável do código, só olhando o servidor de fato:
+
+- Produção roda numa **Droplet DigitalOcean** (Ubuntu 24.04 LTS,
+  `ubuntu-s-1vcpu-1gb-nyc1-01`), acessada via console web da DigitalOcean.
+- **Os arquivos `Dockerfile`/`docker-compose.yml` de produção NÃO são os
+  mesmos do repositório git.** Eles moram direto no servidor em
+  `/var/www/meueventopro/` (compose com serviço único `app`, código PHP
+  montado via volume `./app:/var/www/html`) e evoluíram separados do que
+  está versionado em `app/Dockerfile` / `app/docker-compose.yml` no repo.
+  Isso já causou divergência real (ex: produção rodava `php:8.2-apache`
+  sem nenhuma configuração de fuso horário, enquanto o repo já tinha
+  `php:8.1-apache` com `TZ` configurado — um nunca refletia o outro).
+  **Editar o compose/Dockerfile do repo NÃO afeta produção** — qualquer
+  mudança nesses arquivos de infra precisa ser replicada manualmente
+  também em `/var/www/meueventopro/` no servidor.
+- Nome do container em produção é **`meueventopro_app`** (não
+  `casamento_app` como no compose local). Variáveis de ambiente reais:
+  `DB_HOST=db`, `DB_NAME=meueventopro`, `DB_USER=user`, `DB_PASS=root`
+  (diferente do `sistema_eventos`/`root`/`root` usado localmente).
+- **O banco de dados em produção é COMPARTILHADO com outro sistema**
+  completamente diferente que roda na mesma droplet: um sistema de
+  rádio/transcrição (containers `controle_app`, `controle_db`
+  — `mariadb:10.11` —, `controle_phpmyadmin`, `transcricao`). O
+  `meueventopro_app` se conecta a esse `controle_db` através da rede
+  Docker externa `controle-radio_default` (alias `db`). **Por isso:**
+  - Nunca reiniciar, recriar ou mudar configuração *global* do
+    `controle_db` (ex: `SET GLOBAL time_zone`, trocar `TZ` do container,
+    `docker restart`) — afetaria o outro sistema também.
+  - Qualquer ajuste que precise ser "só para o Meu Evento PRO" (como
+    fuso horário da conexão) deve ser feito **por sessão**, dentro da
+    própria conexão PDO do app (`PDO::MYSQL_ATTR_INIT_COMMAND`), nunca
+    globalmente no servidor MySQL.
+  - Correções de infra em produção devem sempre mirar **só** o serviço
+    `app` (`docker compose build app && docker compose up -d app` dentro
+    de `/var/www/meueventopro/`), nunca um `up -d` sem escopo que possa
+    tocar em outros serviços da mesma rede.
+- O servidor tem só o **plugin `docker compose`** (v2, sem hífen,
+  ex: `docker compose build app`) instalado — **não** tem o `docker-compose`
+  clássico (v1, com hífen). Usar sempre a forma com espaço.
+
 ## Autenticação e papéis (roles)
 
 Login único em `index.php`, que checa duas tabelas:
@@ -170,6 +214,30 @@ dessas três é feita explicitamente dentro de `excluir_evento` em
    `cal_days_in_month()` por `date('t', strtotime(...))`) para não depender
    de rebuild de imagem em produção — mesmo assim o Dockerfile ainda instala
    `calendar`, não custa nada tê-la.
+10. **Bug de fuso horário nas notificações/lembretes da agenda (corrigido em
+    09/09/2026):** o sino mostrava "há 4h" pra um compromisso que tinha
+    acontecido havia só ~30 min. Causa: o container `meueventopro_app` em
+    produção estava rodando havia tempo com uma imagem **sem nenhuma
+    configuração de fuso horário** (default `UTC` da imagem base), porque o
+    deploy manual via WinSCP só copia arquivos PHP — nunca reconstrói a
+    imagem Docker, então mudanças no `Dockerfile`/`TZ` nunca chegavam a
+    produção de fato. `tempo_relativo()` em `notificacoes.inc.php` faz
+    `time() - strtotime($dataMysql)`; com o container em UTC interpretando
+    uma hora local (ex: "14:30") como se fosse UTC, o cálculo ficava
+    adiantado. **A assessoria opera em Boa Vista/RR — fuso
+    `America/Boa_Vista`, UTC-4, sem horário de verão** (não é
+    `America/Sao_Paulo`/UTC-3 nem `America/Manaus`; já erramos pra ambos os
+    lados nessa sessão antes de confirmar o fuso certo com a hora real do
+    usuário). Corrigido com três mudanças: (1) `conexao.php` ganhou
+    `PDO::MYSQL_ATTR_INIT_COMMAND => "SET time_zone = '-04:00'"` (fixa o
+    fuso só na sessão desta conexão, sem tocar no `controle_db`
+    compartilhado — ver seção Infraestrutura de produção); (2)
+    `Dockerfile`/`docker-compose.yml` **de produção**
+    (`/var/www/meueventopro/`, não os do repo) ganharam
+    `TZ=America/Boa_Vista` + `tzdata` + `date.timezone`; (3) rebuild/recreate
+    escopado só ao serviço `app`. O `Dockerfile`/`docker-compose.yml` do
+    repo (usados só em dev local) foram alinhados pro mesmo
+    `America/Boa_Vista`, pra bater com o fuso real da operação.
 
 ## Convenções de código observadas
 
