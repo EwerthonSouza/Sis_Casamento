@@ -67,35 +67,39 @@ if (isset($mostrar['checklist'])) {
 }
 $pct_g = $total_g > 0 ? round($conc_g / $total_g * 100) : 0;
 
-$conv_grupos = [];
+$lista_conv = [];
 $total_conf = 0; $total_pend = 0;
+$total_adultos = 0; $total_criancas = 0;
 $mesas_por_id = [];
+$nomes_por_id = [];
 if (isset($mostrar['convidados'])) {
     $rsMesas = $pdo->prepare("SELECT id, nome FROM mesas WHERE evento_id = ?");
     $rsMesas->execute([$evento_id]);
     foreach ($rsMesas->fetchAll() as $m) { $mesas_por_id[$m['id']] = $m['nome']; }
 
+    // Já vem ordenado por nome — titular e acompanhante juntos numa lista só,
+    // em ordem alfabética (o acompanhante não fica "embaixo" do titular; a
+    // ligação entre os dois aparece na coluna de observação de cada linha).
     $rs2 = $pdo->prepare("SELECT * FROM convidados WHERE evento_id = ? ORDER BY nome ASC");
     $rs2->execute([$evento_id]);
-    $lista_conv_raw = $rs2->fetchAll();
+    $lista_conv = $rs2->fetchAll();
 
-    $acompanhantes_por_principal = [];
-    foreach ($lista_conv_raw as $c) {
-        if (!empty($c['convidado_principal_id'] ?? null)) {
-            $acompanhantes_por_principal[$c['convidado_principal_id']][] = $c;
-        }
-    }
-    // Acompanhantes do link específico entram junto do card do titular, não como linha própria.
-    $lista_conv = array_values(array_filter($lista_conv_raw, fn($c) => empty($c['convidado_principal_id'] ?? null)));
+    foreach ($lista_conv as $c) { $nomes_por_id[$c['id']] = $c['nome']; }
 
     foreach ($lista_conv as $c) {
         $c['confirmado'] ? $total_conf++ : $total_pend++;
-        $cat = trim($c['categoria'] ?? '');
-        if ($cat === '') { $cat = 'Outros'; } else { $cat = mb_convert_case($cat, MB_CASE_TITLE, "UTF-8"); }
-        if (!isset($conv_grupos[$cat])) { $conv_grupos[$cat] = []; }
-        $conv_grupos[$cat][] = $c;
+        // "Criança de Colo" também conta como criança no total geral —
+        // só a etiqueta de cada linha distingue os dois casos.
+        if (str_starts_with($c['faixa_etaria'] ?? '', 'Criança')) $total_criancas++;
+        else $total_adultos++;
     }
-    ksort($conv_grupos);
+}
+
+/* Rótulo curto de faixa etária pra exibir na linha do convidado */
+function faixa_rotulo(?string $faixa): string {
+    if (str_starts_with($faixa ?? '', 'Criança de Colo')) return 'Criança de colo';
+    if (str_starts_with($faixa ?? '', 'Criança')) return 'Criança';
+    return 'Adulto';
 }
 
 $lista_forn = [];
@@ -192,6 +196,7 @@ ob_start();
   .insp-img { max-width: 100%; max-height: 150px; border-radius: 6px; border: 1px solid #e2e8f0; }
   .insp-titulo { font-size: 9px; color: #64748b; margin-top: 3px; }
   .etapa-title { background: #f8fafc; padding: 4px 8px; font-weight: bold; font-size: 11px; border-left: 4px solid #7a1308; margin-top: 8px; }
+  .mesa-cel { font-size: 9px; line-height: 1.3; word-break: break-word; }
   .marca { font-size: 10px; font-weight: bold; letter-spacing: 1px; color: #7a1308; text-transform: uppercase; margin-bottom: 6px; }
 </style>
 </head>
@@ -239,37 +244,32 @@ ob_start();
 
 <?php if (isset($mostrar['convidados'])): ?>
 <h2>Convidados <?= "({$total_conf} confirmados, {$total_pend} pendentes)" ?></h2>
-<?php if (empty($conv_grupos)): ?>
+<p class="sub" style="margin-top:-6px;">Total geral: <?= $total_adultos ?> adulto<?= $total_adultos == 1 ? '' : 's' ?>, <?= $total_criancas ?> criança<?= $total_criancas == 1 ? '' : 's' ?></p>
+<?php if (empty($lista_conv)): ?>
   <p class="vazio">Nenhum convidado cadastrado.</p>
-<?php else: foreach ($conv_grupos as $grp => $lista): ?>
-  <h3><?= h($grp) ?> (<?= count($lista) ?>)</h3>
+<?php else: ?>
   <table>
-    <thead><tr><th style="width:24%">Nome</th><th style="width:15%">Telefone</th><th style="width:11%">Status</th><th style="width:14%">Mesa</th><th style="width:36%">Acompanhantes</th></tr></thead>
+    <thead><tr><th style="width:18%">Nome</th><th style="width:11%">Faixa</th><th style="width:23%">Mesa</th><th style="width:11%">Status</th><th style="width:37%">Observação</th></tr></thead>
     <tbody>
-    <?php foreach ($lista as $c):
-      $acompC = $acompanhantes_por_principal[$c['id']] ?? [];
-      $extras = [];
-      if (!empty($acompC)) {
-          $rotulado = array_map(function ($a) {
-              $rotulo = str_starts_with($a['faixa_etaria'] ?? '', 'Criança de Colo') ? 'colo'
-                      : (str_starts_with($a['faixa_etaria'] ?? '', 'Criança') ? 'criança' : 'adulto');
-              return $a['nome'] . ' (' . $rotulo . ')';
-          }, $acompC);
-          $extras[] = implode(', ', $rotulado);
-      }
+    <?php foreach ($lista_conv as $c):
       $mesa_nome = !empty($c['mesa_id']) ? ($mesas_por_id[$c['mesa_id']] ?? '—') : '—';
+      $observacao = '';
+      if (!empty($c['convidado_principal_id'] ?? null)) {
+          $nome_titular = $nomes_por_id[$c['convidado_principal_id']] ?? null;
+          if ($nome_titular) $observacao = 'Acompanhante de ' . $nome_titular;
+      }
     ?>
       <tr>
         <td><?= h($c['nome']) ?></td>
-        <td><?= h($c['telefone'] ?? '') ?></td>
+        <td><?= h(faixa_rotulo($c['faixa_etaria'] ?? null)) ?></td>
+        <td class="mesa-cel"><?= h($mesa_nome) ?></td>
         <td><span class="badge <?= $c['confirmado'] ? 'ok' : 'pend' ?>"><?= $c['confirmado'] ? 'Confirmado' : 'Pendente' ?></span></td>
-        <td><?= h($mesa_nome) ?></td>
-        <td><?= h(implode(' · ', $extras)) ?></td>
+        <td><?= h($observacao) ?></td>
       </tr>
     <?php endforeach; ?>
     </tbody>
   </table>
-<?php endforeach; endif; ?>
+<?php endif; ?>
 <?php endif; ?>
 
 <?php if (isset($mostrar['fornecedores'])): ?>

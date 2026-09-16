@@ -69,8 +69,11 @@ não é derivável do código, só olhando o servidor de fato:
   também em `/var/www/meueventopro/` no servidor.
 - Nome do container em produção é **`meueventopro_app`** (não
   `casamento_app` como no compose local). Variáveis de ambiente reais:
-  `DB_HOST=db`, `DB_NAME=meueventopro`, `DB_USER=user`, `DB_PASS=root`
-  (diferente do `sistema_eventos`/`root`/`root` usado localmente).
+  `DB_HOST=db`, `DB_NAME=meueventopro`, `DB_USER=user`, `DB_PASS=`
+  **(senha rotacionada em 10/09/2026 após incidente de segurança — ver
+  Armadilhas item 11. Não é mais `root`. Valor atual só no
+  `docker-compose.yml` de produção/`/root/scripts/backup_db.sh` no
+  servidor — nunca colar a senha real aqui, é arquivo versionado em git).**
 - **O banco de dados em produção é COMPARTILHADO com outro sistema**
   completamente diferente que roda na mesma droplet: um sistema de
   rádio/transcrição (containers `controle_app`, `controle_db`
@@ -91,6 +94,77 @@ não é derivável do código, só olhando o servidor de fato:
 - O servidor tem só o **plugin `docker compose`** (v2, sem hífen,
   ex: `docker compose build app`) instalado — **não** tem o `docker-compose`
   clássico (v1, com hífen). Usar sempre a forma com espaço.
+- **Bloquear porta publicada de container exige regra na cadeia
+  `DOCKER-USER`, mirando a porta e o IP JÁ TRADUZIDOS (destino real do
+  DNAT), não a porta externa.** Uma regra em `INPUT`/`DOCKER-USER` filtrando
+  a porta *externa* (ex: `--dport 3307`) **não bloqueia nada**, porque o
+  Docker já reescreve o destino (porta+IP do container) antes do pacote
+  chegar em `DOCKER-USER`/`FORWARD`. O jeito certo:
+  `iptables -I DOCKER-USER -p tcp -d <ip_do_container> --dport <porta_real_do_container> -j DROP`
+  (descobrir IP/porta reais com `iptables -t nat -L DOCKER -n` ou o log de
+  DNAT em `/etc/iptables/rules.v4`). **Sempre testar de fora de verdade**
+  (`Test-NetConnection` de outra máquina) depois de qualquer regra de
+  firewall em cima de porta Docker — não confiar só em "a regra existe".
+- **Backup diário automatizado** rodando desde 10/09/2026:
+  `/root/scripts/backup_db.sh` (cron `0 7 * * *` = 03:00 Boa Vista), faz
+  `mysqldump` dos dois bancos do `controle_db` compartilhado
+  (`sistema_demandas` + `meueventopro`), comprime e guarda 14 dias em
+  `/root/backups/db/`. Além disso, **DigitalOcean Automated Daily Backups**
+  habilitado na droplet inteira (janela 4h-8h UTC = madrugada de Boa
+  Vista, retenção 7 dias). Antes disso **não existia backup nenhum** — ver
+  Armadilhas item 11.
+- **Há um `nginx` rodando direto no host** (fora do Docker), escutando
+  `80`/`443`, atuando como reverse proxy pros domínios
+  (`meueventopro.com.br`, `demands.com.br` → containers internos via
+  `docker-proxy` nas portas `8080`/`8081`/`8082`). Não documentado antes;
+  achado durante auditoria de segurança de 10/09/2026.
+- **Existe um MySQL 8.0 nativo no host** (fora do Docker, serviço
+  `mysql.service`, `127.0.0.1:3306`/`33060`, pacote `mysql-server-8.0`),
+  separado do `controle_db` em container. `root@localhost` usa plugin
+  `auth_socket` (autenticação pelo usuário do SO, não por senha — **isso é
+  o padrão seguro do Ubuntu/Debian, não é uma falha**, mesmo aparecendo
+  como "sem senha" numa consulta a `mysql.user`). Tem uma cópia antiga
+  (07/05/2026) de `sistema_demandas` — **irrelevante pra recuperação de
+  dados**, é resquício velho, não ajuda com a perda de 25/08-10/09.
+- **Acesso SSH direto para o Claude Code**: existe uma chave dedicada
+  (`~/.ssh/meueventopro_audit` na máquina local do usuário) adicionada em
+  `~/.ssh/authorized_keys` do servidor, usada pra auditorias/manutenção
+  direta sem precisar de copy-paste no console web. Revogável a qualquer
+  momento removendo essa linha do `authorized_keys` no servidor, sem
+  afetar o acesso do usuário.
+- **Rodar `apt upgrade` no host reinicia o Docker (e consequentemente
+  TODOS os containers)** se o pacote do Docker for atualizado junto —
+  isso já causou uma queda momentânea dos dois sistemas (auto-recuperada
+  em ~1 min pelas políticas `restart: unless-stopped`/`always`). Não é bug,
+  é esperado — mas avisar antes de rodar atualização de sistema em
+  horário de pico.
+
+## Auditoria de segurança e hardening (10/09/2026)
+
+Feita depois do incidente do item 11, via acesso SSH direto (não só o
+Web Console). Achados e correções:
+
+- **CRÍTICO, corrigido**: SSH aceitava login por **senha** pra `root`
+  (`PasswordAuthentication yes` + `PermitRootLogin yes`), e estava sob
+  **ataque de força bruta ativo** (44.740+ tentativas registradas,
+  dezenas de IPs diferentes, contínuo). Corrigido: `PasswordAuthentication
+  no` (fixado em `/etc/ssh/sshd_config.d/50-cloud-init.conf`, que estava
+  conflitando e vencendo sobre `60-cloudimg-settings.conf` — cuidado com
+  isso em qualquer droplet criada via cloud-init da DigitalOcean) +
+  `PermitRootLogin prohibit-password` (só chave). **fail2ban** instalado
+  e configurado (jail `sshd`: 4 tentativas erradas em 10 min → ban de 24h)
+  como camada extra.
+- **Investigado, não era problema real**: MySQL nativo do host "sem
+  senha" — na verdade `auth_socket` (ver seção Infraestrutura acima).
+- **MÉDIO, decisão consciente de não corrigir por enquanto**: phpMyAdmin
+  (porta `8081`) exposto pra internet sem restrição de IP — mantido assim
+  porque outro desenvolvedor também precisa acessar e não tem IP fixo.
+  Opções levantadas pra quando for revisitar: túnel SSH (recomendado,
+  não exige IP fixo), lista de IPs liberados, ou Basic Auth extra na
+  frente do phpMyAdmin.
+- Aplicadas atualizações de segurança pendentes do sistema operacional.
+- Container órfão `controle_app_old` (sobra da correção do item 11)
+  removido.
 
 ## Autenticação e papéis (roles)
 
@@ -238,6 +312,43 @@ dessas três é feita explicitamente dentro de `excluir_evento` em
     escopado só ao serviço `app`. O `Dockerfile`/`docker-compose.yml` do
     repo (usados só em dev local) foram alinhados pro mesmo
     `America/Boa_Vista`, pra bater com o fuso real da operação.
+11. **Incidente de segurança: banco de produção apagado por ataque
+    automatizado (10/09/2026), recuperado só até 25/08/2026.** O
+    `controle_db` compartilhado (ver seção Infraestrutura) tinha a porta
+    `3307` exposta pra internet inteira (`0.0.0.0`, sem firewall) com
+    senha `root`/`root` — um bot varredor de internet achou, apagou os
+    bancos e deixou uma nota de resgate (`RECOVER_YOUR_DATA`, pedindo
+    Bitcoin — **golpe automatizado, nunca pago, dado não volta assim**).
+    Recuperação: só existia **um** snapshot de droplet inteira na
+    DigitalOcean, de 25/08/2026 (criado por outro motivo, antes de um
+    deploy do sistema vizinho) — **qualquer cadastro feito entre 25/08 e
+    10/09 foi perdido de vez**, sem forma de recuperar (sem binlog, sem
+    outro backup). Processo usado: criar droplet temporária a partir do
+    snapshot → `mysqldump` de lá → `scp` pra produção → importar. Depois
+    da restauração, apareceram **tabelas e colunas faltando** no Meu
+    Evento PRO (schema mais novo que o snapshot de 25/08):
+    `convidados.token_convite`, `convidados.convidado_principal_id`,
+    `eventos.modo_confirmacao`, `eventos.mensagem_convite`,
+    `eventos.cor_btn_sim`, `eventos.cor_btn_nao`, `mesas.pos_x`,
+    `mesas.pos_y` — todas recriadas via `ALTER TABLE` manual comparando
+    com `gerenciar/sistema_eventos.sql`. **Achado importante sobre o
+    padrão de auto-migração** (ver seção Arquitetura/`conexao.php`): os
+    marcadores `uploads/.schema_ok_<chave>` **sobrevivem a uma restauração
+    de banco** (são arquivo, não ficam no banco) — depois de restaurar um
+    banco mais antigo, o código "acha" que já verificou/criou uma
+    tabela/coluna e pula a checagem, mesmo com ela faltando de verdade.
+    **Sempre que um banco for restaurado de um backup, apagar todos os
+    `uploads/.schema_ok_*` antes de considerar a restauração completa** —
+    isso força cada página a re-rodar sua auto-migração e recriar
+    sozinha o que estiver faltando (foi assim que se achou
+    `documentos_evento`, tabela sequer presente no `schema.sql`, criada
+    só via auto-migração em `gerenciar.php`/`noivos.php`). Correções
+    aplicadas depois: senha do MySQL (`root` e o usuário `user` usado por
+    `DB_USER`) rotacionadas, porta `3307` bloqueada via `iptables` na
+    cadeia `DOCKER-USER` (ver Infraestrutura) de forma persistente, backup
+    diário automatizado configurado (banco + droplet inteira — ver
+    Infraestrutura). **Nunca mais deixar porta de banco publicada sem
+    firewall, mesmo que "seja só pra debug".**
 
 ## Convenções de código observadas
 
