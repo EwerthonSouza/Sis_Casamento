@@ -5,6 +5,7 @@ verificar_sessao_ativa();
 
 // Importa a conexão com o banco de dados
 require_once 'conexao.php';
+require_once __DIR__ . '/config/central.php';
 
 // ============================================================
 // TRAVA DE SEGURANÇA: Admin e Assistente acessam esta página
@@ -384,6 +385,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
 
                     $pdo->commit();
+                    centralQueueEvent($pdo, 'record.created', ['entity' => 'evento']);
                     $_SESSION['msg_sucesso'] = "Casal, contrato e cronograma configurados com sucesso!";
                 } catch (Exception $e) {
                     $pdo->rollBack();
@@ -513,10 +515,36 @@ $msg_sucesso_session = $_SESSION['msg_sucesso'] ?? "";
 unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
 
 // Notificações globais (atividade dos noivos em todos os casamentos)
-$notificacoes = buscar_notificacoes($pdo, null, 15);
+$notificacoes = buscar_notificacoes($pdo, null, 15, $is_admin ? (int)$_SESSION['usuario_id'] : null);
 $ultima_vista = ultima_visualizacao_notificacoes($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
 $nao_lidas    = contar_nao_lidas($notificacoes, $ultima_vista);
 $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_vista || $item['quando'] > $ultima_vista));
+
+// Avisos da Central em modo Faixa/Popup — Fase de Avisos (2026-09-15), só
+// pro usuário admin (ver PROJECT_CONTEXT.md). Mostra o mais recente ainda
+// não lido de cada modo; "Entendi"/fechar chama central_avisos_marcar_lido.php.
+$avisoPopupCentral = null;
+$avisoFaixaCentral = null;
+if ($is_admin) {
+    $adminIdAtual = (int)$_SESSION['usuario_id'];
+    $stmtAvisoCentral = $pdo->prepare("
+        SELECT ca.*
+        FROM central_avisos ca
+        LEFT JOIN central_avisos_lidos cl
+            ON cl.aviso_id = ca.id AND cl.usuario_id = ?
+        WHERE ca.ativo = 1
+          AND ca.modo = ?
+          AND (ca.alvo_admin_ids IS NULL OR FIND_IN_SET(?, ca.alvo_admin_ids))
+          AND cl.aviso_id IS NULL
+        ORDER BY ca.id DESC
+        LIMIT 1
+    ");
+    $stmtAvisoCentral->execute([$adminIdAtual, 'popup', $adminIdAtual]);
+    $avisoPopupCentral = $stmtAvisoCentral->fetch();
+
+    $stmtAvisoCentral->execute([$adminIdAtual, 'banner', $adminIdAtual]);
+    $avisoFaixaCentral = $stmtAvisoCentral->fetch();
+}
 ?>
 <!DOCTYPE html>
 <html lang="pt-br">
@@ -682,6 +710,50 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
     </style>
 </head>
 <body class="bg-light">
+
+<?php if ($avisoFaixaCentral): ?>
+<?php
+    $corHexFaixa = ltrim((string)($avisoFaixaCentral['cor'] ?? '#0d6efd'), '#');
+    if (!preg_match('/^[0-9A-Fa-f]{6}$/', $corHexFaixa)) {
+        $corHexFaixa = '0d6efd';
+    }
+    $rFaixa = hexdec(substr($corHexFaixa, 0, 2));
+    $gFaixa = hexdec(substr($corHexFaixa, 2, 2));
+    $bFaixa = hexdec(substr($corHexFaixa, 4, 2));
+?>
+<div id="faixaAvisoCentral" style="
+    position: sticky;
+    top: 0;
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 10px 16px;
+    background: rgba(<?= $rFaixa ?>, <?= $gFaixa ?>, <?= $bFaixa ?>, 0.85);
+    color: #fff;
+    font-size: 14px;
+    text-align: center;
+">
+    <span><?= htmlspecialchars($avisoFaixaCentral['titulo'], ENT_QUOTES, 'UTF-8') ?><?= $avisoFaixaCentral['mensagem'] ? ' — ' . htmlspecialchars($avisoFaixaCentral['mensagem'], ENT_QUOTES, 'UTF-8') : '' ?></span>
+    <button
+        type="button"
+        onclick="marcarAvisoCentralLido(<?= (int)$avisoFaixaCentral['id'] ?>, document.getElementById('faixaAvisoCentral'))"
+        style="
+            flex-shrink: 0;
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: #fff;
+            border-radius: 6px;
+            width: 24px;
+            height: 24px;
+            cursor: pointer;
+            line-height: 1;
+        "
+        aria-label="Fechar aviso"
+    >&times;</button>
+</div>
+<?php endif; ?>
 
 <div class="toast-container position-fixed top-0 end-0 p-3">
     <?php if (!empty($msg_sucesso_session)): ?>
@@ -871,7 +943,7 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                                             <button type="button" class="btn btn-sm btn-light border fw-bold text-primary btn-abrir-modal-cadastro" data-cliente-id="<?= (int)$cas['cliente_id'] ?>" data-nome="<?= htmlspecialchars($cas['nome_noivos'], ENT_QUOTES, 'UTF-8') ?>" data-email="<?= htmlspecialchars($cas['email_noivos'], ENT_QUOTES, 'UTF-8') ?>" data-telefone="<?= htmlspecialchars($cas['telefone_noivos'] ?? '', ENT_QUOTES, 'UTF-8') ?>" data-bs-toggle="modal" data-bs-target="#modalEditarCadastro" title="Editar Cadastro"><i class="bi bi-pencil-square"></i></button>
                                             <a href="gerenciar.php?id=<?= (int)$cas['evento_id'] ?>" class="btn btn-sm btn-primary shadow-sm" title="Gerenciar"><i class="bi bi-gear-fill"></i></a>
                                             <a href="relatorio_pdf.php?id=<?= (int)$cas['evento_id'] ?>&secoes=todos" target="_blank" class="btn btn-sm btn-outline-danger shadow-sm" title="Exportar PDF"><i class="bi bi-file-earmark-pdf-fill"></i></a>
-                                            <form method="POST" class="d-inline" onsubmit="return confirm('Tem certeza que deseja excluir o evento de <?= htmlspecialchars($cas['nome_noivos']) ?>? Todos os dados serão perdidos!');">
+                                            <form method="POST" class="d-inline" onsubmit="return confirm('Tem certeza que deseja excluir o evento de <?= htmlspecialchars($cas['nome_noivos']) ?>? Todos os dados serão perdidos!') && confirm('Essa ação é IRREVERSÍVEL — confirma mesmo a exclusão definitiva de <?= htmlspecialchars($cas['nome_noivos']) ?>?');">
                                                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                                                 <input type="hidden" name="evento_id" value="<?= (int)$cas['evento_id'] ?>">
                                                 <button type="submit" name="excluir_evento" class="btn btn-sm btn-outline-danger" title="Excluir"><i class="bi bi-trash"></i></button>
@@ -926,7 +998,7 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                                                     <button type="button" class="btn btn-sm btn-light border fw-bold text-primary btn-abrir-modal-cadastro" data-cliente-id="<?= (int)$cas['cliente_id'] ?>" data-nome="<?= htmlspecialchars($cas['nome_noivos'], ENT_QUOTES, 'UTF-8') ?>" data-email="<?= htmlspecialchars($cas['email_noivos'], ENT_QUOTES, 'UTF-8') ?>" data-telefone="<?= htmlspecialchars($cas['telefone_noivos'] ?? '', ENT_QUOTES, 'UTF-8') ?>" data-bs-toggle="modal" data-bs-target="#modalEditarCadastro" title="Editar Cadastro"><i class="bi bi-pencil-square"></i></button>
                                                     <a href="gerenciar.php?id=<?= (int)$cas['evento_id'] ?>" class="btn btn-sm btn-primary shadow-sm" title="Gerenciar"><i class="bi bi-gear-fill"></i></a>
                                                     <a href="relatorio_pdf.php?id=<?= (int)$cas['evento_id'] ?>&secoes=todos" target="_blank" class="btn btn-sm btn-outline-danger shadow-sm" title="Exportar PDF"><i class="bi bi-file-earmark-pdf-fill"></i></a>
-                                                    <form method="POST" class="d-inline" onsubmit="return confirm('Tem certeza que deseja excluir o evento de <?= htmlspecialchars($cas['nome_noivos']) ?>? Todos os dados serão perdidos!');">
+                                                    <form method="POST" class="d-inline" onsubmit="return confirm('Tem certeza que deseja excluir o evento de <?= htmlspecialchars($cas['nome_noivos']) ?>? Todos os dados serão perdidos!') && confirm('Essa ação é IRREVERSÍVEL — confirma mesmo a exclusão definitiva de <?= htmlspecialchars($cas['nome_noivos']) ?>?');">
                                                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                                                         <input type="hidden" name="evento_id" value="<?= (int)$cas['evento_id'] ?>">
                                                         <button type="submit" name="excluir_evento" class="btn btn-sm btn-outline-danger" title="Excluir"><i class="bi bi-trash"></i></button>
@@ -968,7 +1040,7 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                                         <div class="d-flex justify-content-center flex-wrap gap-1 mt-2">
                                             <a href="gerenciar.php?id=<?= (int)$cas['evento_id'] ?>" class="btn btn-sm btn-outline-secondary" title="Ver Arquivo"><i class="bi bi-folder2-open"></i></a>
                                             <a href="relatorio_pdf.php?id=<?= (int)$cas['evento_id'] ?>&secoes=todos" target="_blank" class="btn btn-sm btn-outline-danger" title="Exportar PDF"><i class="bi bi-file-earmark-pdf-fill"></i></a>
-                                            <form method="POST" class="d-inline" onsubmit="return confirm('Excluir histórico de <?= htmlspecialchars($cas['nome_noivos']) ?>?');">
+                                            <form method="POST" class="d-inline" onsubmit="return confirm('Excluir histórico de <?= htmlspecialchars($cas['nome_noivos']) ?>?') && confirm('Essa ação é IRREVERSÍVEL — confirma mesmo a exclusão definitiva?');">
                                                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                                                 <input type="hidden" name="evento_id" value="<?= (int)$cas['evento_id'] ?>">
                                                 <button type="submit" name="excluir_evento" class="btn btn-sm btn-outline-danger" title="Excluir"><i class="bi bi-trash"></i></button>
@@ -1010,7 +1082,7 @@ $notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_v
                                                 <div class="d-flex justify-content-center gap-1">
                                                     <a href="gerenciar.php?id=<?= (int)$cas['evento_id'] ?>" class="btn btn-sm btn-outline-secondary" title="Ver Arquivo"><i class="bi bi-folder2-open"></i></a>
                                                     <a href="relatorio_pdf.php?id=<?= (int)$cas['evento_id'] ?>&secoes=todos" target="_blank" class="btn btn-sm btn-outline-danger" title="Exportar PDF"><i class="bi bi-file-earmark-pdf-fill"></i></a>
-                                                    <form method="POST" class="d-inline" onsubmit="return confirm('Excluir histórico de <?= htmlspecialchars($cas['nome_noivos']) ?>?');">
+                                                    <form method="POST" class="d-inline" onsubmit="return confirm('Excluir histórico de <?= htmlspecialchars($cas['nome_noivos']) ?>?') && confirm('Essa ação é IRREVERSÍVEL — confirma mesmo a exclusão definitiva?');">
                                                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                                                         <input type="hidden" name="evento_id" value="<?= (int)$cas['evento_id'] ?>">
                                                         <button type="submit" name="excluir_evento" class="btn btn-sm btn-outline-danger" title="Excluir"><i class="bi bi-trash"></i></button>
@@ -2067,5 +2139,52 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 });
 </script>
+
+<script>
+function marcarAvisoCentralLido(id, elementoParaRemover) {
+    fetch('central_avisos_marcar_lido.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'id=' + id,
+    }).then(() => {
+        if (elementoParaRemover) {
+            elementoParaRemover.remove();
+        }
+    });
+}
+
+<?php if ($avisoPopupCentral): ?>
+document.addEventListener('DOMContentLoaded', function () {
+    const modal = new bootstrap.Modal(document.getElementById('modalAvisoCentral'));
+    modal.show();
+});
+<?php endif; ?>
+</script>
+
+<?php if ($avisoPopupCentral): ?>
+<div class="modal fade" id="modalAvisoCentral" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-body p-4">
+                <div class="d-flex align-items-center gap-2 mb-3">
+                    <i class="bi bi-megaphone-fill text-primary fs-4"></i>
+                    <h5 class="mb-0"><?= htmlspecialchars($avisoPopupCentral['titulo'], ENT_QUOTES, 'UTF-8') ?></h5>
+                </div>
+                <div><?= $avisoPopupCentral['mensagem'] ?></div>
+            </div>
+            <div class="modal-footer">
+                <button
+                    type="button"
+                    class="btn btn-primary"
+                    data-bs-dismiss="modal"
+                    onclick="marcarAvisoCentralLido(<?= (int)$avisoPopupCentral['id'] ?>, null)"
+                >
+                    Entendi
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+<?php endif; ?>
 </body>
 </html>

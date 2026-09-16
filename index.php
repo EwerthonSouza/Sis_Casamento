@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once 'conexao.php';
+require_once __DIR__ . '/config/central.php';
 
 // Evita que o navegador guarde esta página em cache, já causou telas
 // desatualizadas aparecerem depois de mudanças no sistema.
@@ -46,6 +47,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $equipe['nome']
                 );
 
+                centralQueueEvent($pdo, 'user.login', [
+                    'external_id' => (string) $equipe['id'],
+                    'name' => $equipe['nome'] ?? null,
+                    'email' => $equipe['email'] ?? null,
+                ]);
+
                 header("Location: painel_admin.php");
                 exit;
             }
@@ -80,6 +87,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $_SESSION['usuario_id'] = $cliente['id'];
                         $_SESSION['evento_id'] = $cliente['evento_id'];
                         $_SESSION['usuario_nome'] = $cliente['nome'] ?? 'Casal';
+
+                        centralQueueEvent($pdo, 'user.login', [
+                            'external_id' => (string) $cliente['id'],
+                            'name' => $cliente['nome'] ?? null,
+                            'email' => $cliente['email'] ?? null,
+                        ]);
 
                         header("Location: noivos.php?id=" . $cliente['evento_id']);
                         exit;

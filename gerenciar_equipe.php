@@ -3,6 +3,7 @@ session_start();
 require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 require_once 'conexao.php';
+require_once __DIR__ . '/config/central.php';
 
 // ============================================================
 // AUTO-CRIAR TABELA DE USUÁRIOS (CASO NÃO EXISTA)
@@ -67,6 +68,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adicionar_usuario']))
         try {
             $stmt = $pdo->prepare("INSERT INTO usuarios (nome, email, senha, tipo) VALUES (?, ?, ?, ?)");
             $stmt->execute([$nome, $email, $senha_hash, $tipo]);
+            $novo_usuario_id = $pdo->lastInsertId();
+            centralQueueEvent($pdo, 'user.created', [
+                'external_id' => (string) $novo_usuario_id,
+                'name' => $nome,
+                'email' => $email,
+            ]);
             $msg_sucesso = "Usuário '$nome' cadastrado com sucesso!";
         } catch (Exception $e) {
             $msg_erro = "Erro ao cadastrar. O e-mail '$email' já pode estar em uso.";

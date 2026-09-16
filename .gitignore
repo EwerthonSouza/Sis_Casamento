@@ -1,5 +1,7 @@
 /vendor/
 composer.phar
+config/central.local.php
+scripts/*.log
 
 # Uploads são estado do servidor (fotos enviadas por usuários + marcadores
 # de cache de schema gerados por conexao.php), não código-fonte.
