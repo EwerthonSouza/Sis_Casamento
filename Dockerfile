@@ -1,6 +1,6 @@
 FROM php:8.1-apache
 
-ENV TZ=America/Manaus
+ENV TZ=America/Boa_Vista
 
 RUN apt-get update && apt-get install -y \
         libzip-dev \
