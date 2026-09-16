@@ -1059,7 +1059,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     <div class="col">
       <div class="stat-card stat-sem-mesa">
         <span class="stat-icon"><i class="bi bi-exclamation-triangle-fill"></i></span>
-        <div><div class="val"><?= count($sem_mesa) ?></div><div class="lbl">Sem Mesa</div></div>
+        <div><div class="val" id="stat-sem-mesa-val"><?= count($sem_mesa) ?></div><div class="lbl">Sem Mesa</div></div>
       </div>
     </div>
     <div class="col">
@@ -2218,6 +2218,12 @@ document.addEventListener('DOMContentLoaded', function () {
       const cBadge = document.getElementById('badge-qtd');
       const nBadge = doc.getElementById('badge-qtd');
       if (cBadge && nBadge) cBadge.innerHTML = nBadge.innerHTML;
+
+      // Card de estatística "Sem Mesa" — atualiza sozinho ao arrastar ou
+      // adicionar/remover convidado de mesa, sem precisar recarregar a página.
+      const cSemMesa = document.getElementById('stat-sem-mesa-val');
+      const nSemMesa = doc.getElementById('stat-sem-mesa-val');
+      if (cSemMesa && nSemMesa) cSemMesa.textContent = nSemMesa.textContent;
 
       // Mantém o layout de impressão/PDF (renderizado pelo PHP) sincronizado, já que ele
       // não é tocado pelas atualizações abaixo e ficaria desatualizado até um reload.
