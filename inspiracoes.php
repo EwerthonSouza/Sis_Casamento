@@ -52,8 +52,10 @@ if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['
 
 require_once 'conexao.php';
 
-// Apenas admin pode excluir uploads feitos no mural
 $is_admin = ($_SESSION['usuario_tipo'] === 'admin');
+
+// Qualquer um com acesso ao mural (admin, assistente ou noivos) pode excluir fotos.
+$pode_excluir_foto = true;
 
 // Noivos só podem ver o próprio evento (ignora manipulação da URL); admin/assistente usam o ?id= normalmente
 if ($_SESSION['usuario_tipo'] === 'noivos') {
@@ -118,11 +120,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['favoritar_foto'])) {
     exit;
 }
 
-// 1b. EXCLUIR UPLOAD (apenas admin)
+// 1b. EXCLUIR UPLOAD (admin ou os próprios noivos)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['excluir_foto'])) {
     verificar_csrf();
 
-    if ($is_admin) {
+    if ($pode_excluir_foto) {
         $foto_id = (int)$_POST['foto_id'];
 
         $stmt = $pdo->prepare("SELECT nome_imagem FROM inspiracoes_fotos WHERE id = ? AND evento_id = ?");
@@ -449,7 +451,7 @@ $fotos = $stmt_fotos->fetchAll();
                                                 <i class="bi bi-pencil-fill text-secondary opacity-50 fs-6"></i>
                                             </button>
 
-                                            <?php if ($is_admin): ?>
+                                            <?php if ($pode_excluir_foto): ?>
                                             <form method="POST" action="" class="m-0" onsubmit="return confirm('Excluir esta foto do mural? Esta ação não pode ser desfeita.');">
                                                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                                                 <input type="hidden" name="excluir_foto" value="1">
