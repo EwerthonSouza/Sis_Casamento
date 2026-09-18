@@ -125,11 +125,12 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER 
 <html lang="pt-br">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<?php include __DIR__ . '/pwa_head.inc.php'; ?>
     <title>Gerenciar Equipe - Meu Evento PRO</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=13">
+    <link rel="stylesheet" href="css/estilo.css?v=15">
     <style>
         @media (max-width: 767.98px) {
             .navbar-brand img { height: 26px !important; }

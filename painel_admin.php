@@ -550,12 +550,18 @@ if ($is_admin) {
 <html lang="pt-br">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<?php include __DIR__ . '/pwa_head.inc.php'; ?>
     <title>Painel da Assessoria - Meu Evento PRO</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=13">
+    <link rel="stylesheet" href="css/estilo.css?v=15">
     <style>
+        .btn-abrir-modal-data { transition: filter .15s, box-shadow .15s; }
+        .btn-abrir-modal-data:hover, .btn-abrir-modal-data:focus-visible {
+            filter: brightness(0.95);
+            box-shadow: 0 0 0 2px rgba(13,110,253,.35);
+        }
         .navbar .container.flex-nowrap { flex-wrap: nowrap; }
         .logo-nav-admin { height: 40px; flex-shrink: 0; }
         .barra-icones-admin { flex-shrink: 1; }
@@ -920,22 +926,19 @@ if ($is_admin) {
                                     <div class="border rounded-3 p-3 mb-2<?= $i >= 5 ? ' d-none casamento-extra-futuros' : '' ?>">
                                         <span class="text-dark fw-bold fs-6 d-block mb-1"><?= htmlspecialchars($cas['nome_noivos']) ?></span>
                                         <div class="d-flex justify-content-between align-items-start gap-2">
-                                            <div class="text-muted" style="font-size: 0.8rem;">
+                                            <div class="text-muted" style="font-size: 0.8rem; min-width:0; overflow-wrap:anywhere;">
                                                 <i class="bi bi-envelope"></i> <?= htmlspecialchars($cas['email_noivos']) ?><br>
                                                 <?php if (!empty($cas['telefone_noivos'])): ?>
                                                     <i class="bi bi-whatsapp text-success"></i> <?= htmlspecialchars($cas['telefone_noivos']) ?>
                                                 <?php endif; ?>
                                             </div>
-                                            <div class="badge bg-primary bg-opacity-10 text-primary p-2 border border-primary border-opacity-25 rounded-3 text-start position-relative flex-shrink-0" style="min-width: 110px;">
+                                            <div class="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 rounded-3 text-start flex-shrink-0 btn-abrir-modal-data" style="min-width: 110px; padding:8px; cursor:pointer;"
+                                                 data-evento-id="<?= (int)$cas['evento_id'] ?>" data-data="<?= htmlspecialchars($cas['data_evento']) ?>" data-hora="<?= htmlspecialchars($cas['hora_evento'] ?? '') ?>"
+                                                 data-bs-toggle="modal" data-bs-target="#modalEditarData" role="button" title="Editar data/horário">
                                                 <i class="bi bi-calendar3 me-1"></i> <?= date('d/m/Y', strtotime($cas['data_evento'])) ?>
                                                 <?php if (!empty($cas['hora_evento'])): ?>
                                                     <br><i class="bi bi-clock me-1"></i> <?= date('H:i', strtotime($cas['hora_evento'])) ?>
                                                 <?php endif; ?>
-                                                <button type="button" class="btn btn-sm btn-link text-primary p-0 position-absolute bottom-0 end-0 me-2 mb-1 btn-abrir-modal-data"
-                                                        data-evento-id="<?= (int)$cas['evento_id'] ?>" data-data="<?= htmlspecialchars($cas['data_evento']) ?>" data-hora="<?= htmlspecialchars($cas['hora_evento'] ?? '') ?>"
-                                                        data-bs-toggle="modal" data-bs-target="#modalEditarData" title="Editar Data">
-                                                    <i class="bi bi-pencil-square"></i>
-                                                </button>
                                             </div>
                                         </div>
                                         <div class="d-flex justify-content-center flex-wrap gap-1 mt-2">
@@ -972,7 +975,7 @@ if ($is_admin) {
                                         <tr class="<?= $i >= 5 ? 'd-none casamento-extra-futuros' : '' ?>">
                                             <td>
                                                 <span class="text-dark fw-bold fs-6"><?= htmlspecialchars($cas['nome_noivos']) ?></span><br>
-                                                <div class="text-muted mt-1" style="font-size: 0.8rem;">
+                                                <div class="text-muted mt-1" style="font-size: 0.8rem; overflow-wrap:anywhere;">
                                                     <i class="bi bi-envelope"></i> <?= htmlspecialchars($cas['email_noivos']) ?><br>
                                                     <?php if (!empty($cas['telefone_noivos'])): ?>
                                                         <i class="bi bi-whatsapp text-success"></i> <?= htmlspecialchars($cas['telefone_noivos']) ?>
@@ -980,16 +983,13 @@ if ($is_admin) {
                                                 </div>
                                             </td>
                                             <td>
-                                                <div class="badge bg-primary bg-opacity-10 text-primary p-2 border border-primary border-opacity-25 rounded-3 text-start w-100 position-relative">
+                                                <div class="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 rounded-3 text-start w-100 btn-abrir-modal-data" style="padding:8px; cursor:pointer;"
+                                                     data-evento-id="<?= (int)$cas['evento_id'] ?>" data-data="<?= htmlspecialchars($cas['data_evento']) ?>" data-hora="<?= htmlspecialchars($cas['hora_evento'] ?? '') ?>"
+                                                     data-bs-toggle="modal" data-bs-target="#modalEditarData" role="button" title="Editar data/horário">
                                                     <i class="bi bi-calendar3 me-1"></i> <?= date('d/m/Y', strtotime($cas['data_evento'])) ?>
                                                     <?php if (!empty($cas['hora_evento'])): ?>
                                                         <br><i class="bi bi-clock me-1"></i> <?= date('H:i', strtotime($cas['hora_evento'])) ?>
                                                     <?php endif; ?>
-                                                    <button type="button" class="btn btn-sm btn-link text-primary p-0 position-absolute bottom-0 end-0 me-2 mb-1 btn-abrir-modal-data"
-                                                            data-evento-id="<?= (int)$cas['evento_id'] ?>" data-data="<?= htmlspecialchars($cas['data_evento']) ?>" data-hora="<?= htmlspecialchars($cas['hora_evento'] ?? '') ?>"
-                                                            data-bs-toggle="modal" data-bs-target="#modalEditarData" title="Editar Data">
-                                                        <i class="bi bi-pencil-square"></i>
-                                                    </button>
                                                 </div>
                                             </td>
                                             <td class="text-center">

@@ -3,7 +3,7 @@
 // Copie para config/central.local.php (gitignored) e preencha com valores
 // reais. Nunca commitar o arquivo real — só este .example com placeholders.
 return [
-    'base_url' => 'http://198.211.102.230',
+    'base_url' => 'https://isupport-central.com.br',
     'token' => 'COLE_AQUI_O_TOKEN_EMITIDO_PELA_CENTRAL',
     'events_token' => 'COLE_AQUI_O_TOKEN_DE_EVENTOS_EMITIDO_PELA_CENTRAL',
     'announcements_token' => 'COLE_AQUI_O_TOKEN_DE_ANNOUNCEMENTS_READ',
