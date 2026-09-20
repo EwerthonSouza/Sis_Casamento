@@ -1,8 +1,9 @@
 <?php
 require_once 'conexao.php';
+require_once 'modulos_evento.inc.php';
 
 if (!isset($_GET['evento']) || empty($_GET['evento'])) {
-    die("<div class='container mt-5 alert alert-danger'>Link inválido. Por favor, solicite o link correto com os noivos ou assessoria.</div>");
+    die("<div class='container mt-5 alert alert-danger'>Link inválido. Por favor, solicite o link correto com a assessoria.</div>");
 }
 $evento_id = (int)$_GET['evento'];
 
@@ -42,24 +43,7 @@ if (!schema_ja_verificado('confirmar_v2')) {
     marcar_schema_verificado('confirmar_v2');
 }
 
-/** Clareia (percent > 0) ou escurece (percent < 0) uma cor hex, mantendo o mesmo tom */
-function ajustar_cor(string $hex, float $percent): string {
-    $hex = ltrim($hex, '#');
-    if (strlen($hex) === 3) { $hex = $hex[0] . $hex[0] . $hex[1] . $hex[1] . $hex[2] . $hex[2]; }
-    $r = hexdec(substr($hex, 0, 2));
-    $g = hexdec(substr($hex, 2, 2));
-    $b = hexdec(substr($hex, 4, 2));
-    if ($percent >= 0) {
-        $r += (255 - $r) * $percent;
-        $g += (255 - $g) * $percent;
-        $b += (255 - $b) * $percent;
-    } else {
-        $r *= (1 + $percent);
-        $g *= (1 + $percent);
-        $b *= (1 + $percent);
-    }
-    return sprintf('#%02x%02x%02x', max(0, min(255, round($r))), max(0, min(255, round($g))), max(0, min(255, round($b))));
-}
+// ajustar_cor() já vem de modulos_evento.inc.php (compartilhada com o resto do painel).
 
 const FAIXAS_ETARIAS = [
     'Criança de Colo (0-5 anos)',
@@ -68,6 +52,8 @@ const FAIXAS_ETARIAS = [
 ];
 
 
+garantir_coluna_tipo_evento($pdo);
+
 $stmt = $pdo->prepare("SELECT e.*, c.nome AS nome_cliente FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
 $stmt->execute([$evento_id]);
 $evento = $stmt->fetch();
@@ -75,6 +61,8 @@ $evento = $stmt->fetch();
 if (!$evento) {
     die("<div class='container mt-5 alert alert-danger'>Evento não encontrado.</div>");
 }
+
+$labels = labels_modulo_evento($evento['tipo_evento'] ?? 'casamento');
 
 $cor_convite_base = (!empty($evento['cor_convite']) && preg_match('/^#[0-9a-fA-F]{6}$/', $evento['cor_convite']))
     ? $evento['cor_convite'] : '#8b5e3c';
@@ -160,7 +148,7 @@ if ($token_convite === '') {
             if (count($candidatos) > 1) {
                 $busca_candidatos = $candidatos;
             } else {
-                $busca_erro = 'Não encontramos esse nome na lista de convidados. Confira se digitou igual ao convite, ou fale com os noivos/assessoria.';
+                $busca_erro = 'Não encontramos esse nome na lista de convidados. Confira se digitou igual ao convite, ou fale com o ' . $labels['singular_contratante'] . ' ou a assessoria.';
             }
         }
 
@@ -172,7 +160,7 @@ if ($token_convite === '') {
     $stmt->execute([$evento_id, $token_convite]);
     $convidado_travado = $stmt->fetch() ?: null;
     if (!$convidado_travado) {
-        die("<div class='container mt-5 alert alert-danger'>Link inválido ou expirado. Solicite um novo link aos noivos ou à assessoria.</div>");
+        die("<div class='container mt-5 alert alert-danger'>Link inválido ou expirado. Solicite um novo link a " . htmlspecialchars($labels['singular_contratante']) . " ou à assessoria.</div>");
     }
     // Acompanhantes já cadastrados pelos noivos/assessoria junto com este link específico
     $stmt = $pdo->prepare("SELECT * FROM convidados WHERE convidado_principal_id = ? ORDER BY id ASC");
@@ -366,13 +354,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="rsvp-card">
         <div class="rsvp-topo">
             <?php if (!empty($evento['foto_casal_ativa']) && !empty($evento['foto_casal'])): ?>
-                <img src="uploads/<?= htmlspecialchars($evento['foto_casal'], ENT_QUOTES, 'UTF-8') ?>" alt="Foto do casal" class="foto-casal">
+                <img src="uploads/<?= htmlspecialchars($evento['foto_casal'], ENT_QUOTES, 'UTF-8') ?>" alt="<?= htmlspecialchars($labels['label_foto_convite']) ?>" class="foto-casal">
             <?php else: ?>
-                <div class="anel"><i class="bi bi-rings"></i></div>
+                <div class="anel"><i class="bi <?= htmlspecialchars($labels['icone_convite_publico']) ?>"></i></div>
             <?php endif; ?>
             <h2>Confirmação de Presença</h2>
             <div class="data-evento">
-                Casamento de <strong><?= htmlspecialchars($evento['nome_cliente'], ENT_QUOTES, 'UTF-8') ?></strong>
+                <?= htmlspecialchars($labels['header_hero_prefixo']) ?> <strong><?= htmlspecialchars($evento['nome_cliente'], ENT_QUOTES, 'UTF-8') ?></strong>
                 <?php if (!empty($evento['data_evento'])): ?>
                     · <?= date('d/m/Y', strtotime($evento['data_evento'])) ?>
                 <?php endif; ?>
@@ -394,7 +382,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <?php if (!empty($evento['mensagem_convite'])): ?>
                         <?= nl2br(htmlspecialchars($evento['mensagem_convite'], ENT_QUOTES, 'UTF-8')) ?>
                     <?php else: $primeiro_nome = trim(explode(' ', trim($convidado_travado['nome']))[0]); ?>
-                        Olá, <?= htmlspecialchars($primeiro_nome, ENT_QUOTES, 'UTF-8') ?>! Contamos com a sua presença! Você poderá comparecer ao nosso grande dia?
+                        Olá, <?= htmlspecialchars($primeiro_nome, ENT_QUOTES, 'UTF-8') ?>! <?= htmlspecialchars($labels['saudacao_convite_padrao']) ?>
                     <?php endif; ?>
                 </p>
                 <div class="d-flex flex-column gap-3">
@@ -404,7 +392,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </button>
                     <button type="button" class="btn-escolha btn-nao" id="btn-ir-recusar">
                         <i class="bi bi-emoji-frown me-2"></i> Não poderei ir
-                        <small>Avisar os noivos que não poderá comparecer</small>
+                        <small>Avisar que não poderá comparecer</small>
                     </button>
                 </div>
             </div>
@@ -463,7 +451,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <?php endforeach; ?>
                             </div>
                         <?php endif; ?>
-                        <p class="text-muted small">Obrigado por responder! 💍</p>
+                        <p class="text-muted small">Obrigado por responder! <?= htmlspecialchars($labels['emoji_agradecimento']) ?></p>
                     </div>
                 <?php endif; ?>
                 <div class="text-center mt-2">

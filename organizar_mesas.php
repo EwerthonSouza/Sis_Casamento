@@ -3,13 +3,15 @@ session_start();
 require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 
-if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'noivos'])) {
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'noivos', 'desenvolvedor'])) {
     header("Location: index.php?sessao_expirada=1");
     exit;
 }
 $eh_noivos = ($_SESSION['usuario_tipo'] === 'noivos');
 
 require_once 'conexao.php';
+require_once 'modulos_evento.inc.php';
+garantir_coluna_tipo_evento($pdo);
 
 /* ============================================================
    CSRF TOKEN
@@ -37,6 +39,20 @@ if ($eh_noivos) {
 } else {
     $evento_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
     if (!$evento_id) {
+        header("Location: painel_admin.php");
+        exit;
+    }
+}
+
+// Impede a equipe de acessar/manipular (inclusive via AJAX) o mapa de mesas de
+// um evento de outro módulo — checado antes do bloco de handlers POST logo
+// abaixo, para também cobrir as ações AJAX (não só a renderização da página).
+if (!$eh_noivos) {
+    $modulo_ativo = $_SESSION['modulo_ativo'] ?? null;
+    $stmt_tipo_evento = $pdo->prepare("SELECT tipo_evento FROM eventos WHERE id = ?");
+    $stmt_tipo_evento->execute([$evento_id]);
+    $tipo_evento_alvo = $stmt_tipo_evento->fetchColumn();
+    if (!$modulo_ativo || $tipo_evento_alvo === false || $tipo_evento_alvo !== $modulo_ativo) {
         header("Location: painel_admin.php");
         exit;
     }
@@ -483,7 +499,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
    CARREGAMENTO DE DADOS
    ============================================================ */
 $stmt = $pdo->prepare("
-    SELECT e.data_evento, c.nome
+    SELECT e.data_evento, e.tipo_evento, e.cor_convite, c.nome
     FROM eventos e
     INNER JOIN clientes c ON e.cliente_id = c.id
     WHERE e.id = ?
@@ -491,6 +507,9 @@ $stmt = $pdo->prepare("
 $stmt->execute([$evento_id]);
 $evento = $stmt->fetch();
 if (!$evento) die("Evento não encontrado.");
+
+garantir_tabela_modulos_config($pdo);
+$cor_modulo = cor_painel_evento($pdo, $evento);
 
 // Corrige convidados com mesa_id "fantasma" (apontando pra uma mesa já excluída,
 // ex: alguém excluiu a mesa numa aba enquanto outra aba/sessão ainda arrastava
@@ -608,6 +627,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
   <link rel="stylesheet" href="css/estilo.css?v=13">
+  <?= estilo_tema_evento($cor_modulo) ?>
 
   <style>
     :root { --radius: 12px; }
@@ -899,7 +919,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 </head>
 <body>
 
-<nav class="navbar navbar-dark bg-dark shadow-sm no-print">
+<nav class="navbar navbar-dark shadow-sm no-print" style="background-color: <?= htmlspecialchars($cor_modulo) ?>;">
   <div class="container-fluid px-3 px-lg-4">
     <span class="navbar-brand mb-0">
       <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">
@@ -1686,7 +1706,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
      SCRIPTS
      ========================================================= -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 
 <script>
 const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;

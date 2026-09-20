@@ -9,9 +9,29 @@ if (!isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'noivos')
 }
 
 require_once 'conexao.php';
+require_once 'modulos_evento.inc.php';
 require_once 'notificacoes.inc.php';
 
+garantir_coluna_tipo_evento($pdo);
+
+if (empty($_SESSION['evento_id'])) {
+    header("Location: hub_eventos_cliente.php");
+    exit;
+}
 $evento_id = (int)$_SESSION['evento_id'];
+
+// Segurança: o evento na sessão precisa realmente pertencer a este cliente
+// (protege contra sessão desatualizada após o cliente ganhar/perder um evento)
+$stmt_dono = $pdo->prepare("SELECT id FROM eventos WHERE id = ? AND cliente_id = ?");
+$stmt_dono->execute([$evento_id, (int)$_SESSION['usuario_id']]);
+if (!$stmt_dono->fetch()) {
+    header("Location: hub_eventos_cliente.php");
+    exit;
+}
+
+$stmt_qtd_eventos = $pdo->prepare("SELECT COUNT(*) FROM eventos WHERE cliente_id = ?");
+$stmt_qtd_eventos->execute([(int)$_SESSION['usuario_id']]);
+$cliente_tem_varios_eventos = ((int)$stmt_qtd_eventos->fetchColumn()) > 1;
 
 /* ============================================================
    CSRF TOKEN
@@ -176,7 +196,11 @@ $s = $pdo->prepare("
 ");
 $s->execute([$evento_id]);
 $evento = $s->fetch();
-if (!$evento) { die("Casamento não encontrado."); }
+if (!$evento) { die("Evento não encontrado."); }
+
+$labels = labels_modulo_evento($evento['tipo_evento'] ?? 'casamento');
+garantir_tabela_modulos_config($pdo);
+$cor_modulo = cor_painel_evento($pdo, $evento);
 
 /* ============================================================
    POST HANDLERS
@@ -674,7 +698,8 @@ $rs3 = $pdo->prepare("
 $rs3->execute([$evento_id, $evento_id]);
 $notificacoes = $rs3->fetchAll();
 
-$ultima_vista_noivos = ultima_visualizacao_notificacoes($pdo, 'noivos', (int)($_SESSION['usuario_id'] ?? 0));
+$escopo_notif_noivos = 'evento:' . $evento_id;
+$ultima_vista_noivos = ultima_visualizacao_notificacoes($pdo, 'noivos', (int)($_SESSION['usuario_id'] ?? 0), $escopo_notif_noivos);
 $nao_lidas = 0;
 foreach ($notificacoes as $n) {
     if (!$ultima_vista_noivos || $n['data_cadastro'] > $ultima_vista_noivos) $nao_lidas++;
@@ -785,10 +810,11 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Nosso Casamento ♡ - Meu Evento PRO</title>
+  <title><?= htmlspecialchars($labels['titulo_pagina_cliente']) ?> - Meu Evento PRO</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
   <link rel="stylesheet" href="css/estilo.css?v=13">
+  <?= estilo_tema_evento($cor_modulo) ?>
   <style>
     :root {
       --radius: 16px;
@@ -928,6 +954,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       animation: heroHeartsDraw 7s ease-in-out infinite;
     }
     .hero-hearts path:nth-of-type(2) { animation-delay: 1.2s; }
+    .hero-hearts path:nth-of-type(3) { animation-delay: 2.4s; }
     @keyframes heroHeartsDraw {
       0%   { stroke-dashoffset: 1000; }
       42%  { stroke-dashoffset: 0; }
@@ -1327,12 +1354,17 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 </head>
 <body>
 
-<nav class="navbar navbar-dark bg-dark shadow-sm">
+<nav class="navbar navbar-dark shadow-sm" style="background-color: <?= htmlspecialchars($cor_modulo) ?>;">
   <div class="container">
     <span class="navbar-brand mb-0">
       <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">
     </span>
     <div class="d-flex align-items-center gap-2">
+      <?php if ($cliente_tem_varios_eventos): ?>
+      <a href="hub_eventos_cliente.php" class="btn btn-sm btn-outline-light">
+        <i class="bi bi-arrow-left-right"></i> <span class="d-none d-sm-inline">Trocar evento</span>
+      </a>
+      <?php endif; ?>
       <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#modalConfirmarSaida">
         <i class="bi bi-box-arrow-right"></i> <span class="d-none d-sm-inline">Sair</span>
       </button>
@@ -1528,7 +1560,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               <input type="text" class="form-control campo-link-esp" value="<?= htmlspecialchars($linkEsp, ENT_QUOTES, 'UTF-8') ?>" readonly>
               <button class="btn btn-outline-secondary btn-copiar-link-esp" type="button" title="Copiar"><i class="bi bi-clipboard"></i></button>
               <a class="btn btn-outline-success btn-whatsapp-link-esp" target="_blank" title="Enviar por WhatsApp"
-                 href="https://wa.me/<?= htmlspecialchars($telDigitsC, ENT_QUOTES, 'UTF-8') ?>?text=<?= rawurlencode('Oi ' . $c['nome'] . '! Confirme sua presença no casamento de ' . $evento['nome'] . ' por aqui: ' . $linkEsp) ?>">
+                 href="https://wa.me/<?= htmlspecialchars($telDigitsC, ENT_QUOTES, 'UTF-8') ?>?text=<?= rawurlencode('Oi ' . $c['nome'] . '! ' . $labels['msg_whatsapp_convite'] . ' ' . $evento['nome'] . ' por aqui: ' . $linkEsp) ?>">
                 <i class="bi bi-whatsapp"></i>
               </a>
               <button class="btn btn-outline-danger btn-remover-link-esp" type="button" title="Remover link"><i class="bi bi-trash"></i></button>
@@ -1547,7 +1579,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                 <i class="bi bi-image-fill text-danger"></i>
               </div>
               <div>
-                <label class="form-check-label fw-bold small text-dark mb-0" for="switch-foto-convite">Foto do casal no convite</label>
+                <label class="form-check-label fw-bold small text-dark mb-0" for="switch-foto-convite"><?= htmlspecialchars($labels['label_foto_convite']) ?></label>
                 <p class="text-muted mb-0" style="font-size:.76rem;line-height:1.4;">Quando ativada, a foto aparece no topo da página que o convidado vê ao abrir o link.</p>
               </div>
             </div>
@@ -1584,8 +1616,8 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               <i class="bi bi-palette-fill" style="color:<?= htmlspecialchars($cor_convite_atual, ENT_QUOTES, 'UTF-8') ?>;"></i>
             </div>
             <div>
-              <div class="fw-bold small text-dark">Cor da página do convite</div>
-              <p class="text-muted mb-0" style="font-size:.76rem;line-height:1.4;">Escolha o tom de fundo que os convidados vão ver ao abrir o link.</p>
+              <div class="fw-bold small text-dark">Cor do meu painel</div>
+              <p class="text-muted mb-0" style="font-size:.76rem;line-height:1.4;">Escolha o tom que vai aparecer no seu painel (aqui, convidados, mesas, fornecedores) e na página de confirmação que seus convidados vão ver.</p>
             </div>
           </div>
 
@@ -1649,8 +1681,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
         <span class="hero-dots"></span>
         <span class="hero-foto-sim"></span>
         <svg class="hero-hearts" viewBox="0 0 200 160">
-          <path d="M62,42 C42,20 8,32 8,58 C8,84 42,98 62,120 C82,98 116,84 116,58 C116,32 82,20 62,42 Z" fill="none" stroke="rgba(255,222,160,.95)" stroke-width="3.5"/>
-          <path d="M104,74 C90,60 68,68 68,86 C68,104 90,112 104,128 C118,112 140,104 140,86 C140,68 118,60 104,74 Z" fill="none" stroke="rgba(255,222,160,.8)" stroke-width="3.5"/>
+          <?= decoracao_hero_svg($evento['tipo_evento'] ?? 'casamento') ?>
         </svg>
       </div>
 
@@ -1715,7 +1746,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 
       <div class="header-hero-accent">
         <div class="d-flex align-items-center justify-content-between gap-2">
-          <div class="header-hero-label mb-0">Nosso Casamento</div>
+          <div class="header-hero-label mb-0"><?= htmlspecialchars($labels['header_hero_label_cliente']) ?></div>
           <?php if ($dias > 0): ?>
             <span class="dias-pill-mobile d-md-none"><i class="bi bi-calendar-check-fill me-1"></i>Faltam <?= $dias ?> dia<?= $dias > 1 ? 's' : '' ?></span>
           <?php elseif ($dias === 0): ?>
@@ -2416,16 +2447,11 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
             <form id="form-musica">
               <div class="row g-2 mb-2">
                 <div class="col-md-5">
-                  <input type="text" id="musica-momento" class="form-control form-control-sm bg-light" placeholder="Momento (Ex: Entrada da Noiva)" list="lista-momentos" required>
+                  <input type="text" id="musica-momento" class="form-control form-control-sm bg-light" placeholder="<?= htmlspecialchars($labels['placeholder_exemplo_momento_musica']) ?>" list="lista-momentos" required>
                   <datalist id="lista-momentos">
-                    <option value="Entrada do Noivo">
-                    <option value="Entrada dos Padrinhos">
-                    <option value="Entrada da Noiva">
-                    <option value="Entrada das Alianças">
-                    <option value="Assinaturas">
-                    <option value="Saída dos Noivos">
-                    <option value="Primeira Dança">
-                    <option value="Corte do Bolo">
+                    <?php foreach ($labels['momentos_evento'] as $momento_sugestao): if ($momento_sugestao === 'Livre / Sem Momento Definido') continue; ?>
+                    <option value="<?= htmlspecialchars($momento_sugestao, ENT_QUOTES, 'UTF-8') ?>">
+                    <?php endforeach; ?>
                   </datalist>
                 </div>
                 <div class="col-md-7">
@@ -2504,7 +2530,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
           </div>
           <div>
             <h5 class="modal-title fw-bold mb-0 text-dark">Uploads do Evento</h5>
-            <span class="text-muted d-none d-sm-inline" style="font-size:.73rem;">Contrato, documentos e comprovantes do casamento de vocês</span>
+            <span class="text-muted d-none d-sm-inline" style="font-size:.73rem;"><?= htmlspecialchars($labels['subtitulo_documentos_cliente']) ?></span>
           </div>
         </div>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -2664,7 +2690,7 @@ document.getElementById('lista-acompanhantes-link-esp')?.addEventListener('click
 });
 
 function linhaLinkEspecificoHtml(r) {
-  const msgWpp = encodeURIComponent('Oi ' + r.nome + '! Confirme sua presença no casamento de ' + NOME_CASAL + ' por aqui: ' + r.link);
+  const msgWpp = encodeURIComponent('Oi ' + r.nome + '! ' + MSG_CONVITE_PREFIXO + ' ' + NOME_CASAL + ' por aqui: ' + r.link);
   const acompHtml = (r.acompanhantes && r.acompanhantes.length)
     ? '<div class="text-muted mb-1" style="font-size:.72rem;"><i class="bi bi-people-fill me-1"></i>' + escapeHtmlLinkEsp(r.acompanhantes.map(a => a.nome).join(', ')) + '</div>'
     : '';
@@ -2823,6 +2849,8 @@ function toast(msg, tipo = 'verde') {
 
 const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;
 const NOME_CASAL = <?= json_encode($evento['nome']) ?>;
+const MSG_CONVITE_PREFIXO = <?= json_encode($labels['msg_whatsapp_convite']) ?>;
+const LABEL_FOTO_CONVITE = <?= json_encode($labels['label_foto_convite']) ?>;
 
 async function ajax(obj) {
   obj.is_ajax = '1';
@@ -2901,7 +2929,7 @@ function initCustomizacaoConvite(sufixo) {
   });
 
   btnRemoverFoto?.addEventListener('click', async function () {
-    if (!confirm('Remover a foto do casal do convite?')) return;
+    if (!confirm('Remover a ' + LABEL_FOTO_CONVITE.toLowerCase() + '?')) return;
     try {
       const r = await ajax({ remover_foto_casal: '1' });
       if (r.ok) {
@@ -2952,7 +2980,7 @@ function initCustomizacaoConvite(sufixo) {
     try {
       const r = await ajax({ salvar_cor_convite: '1', cor: inputCustom.value });
       if (r.ok) {
-        toast('Cor do convite atualizada!', 'verde');
+        toast('Cor do seu painel atualizada!', 'verde');
         document.querySelectorAll('[id^="input-cor-personalizada"]').forEach(el => { el.value = inputCustom.value; });
         document.querySelectorAll('[id^="preview-cor-convite"]').forEach(el => {
           const c1b = ajustarCor(inputCustom.value, -0.22);
@@ -2962,6 +2990,10 @@ function initCustomizacaoConvite(sufixo) {
         document.querySelectorAll('.swatch-cor[data-cor]').forEach(sw => {
           sw.classList.toggle('selecionada', sw.dataset.cor.toLowerCase() === inputCustom.value.toLowerCase());
         });
+        document.querySelectorAll('nav.navbar').forEach(el => { el.style.backgroundColor = inputCustom.value; });
+        document.documentElement.style.setProperty('--color-primary', inputCustom.value);
+        document.documentElement.style.setProperty('--color-primary-dark', ajustarCor(inputCustom.value, -0.18));
+        document.documentElement.style.setProperty('--color-primary-light', ajustarCor(inputCustom.value, 0.85));
       } else {
         toast(r.msg || 'Erro ao salvar a cor.', 'verm');
       }
@@ -2994,7 +3026,7 @@ document.getElementById('btn-marcar-lidas')?.addEventListener('click', function 
   if (lista) {
     lista.innerHTML = '<div class="text-center text-muted p-4 small"><i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.</div>';
   }
-  fetch('notificacoes_marcar_lidas.php', { method: 'POST' }).catch(() => {});
+  fetch('notificacoes_marcar_lidas.php?escopo=<?= urlencode($escopo_notif_noivos) ?>', { method: 'POST' }).catch(() => {});
 });
 
 /* Clicar em uma notificação também marca como lida e a remove da lista */
@@ -3003,7 +3035,7 @@ document.getElementById('lista-notificacoes')?.addEventListener('click', functio
   if (!item) return;
   const badge = document.querySelector('#dropdown-notificacoes .badge');
   if (badge) badge.remove();
-  fetch('notificacoes_marcar_lidas.php', { method: 'POST', keepalive: true }).catch(() => {});
+  fetch('notificacoes_marcar_lidas.php?escopo=<?= urlencode($escopo_notif_noivos) ?>', { method: 'POST', keepalive: true }).catch(() => {});
   item.remove();
   const lista = document.getElementById('lista-notificacoes');
   if (lista && !lista.querySelector('.notif-item')) {

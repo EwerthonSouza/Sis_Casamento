@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once 'conexao.php';
+garantir_coluna_ultimo_login_usuarios($pdo);
 
 // Evita que o navegador guarde esta página em cache, já causou telas
 // desatualizadas aparecerem depois de mudanças no sistema.
@@ -46,7 +47,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $equipe['nome']
                 );
 
-                header("Location: painel_admin.php");
+                // Se ultimo_login ainda tá vazio, é o primeiro login desse usuário —
+                // guarda isso na sessão pra saudação do hub não dizer "de volta" à toa.
+                $_SESSION['primeiro_acesso'] = empty($equipe['ultimo_login']);
+                $pdo->prepare("UPDATE usuarios SET ultimo_login = NOW() WHERE id = ?")->execute([$equipe['id']]);
+
+                if ($equipe['tipo'] === 'desenvolvedor') {
+                    header("Location: dev_painel.php");
+                } else {
+                    header("Location: hub_modulos.php");
+                }
                 exit;
             }
 
@@ -54,13 +64,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
 
             // NOIVOS
-            $stmt = $pdo->prepare("
-                SELECT c.*, e.id AS evento_id
-                FROM clientes c
-                LEFT JOIN eventos e ON e.cliente_id = c.id
-                WHERE c.email = ?
-            ");
-
+            $stmt = $pdo->prepare("SELECT * FROM clientes WHERE email = ?");
             $stmt->execute([$usuario_input]);
             $cliente = $stmt->fetch();
 
@@ -68,7 +72,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if (validarSenha($senha_input, $cliente['senha'])) {
 
-                    if (empty($cliente['evento_id'])) {
+                    $stmt_eventos = $pdo->prepare("SELECT id FROM eventos WHERE cliente_id = ? ORDER BY data_evento DESC");
+                    $stmt_eventos->execute([$cliente['id']]);
+                    $eventos_cliente = $stmt_eventos->fetchAll(PDO::FETCH_COLUMN);
+
+                    if (empty($eventos_cliente)) {
 
                         $erro = "Nenhum evento vinculado ao cadastro.";
 
@@ -78,10 +86,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         $_SESSION['usuario_tipo'] = 'noivos';
                         $_SESSION['usuario_id'] = $cliente['id'];
-                        $_SESSION['evento_id'] = $cliente['evento_id'];
                         $_SESSION['usuario_nome'] = $cliente['nome'] ?? 'Casal';
 
-                        header("Location: noivos.php?id=" . $cliente['evento_id']);
+                        if (count($eventos_cliente) === 1) {
+                            $_SESSION['evento_id'] = $eventos_cliente[0];
+                            header("Location: noivos.php?id=" . $eventos_cliente[0]);
+                        } else {
+                            header("Location: hub_eventos_cliente.php");
+                        }
                         exit;
                     }
 

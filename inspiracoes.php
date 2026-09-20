@@ -45,12 +45,14 @@ require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 
 // 1. LEÃO DE CHÁCARA INTELIGENTE (Aceita Admin, Assistente e Noivos)
-if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'noivos'], true)) {
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'noivos', 'desenvolvedor'], true)) {
     header("Location: index.php?sessao_expirada=1");
     exit;
 }
 
 require_once 'conexao.php';
+require_once 'modulos_evento.inc.php';
+garantir_coluna_tipo_evento($pdo);
 
 $is_admin = ($_SESSION['usuario_tipo'] === 'admin');
 
@@ -74,12 +76,28 @@ $stmt->execute([$evento_id]);
 $evento = $stmt->fetch();
 if (!$evento) { die("Casamento não encontrado."); }
 
+garantir_tabela_modulos_config($pdo);
+$cor_modulo = cor_painel_evento($pdo, $evento);
+
+// Impede a equipe de acessar o mural de inspirações de um evento de outro módulo
+if ($_SESSION['usuario_tipo'] !== 'noivos') {
+    $modulo_ativo = $_SESSION['modulo_ativo'] ?? null;
+    if (!$modulo_ativo || $evento['tipo_evento'] !== $modulo_ativo) {
+        header("Location: painel_admin.php");
+        exit;
+    }
+}
+
 // --- LÓGICA DE CATEGORIAS DINÂMICAS ---
 $stmt_cats = $pdo->prepare("SELECT DISTINCT categoria FROM inspiracoes_fotos WHERE evento_id = ? AND categoria != '' ORDER BY categoria ASC");
 $stmt_cats->execute([$evento_id]);
 $categorias_banco = $stmt_cats->fetchAll(PDO::FETCH_COLUMN);
 
-$categorias_padrao = ['Decoração', 'Buquê', 'Bolo', 'Outros'];
+// Só "Outros" como padrão fixo — as demais (Bolo, Buquê, Decoração eram
+// específicas de casamento) somem daqui; quem usa o mural continua podendo
+// criar categorias próprias (campo de texto livre que aparece ao escolher
+// "Outros"), que passam a valer como aba fixa pra aquele evento.
+$categorias_padrao = ['Outros'];
 $todas_categorias = array_unique(array_merge($categorias_padrao, $categorias_banco));
 sort($todas_categorias);
 
@@ -267,6 +285,7 @@ $fotos = $stmt_fotos->fetchAll();
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <link rel="stylesheet" href="css/estilo.css?v=13">
+    <?= estilo_tema_evento($cor_modulo) ?>
     <style>
         /* Estilização Premium para os Cards de Foto */
         .foto-card {
@@ -304,7 +323,7 @@ $fotos = $stmt_fotos->fetchAll();
 <body class="bg-light">
 
 <?php $link_voltar = ($_SESSION['usuario_tipo'] === 'noivos') ? "noivos.php" : "gerenciar.php?id=" . $evento_id; ?>
-<nav class="navbar navbar-dark bg-dark shadow-sm">
+<nav class="navbar navbar-dark shadow-sm" style="background-color: <?= htmlspecialchars($cor_modulo) ?>;">
   <div class="container">
     <span class="navbar-brand mb-0">
       <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">

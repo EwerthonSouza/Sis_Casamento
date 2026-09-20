@@ -3,7 +3,7 @@
  * Tela do LINK GERAL de confirmação — pede o nome do convidado antes de
  * entrar no fluxo de sempre. Incluído por confirmar.php (via require) quando
  * a página é aberta sem &token=; espera as variáveis já prontas:
- * $evento, $evento_id, $cor_convite_1/2/3, $busca_nome, $busca_erro, $busca_candidatos.
+ * $evento, $evento_id, $labels, $cor_convite_1/2/3, $busca_nome, $busca_erro, $busca_candidatos.
  */
 ?>
 <!DOCTYPE html>
@@ -53,10 +53,10 @@
 <div class="container">
     <div class="rsvp-card">
         <div class="rsvp-topo">
-            <div class="anel"><i class="bi bi-rings"></i></div>
+            <div class="anel"><i class="bi <?= htmlspecialchars($labels['icone_convite_publico']) ?>"></i></div>
             <h2>Confirmação de Presença</h2>
             <div class="data-evento">
-                Casamento de <strong><?= htmlspecialchars($evento['nome_cliente'], ENT_QUOTES, 'UTF-8') ?></strong>
+                <?= htmlspecialchars($labels['header_hero_prefixo']) ?> <strong><?= htmlspecialchars($evento['nome_cliente'], ENT_QUOTES, 'UTF-8') ?></strong>
                 <?php if (!empty($evento['data_evento'])): ?>
                     · <?= date('d/m/Y', strtotime($evento['data_evento'])) ?>
                 <?php endif; ?>

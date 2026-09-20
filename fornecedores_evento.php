@@ -3,17 +3,19 @@ session_start();
 require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 require_once 'conexao.php';
+require_once 'modulos_evento.inc.php';
+garantir_coluna_tipo_evento($pdo);
 
 // ============================================================
 // TRAVA DE SEGURANÇA: Admin, Assistente e Noivos acessam esta página
 // ============================================================
-if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'noivos'])) {
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'noivos', 'desenvolvedor'])) {
     header("Location: index.php?sessao_expirada=1");
     exit;
 }
 
 // Variável para esconder botões de pagamento do assistente (se necessário)
-$is_admin  = ($_SESSION['usuario_tipo'] === 'admin');
+$is_admin  = in_array($_SESSION['usuario_tipo'], ['admin', 'desenvolvedor'], true);
 $eh_noivos = ($_SESSION['usuario_tipo'] === 'noivos');
 
 // Recebe o ID do evento: noivos só podem ver o próprio evento (ignora manipulação da URL)
@@ -34,6 +36,18 @@ $stmt->execute([$evento_id]);
 $evento = $stmt->fetch();
 
 if (!$evento) { die("Evento não encontrado."); }
+
+garantir_tabela_modulos_config($pdo);
+$cor_modulo = cor_painel_evento($pdo, $evento);
+
+// Impede a equipe de acessar fornecedores de um evento de outro módulo
+if (!$eh_noivos) {
+    $modulo_ativo = $_SESSION['modulo_ativo'] ?? null;
+    if (!$modulo_ativo || $evento['tipo_evento'] !== $modulo_ativo) {
+        header("Location: painel_admin.php");
+        exit;
+    }
+}
 
 /* ============================================================
    CSRF TOKEN
@@ -144,6 +158,7 @@ foreach ($lista_fornecedores as $f) {
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <link rel="stylesheet" href="css/estilo.css?v=13">
+    <?= estilo_tema_evento($cor_modulo) ?>
     <style>
         @media (max-width: 767.98px) {
             .stat-card-forn .card-body {
@@ -167,7 +182,7 @@ foreach ($lista_fornecedores as $f) {
     </style>
 </head>
 <body class="bg-light">
-<nav class="navbar navbar-dark bg-dark shadow-sm">
+<nav class="navbar navbar-dark shadow-sm" style="background-color: <?= htmlspecialchars($cor_modulo) ?>;">
   <div class="container">
     <span class="navbar-brand mb-0">
       <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">

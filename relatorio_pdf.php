@@ -4,16 +4,19 @@ require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 
 require_once 'conexao.php';
+require_once 'modulos_evento.inc.php';
 require_once __DIR__ . '/vendor/autoload.php';
 
 use Dompdf\Dompdf;
 use Dompdf\Options;
 
-if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente'])) {
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'desenvolvedor'])) {
     header("Location: index.php?sessao_expirada=1");
     exit;
 }
-$is_admin = ($_SESSION['usuario_tipo'] === 'admin');
+$is_admin = in_array($_SESSION['usuario_tipo'], ['admin', 'desenvolvedor'], true);
+
+garantir_coluna_tipo_evento($pdo);
 
 $evento_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
 if (!$evento_id) {
@@ -47,6 +50,14 @@ $s = $pdo->prepare("SELECT e.*, c.nome, c.email, c.telefone, c.cpf FROM eventos 
 $s->execute([$evento_id]);
 $evento = $s->fetch();
 if (!$evento) { die("Evento não encontrado."); }
+
+// Impede exportar o relatório de um evento de outro módulo
+$modulo_ativo = $_SESSION['modulo_ativo'] ?? null;
+if (!$modulo_ativo || $evento['tipo_evento'] !== $modulo_ativo) {
+    header("Location: painel_admin.php");
+    exit;
+}
+$labels = labels_modulo_evento($evento['tipo_evento']);
 
 $lista_checklist = [];
 $passos = []; $prog = [];
@@ -192,7 +203,7 @@ ob_start();
 
 <div class="cabecalho">
   <div class="marca">Meu Evento PRO</div>
-  <h1>Casamento de <?= h($evento['nome']) ?></h1>
+  <h1><?= h($labels['pdf_titulo_prefixo']) ?> <?= h($evento['nome']) ?></h1>
   <div class="sub">Relatório gerado em <?= h($gerado_em) ?></div>
 
   <table class="info-grid">

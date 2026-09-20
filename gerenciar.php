@@ -4,12 +4,15 @@ require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 
 require_once 'conexao.php';
+require_once 'modulos_evento.inc.php';
 
-if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente'])) {
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'desenvolvedor'])) {
     header("Location: index.php?sessao_expirada=1");
     exit;
 }
-$is_admin = ($_SESSION['usuario_tipo'] === 'admin');
+$is_admin = in_array($_SESSION['usuario_tipo'], ['admin', 'desenvolvedor'], true);
+
+garantir_coluna_tipo_evento($pdo);
 
 // Evita que o navegador guarde esta página (dados financeiros/de convidados) em cache,
 // o que já causou telas desatualizadas aparecerem depois de mudanças no sistema.
@@ -206,6 +209,18 @@ if (!$evento_id) {
     exit;
 }
 
+// Impede acessar/manipular (inclusive via AJAX) um evento de outro módulo —
+// checado aqui, antes do bloco de handlers POST logo abaixo, para também
+// cobrir as ações AJAX (não só a renderização da página).
+$modulo_ativo = $_SESSION['modulo_ativo'] ?? null;
+$stmt_tipo_evento = $pdo->prepare("SELECT tipo_evento FROM eventos WHERE id = ?");
+$stmt_tipo_evento->execute([$evento_id]);
+$tipo_evento_alvo = $stmt_tipo_evento->fetchColumn();
+if (!$modulo_ativo || $tipo_evento_alvo === false || $tipo_evento_alvo !== $modulo_ativo) {
+    header("Location: painel_admin.php");
+    exit;
+}
+
 // Checa também X-Forwarded-Proto: atrás de proxy/load balancer, $_SERVER['HTTPS']
 // não reflete o protocolo real usado pelo navegador.
 $https_ativo = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
@@ -278,26 +293,6 @@ function badge_prazo(?string $data_prazo, bool $done): array {
     if ($dias <= 3) return ['proximo', $txt];
     return ['futuro', $txt];
 }
-
-/* ============================================================
-   MOMENTOS DA CELEBRAÇÃO
-   ============================================================ */
-$momentos_casamento = [
-    'Cerimônia · Entrada dos Padrinhos',
-    'Cerimônia · Entrada das Madrinhas',
-    'Cerimônia · Entrada dos Pajens / Floristas',
-    'Cerimônia · Entrada da Noiva',
-    'Cerimônia · Assinatura do Registro',
-    'Cerimônia · Saída dos Noivos',
-    'Recepção · Primeira Dança (Valsa)',
-    'Recepção · Valsa com os Pais',
-    'Recepção · Corte do Bolo',
-    'Recepção · Entrada na Festa',
-    'Recepção · Jantar / Coquetel',
-    'Festa · Hora da Dança',
-    'Festa · Encerramento',
-    'Livre / Sem Momento Definido',
-];
 
 /* ============================================================
    POST HANDLERS
@@ -859,6 +854,10 @@ $s->execute([$evento_id]);
 $evento = $s->fetch();
 if (!$evento) { die("Evento não encontrado."); }
 
+$labels = labels_modulo_evento($evento['tipo_evento']);
+garantir_tabela_modulos_config($pdo);
+$cor_modulo = cor_painel_evento($pdo, $evento);
+
 // Fornecedores contratados
 $rs = $pdo->prepare("SELECT * FROM fornecedores_evento WHERE evento_id = ? AND status = 'Contratado' ORDER BY servico ASC");
 $rs->execute([$evento_id]);
@@ -995,9 +994,9 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 
 // Notificações (atividade dos noivos neste evento)
 $notificacoes    = buscar_notificacoes($pdo, $evento_id, 15);
-$ultima_vista    = ultima_visualizacao_notificacoes($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
-$nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
-$notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultima_vista || $item['quando'] > $ultima_vista));
+$vistas_notif    = chaves_vistas_usuario($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
+$nao_lidas       = contar_nao_vistas($notificacoes, $vistas_notif);
+$notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset($vistas_notif[$item['chave']])));
 ?>
 <!DOCTYPE html>
 <html lang="pt-br">
@@ -1008,6 +1007,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
   <link rel="stylesheet" href="css/estilo.css?v=13">
+  <?= estilo_tema_evento($cor_modulo) ?>
   <style>
     /* ---- VARIÁVEL DE RAIO USADA EM VÁRIOS CARDS (estilo.css não a define) ---- */
     :root { --radius: 16px; }
@@ -1146,6 +1146,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
       animation: heroHeartsDraw 7s ease-in-out infinite;
     }
     .hero-hearts path:nth-of-type(2) { animation-delay: 1.2s; }
+    .hero-hearts path:nth-of-type(3) { animation-delay: 2.4s; }
     @keyframes heroHeartsDraw {
       0%   { stroke-dashoffset: 1000; }
       42%  { stroke-dashoffset: 0; }
@@ -1483,7 +1484,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
 </head>
 <body>
 
-<nav class="navbar navbar-dark bg-dark shadow-sm">
+<nav class="navbar navbar-dark shadow-sm" style="background-color: <?= htmlspecialchars($cor_modulo) ?>;">
   <div class="container">
     <span class="navbar-brand mb-0">
       <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">
@@ -1599,8 +1600,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
         <span class="hero-dots"></span>
         <span class="hero-foto-sim"></span>
         <svg class="hero-hearts" viewBox="0 0 200 160">
-          <path d="M62,42 C42,20 8,32 8,58 C8,84 42,98 62,120 C82,98 116,84 116,58 C116,32 82,20 62,42 Z" fill="none" stroke="rgba(255,222,160,.95)" stroke-width="3.5"/>
-          <path d="M104,74 C90,60 68,68 68,86 C68,104 90,112 104,128 C118,112 140,104 140,86 C140,68 118,60 104,74 Z" fill="none" stroke="rgba(255,222,160,.8)" stroke-width="3.5"/>
+          <?= decoracao_hero_svg($evento['tipo_evento'] ?? 'casamento') ?>
         </svg>
       </div>
       <div class="d-flex flex-wrap align-items-center gap-2 mb-3 header-top-actions">
@@ -1620,7 +1620,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
           </button>
           <div class="dropdown-menu dropdown-menu-end shadow-lg border-0 p-0" style="width:340px;max-height:420px;overflow-y:auto;">
             <div class="px-3 py-2 border-bottom bg-light d-flex justify-content-between align-items-center">
-              <span class="fw-bold small text-uppercase text-muted"><i class="bi bi-bell me-1"></i> Notificações do casal</span>
+              <span class="fw-bold small text-uppercase text-muted"><i class="bi bi-bell me-1"></i> <?= htmlspecialchars($labels['notif_dropdown_titulo']) ?></span>
               <button type="button" id="btn-marcar-lidas" class="btn btn-link btn-sm p-0 text-decoration-none">Marcar lidas</button>
             </div>
             <div id="lista-notificacoes">
@@ -1629,7 +1629,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
                 <i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.
               </div>
             <?php else: foreach ($notificacoes as $n): ?>
-              <div class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom" style="cursor:pointer;">
+              <div class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom" style="cursor:pointer;" data-chave="<?= htmlspecialchars($n['chave'], ENT_QUOTES, 'UTF-8') ?>">
                 <i class="bi <?= htmlspecialchars($n['icone'], ENT_QUOTES, 'UTF-8') ?> mt-1"></i>
                 <div class="flex-fill" style="min-width:0;">
                   <div class="small text-dark"><?= htmlspecialchars($n['texto'], ENT_QUOTES, 'UTF-8') ?></div>
@@ -1644,7 +1644,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
 
       <div class="header-hero-accent">
         <div class="d-flex align-items-center justify-content-between gap-2">
-          <div class="header-hero-label mb-0">Casamento de</div>
+          <div class="header-hero-label mb-0"><?= htmlspecialchars($labels['header_hero_prefixo']) ?></div>
           <?php if ($dias > 0): ?>
             <span class="dias-pill-mobile d-md-none"><i class="bi bi-calendar-check-fill me-1"></i>Faltam <?= $dias ?> dia<?= $dias > 1 ? 's' : '' ?></span>
           <?php elseif ($dias === 0): ?>
@@ -1899,7 +1899,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                     <input type="hidden" name="comentario_etapa_admin" value="1">
                     <input type="hidden" name="etapa_nome" value="<?= htmlspecialchars($etapa, ENT_QUOTES, 'UTF-8') ?>">
-                    <input type="text" name="novo_comentario_etapa" class="form-control form-control-sm" placeholder="Nota geral para os noivos…" required>
+                    <input type="text" name="novo_comentario_etapa" class="form-control form-control-sm" placeholder="<?= htmlspecialchars($labels['placeholder_nota_checklist']) ?>" required>
                     <button type="submit" class="btn btn-sm btn-dark px-3">Salvar</button>
                   </form>
                 </div>
@@ -2033,7 +2033,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
                 <h6 class="mb-0 fw-bold text-dark text-truncate">Bloco de Notas</h6>
                 <small class="text-dark text-truncate d-block" style="font-size:.78rem;opacity:.6;">
                   <span id="notas-count-badge"><?= $total_notas ?> nota<?= $total_notas !== 1 ? 's' : '' ?></span>
-                  · visível ao casal
+                  · visível ao <?= htmlspecialchars($labels['singular_contratante']) ?>
                 </small>
               </div>
             </div>
@@ -2053,7 +2053,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
                 <h6 class="mb-0 fw-bold text-dark text-truncate">Playlist do Evento</h6>
                 <small class="text-dark text-truncate d-block" style="font-size:.78rem;opacity:.6;">
                   <span id="musicas-count-badge"><?= $total_musicas ?> música<?= $total_musicas !== 1 ? 's' : '' ?></span>
-                  · visível ao casal
+                  · visível ao <?= htmlspecialchars($labels['singular_contratante']) ?>
                 </small>
               </div>
             </div>
@@ -2314,7 +2314,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
         <div class="modal-body p-4">
           <div class="mb-3">
             <label class="form-label small fw-bold text-secondary">Etapa (Nome da etapa)</label>
-            <input type="text" name="etapa" class="form-control" placeholder="Ex: Pré-Casamento" required>
+            <input type="text" name="etapa" class="form-control" placeholder="<?= htmlspecialchars($labels['placeholder_etapa_exemplo']) ?>" required>
           </div>
           <div class="mb-3">
             <label class="form-label small fw-bold text-secondary">Nome da Tarefa</label>
@@ -2618,7 +2618,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
           </div>
           <div>
             <h5 class="modal-title fw-bold mb-0 text-dark">Playlist do Evento</h5>
-            <span class="text-muted" style="font-size:.73rem;">Sugestões e músicas confirmadas · visíveis ao casal</span>
+            <span class="text-muted" style="font-size:.73rem;">Sugestões e músicas confirmadas · visíveis ao <?= htmlspecialchars($labels['singular_contratante']) ?></span>
           </div>
         </div>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -2652,7 +2652,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
                   Momento da Celebração <span class="text-danger">*</span>
                 </label>
                 <select id="musica-momento" class="form-select">
-                  <?php foreach ($momentos_casamento as $momento): ?>
+                  <?php foreach ($labels['momentos_evento'] as $momento): ?>
                   <option value="<?= htmlspecialchars($momento, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($momento, ENT_QUOTES, 'UTF-8') ?></option>
                   <?php endforeach; ?>
                   <option value="__outro__">✏️ Outro (digitar)</option>
@@ -2990,7 +2990,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
           </div>
           <div>
             <h5 class="modal-title fw-bold mb-0 text-dark">Bloco de Notas</h5>
-            <span class="text-muted" style="font-size:.73rem;">Anotações do assessor · visíveis ao casal</span>
+            <span class="text-muted" style="font-size:.73rem;">Anotações do assessor · visíveis ao <?= htmlspecialchars($labels['singular_contratante']) ?></span>
           </div>
         </div>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -3028,7 +3028,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
                    style="font-size:.95rem;padding:.65rem .85rem;">
             <textarea id="nota-conteudo"
                       class="form-control nota-form-input nota-linhas" rows="4"
-                      placeholder="Escreva aqui a anotação para o casal…"
+                      placeholder="<?= htmlspecialchars($labels['placeholder_anotacao_cliente']) ?>"
                       style="font-size:.88rem;resize:vertical;padding:.65rem .85rem;line-height:1.7;"></textarea>
             <div class="d-flex justify-content-between align-items-center mt-3">
               <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-3 d-none" id="btn-cancelar-nota">
@@ -3130,26 +3130,34 @@ const CSRF_TOKEN  = <?= json_encode($csrf_token) ?>;
 
 /* ---- SINO DE NOTIFICAÇÕES ---- */
 
-// Botão "Marcar lidas": some com o badge e limpa a lista exibida
+// Botão "Marcar lidas": marca só as chaves visíveis agora (deste evento) e limpa a lista
 document.getElementById('btn-marcar-lidas')?.addEventListener('click', function (e) {
   e.stopPropagation();
+  const lista = document.getElementById('lista-notificacoes');
+  const chaves = lista ? Array.from(lista.querySelectorAll('.notif-item[data-chave]')).map(el => el.dataset.chave) : [];
   const badge = document.querySelector('#dropdown-notificacoes .badge');
   if (badge) badge.remove();
-  const lista = document.getElementById('lista-notificacoes');
   if (lista) {
     lista.innerHTML = '<div class="text-center text-muted p-4 small"><i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.</div>';
   }
-  fetch('notificacoes_marcar_lidas.php', { method: 'POST' }).catch(() => {});
+  if (chaves.length) {
+    fetch('notificacoes_marcar_lidas.php?chaves=' + encodeURIComponent(chaves.join(',')), { method: 'POST' }).catch(() => {});
+  }
 });
 
-// Clicar em uma notificação também marca como lida e a remove da lista
+// Clicar numa notificação marca só ELA como vista e a remove da lista — as
+// outras continuam aparecendo pra quem ainda não abriu.
 document.getElementById('lista-notificacoes')?.addEventListener('click', function (e) {
   const item = e.target.closest('.notif-item');
-  if (!item) return;
-  const badge = document.querySelector('#dropdown-notificacoes .badge');
-  if (badge) badge.remove();
-  fetch('notificacoes_marcar_lidas.php', { method: 'POST', keepalive: true }).catch(() => {});
+  if (!item || !item.dataset.chave) return;
+  fetch('notificacoes_marcar_lidas.php?chave=' + encodeURIComponent(item.dataset.chave), { method: 'POST', keepalive: true }).catch(() => {});
   item.remove();
+  const badge = document.querySelector('#dropdown-notificacoes .badge');
+  if (badge) {
+    const restante = parseInt(badge.textContent, 10) - 1;
+    if (restante > 0) { badge.textContent = restante > 9 ? '9+' : restante; }
+    else { badge.remove(); }
+  }
   const lista = document.getElementById('lista-notificacoes');
   if (lista && !lista.querySelector('.notif-item')) {
     lista.innerHTML = '<div class="text-center text-muted p-4 small"><i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.</div>';

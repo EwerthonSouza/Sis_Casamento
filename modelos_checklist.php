@@ -10,6 +10,10 @@ if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['
 }
 
 require_once 'conexao.php';
+require_once 'modulos_evento.inc.php';
+garantir_coluna_tipo_evento($pdo);
+garantir_tabela_modulos_config($pdo);
+$cor_modulo = cor_modulo_evento($pdo, $_SESSION['modulo_ativo'] ?? null);
 
 /* ============================================================
    CSRF TOKEN
@@ -206,7 +210,7 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
     </style>
 </head>
 <body class="bg-light">
-<nav class="navbar navbar-dark bg-dark shadow-sm">
+<nav class="navbar navbar-dark shadow-sm" style="background-color: <?= htmlspecialchars($cor_modulo) ?>;">
   <div class="container">
     <span class="navbar-brand mb-0">
       <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">

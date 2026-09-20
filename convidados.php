@@ -3,13 +3,15 @@ session_start();
 require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 
-if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'noivos'])) {
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'noivos', 'desenvolvedor'])) {
     header("Location: index.php?sessao_expirada=1");
     exit;
 }
 $eh_noivos = ($_SESSION['usuario_tipo'] === 'noivos');
 
 require_once 'conexao.php';
+require_once 'modulos_evento.inc.php';
+garantir_coluna_tipo_evento($pdo);
 
 /* ============================================================
    CSRF TOKEN
@@ -42,6 +44,20 @@ if ($eh_noivos) {
     }
 }
 $url_pagina = 'convidados.php' . ($eh_noivos ? '' : "?id=$evento_id");
+
+// Impede a equipe de acessar/manipular (inclusive via AJAX) convidados de um
+// evento de outro módulo — checado aqui, antes do bloco de handlers POST logo
+// abaixo, para também cobrir as ações AJAX (não só a renderização da página).
+if (!$eh_noivos) {
+    $modulo_ativo = $_SESSION['modulo_ativo'] ?? null;
+    $stmt_tipo_evento = $pdo->prepare("SELECT tipo_evento FROM eventos WHERE id = ?");
+    $stmt_tipo_evento->execute([$evento_id]);
+    $tipo_evento_alvo = $stmt_tipo_evento->fetchColumn();
+    if (!$modulo_ativo || $tipo_evento_alvo === false || $tipo_evento_alvo !== $modulo_ativo) {
+        header("Location: painel_admin.php");
+        exit;
+    }
+}
 
 /* ============================================================
    AUTO-CONFIGURAÇÃO DO BANCO DE DADOS
@@ -336,7 +352,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
    CARREGAMENTO DE DADOS
    ============================================================ */
 $stmt = $pdo->prepare("
-    SELECT e.data_evento, e.cor_convite, e.foto_casal, e.foto_casal_ativa, e.mensagem_convite, e.cor_btn_sim, e.cor_btn_nao, c.nome
+    SELECT e.data_evento, e.cor_convite, e.foto_casal, e.foto_casal_ativa, e.mensagem_convite, e.cor_btn_sim, e.cor_btn_nao, e.tipo_evento, c.nome
     FROM eventos e
     INNER JOIN clientes c ON e.cliente_id = c.id
     WHERE e.id = ?
@@ -344,6 +360,10 @@ $stmt = $pdo->prepare("
 $stmt->execute([$evento_id]);
 $evento = $stmt->fetch();
 if (!$evento) die("Evento não encontrado.");
+
+$labels = labels_modulo_evento($evento['tipo_evento']);
+garantir_tabela_modulos_config($pdo);
+$cor_modulo = cor_painel_evento($pdo, $evento);
 
 $stmtC = $pdo->prepare("SELECT * FROM convidados WHERE evento_id = ? ORDER BY nome ASC");
 $stmtC->execute([$evento_id]);
@@ -408,6 +428,7 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
   <link rel="stylesheet" href="css/estilo.css?v=13">
+  <?= estilo_tema_evento($cor_modulo) ?>
 
   <style>
     :root { --radius: 12px; }
@@ -619,7 +640,7 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
 </head>
 <body>
 
-<nav class="navbar navbar-dark bg-dark shadow-sm">
+<nav class="navbar navbar-dark shadow-sm" style="background-color: <?= htmlspecialchars($cor_modulo) ?>;">
   <div class="container-fluid px-3 px-lg-4">
     <span class="navbar-brand mb-0">
       <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">
@@ -924,7 +945,7 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
                 <i class="bi bi-image-fill text-danger"></i>
               </div>
               <div>
-                <label class="form-check-label fw-bold small text-dark mb-0" for="switch-foto-convite">Foto do casal no convite</label>
+                <label class="form-check-label fw-bold small text-dark mb-0" for="switch-foto-convite"><?= htmlspecialchars($labels['label_foto_convite']) ?></label>
                 <p class="text-muted mb-0" style="font-size:.76rem;line-height:1.4;">Quando ativada, a foto aparece no topo da página que o convidado vê ao abrir o link.</p>
               </div>
             </div>
@@ -1258,6 +1279,8 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
 <script>
 const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;
 const NOME_CASAL = <?= json_encode($evento['nome']) ?>;
+const MSG_CONVITE_PREFIXO = <?= json_encode($labels['msg_whatsapp_convite']) ?>;
+const LABEL_FOTO_CONVITE = <?= json_encode($labels['label_foto_convite']) ?>;
 
 document.querySelectorAll('.toast').forEach(t => new bootstrap.Toast(t).show());
 
@@ -1355,7 +1378,7 @@ document.querySelectorAll('.btn-whatsapp-convidado').forEach(btn => {
       if (!r.ok) {
         alert(r.msg || 'Não foi possível gerar o link.');
       } else {
-        const msg = encodeURIComponent('Oi ' + r.nome + '! Confirme sua presença no casamento de ' + NOME_CASAL + ' por aqui: ' + r.link);
+        const msg = encodeURIComponent('Oi ' + r.nome + '! ' + MSG_CONVITE_PREFIXO + ' ' + NOME_CASAL + ' por aqui: ' + r.link);
         window.open('https://wa.me/' + r.telefone_digits + '?text=' + msg, '_blank');
       }
     } catch {
@@ -1566,7 +1589,7 @@ async function postConvite(payload) {
   });
 
   btnRemoverFoto?.addEventListener('click', async function () {
-    if (!confirm('Remover a foto do casal do convite?')) return;
+    if (!confirm('Remover a ' + LABEL_FOTO_CONVITE.toLowerCase() + '?')) return;
     try {
       const r = await postConvite({ remover_foto_casal: '1' });
       if (r.ok) {
