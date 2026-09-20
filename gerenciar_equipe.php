@@ -4,6 +4,7 @@ require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 require_once 'conexao.php';
 require_once 'modulos_evento.inc.php';
+require_once __DIR__ . '/config/central.php';
 
 // ============================================================
 // AUTO-CRIAR TABELA DE USUÁRIOS (CASO NÃO EXISTA)
@@ -88,6 +89,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adicionar_usuario']))
             $modulos_do_admin = modulos_liberados_usuario($pdo, (int)$_SESSION['usuario_id']);
             salvar_modulos_liberados_usuario($pdo, $novo_usuario_id, $modulos_do_admin);
 
+            centralQueueEvent($pdo, 'user.created', [
+                'external_id' => (string) $novo_usuario_id,
+                'name' => $nome,
+                'email' => $email,
+            ]);
+
             $msg_sucesso = "Usuário '$nome' cadastrado com sucesso!";
         } catch (Exception $e) {
             $msg_erro = "Erro ao cadastrar. O e-mail '$email' já pode estar em uso.";
@@ -141,11 +148,12 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios WHERE 
 <html lang="pt-br">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<?php include __DIR__ . '/pwa_head.inc.php'; ?>
     <title>Gerenciar Equipe - Meu Evento PRO</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=13">
+    <link rel="stylesheet" href="css/estilo.css?v=15">
     <style>
         @media (max-width: 767.98px) {
             .navbar-brand img { height: 26px !important; }

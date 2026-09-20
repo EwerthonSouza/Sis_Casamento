@@ -60,8 +60,13 @@ if (!schema_ja_verificado('notificacoes_vistas')) {
  * Se $evento_id for informado, filtra só aquele evento; senão, traz de todos
  * os eventos — mas ainda restrito a $tipo_evento quando informado, pra não
  * misturar notificação de um módulo enquanto a equipe está administrando outro.
+ *
+ * $avisos_central_admin_id (Fase de Avisos, 2026-09-15): quando informado
+ * (o id do admin logado), soma os avisos da Central (modo sino) dirigidos a
+ * ele — só painel_admin.php passa isso; gerenciar.php e noivos.php nunca
+ * veem avisos da Central.
  */
-function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?string $tipo_evento = null): array
+function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?string $tipo_evento = null, ?int $avisos_central_admin_id = null): array
 {
     $itens = [];
     $filtro_modulo = ($tipo_evento && !$evento_id) ? " AND e.tipo_evento = ?" : "";
@@ -171,6 +176,31 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?strin
         } catch (Exception $e) {
             // Coluna 'notificar' pode não existir ainda num deploy antigo;
             // ignora silenciosamente em vez de quebrar o resto do sino.
+        }
+    }
+
+    // 5. Avisos da Central (modo sino), só quando o chamador informa o admin
+    // logado (painel_admin.php) — nunca em gerenciar.php/noivos.php.
+    if ($avisos_central_admin_id !== null) {
+        $sql5 = "
+            SELECT id, titulo, mensagem, criado_em AS quando
+            FROM central_avisos
+            WHERE modo = 'bell' AND ativo = 1
+              AND (alvo_admin_ids IS NULL OR FIND_IN_SET(?, alvo_admin_ids))
+            ORDER BY criado_em DESC
+            LIMIT " . (int)$limite;
+        $stmt5 = $pdo->prepare($sql5);
+        $stmt5->execute([$avisos_central_admin_id]);
+        foreach ($stmt5->fetchAll() as $r) {
+            $itens[] = [
+                'tipo'        => 'central',
+                'chave'       => 'central:' . $r['id'],
+                'icone'       => 'bi-megaphone-fill text-primary',
+                'evento_id'   => null,
+                'evento_nome' => 'Aviso da Central',
+                'texto'       => $r['titulo'] . ($r['mensagem'] ? ': ' . mb_substr($r['mensagem'], 0, 100, 'UTF-8') : ''),
+                'quando'      => $r['quando'],
+            ];
         }
     }
 

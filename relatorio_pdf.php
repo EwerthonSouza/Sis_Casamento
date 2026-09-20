@@ -80,6 +80,7 @@ $pct_g = $total_g > 0 ? round($conc_g / $total_g * 100) : 0;
 
 $lista_conv = [];
 $total_conf = 0; $total_pend = 0;
+$total_adultos = 0; $total_criancas = 0;
 $mesas_por_id = [];
 $nomes_por_id = [];
 if (isset($mostrar['convidados'])) {
@@ -98,7 +99,18 @@ if (isset($mostrar['convidados'])) {
 
     foreach ($lista_conv as $c) {
         $c['confirmado'] ? $total_conf++ : $total_pend++;
+        // "Criança de Colo" também conta como criança no total geral —
+        // só a etiqueta de cada linha distingue os dois casos.
+        if (str_starts_with($c['faixa_etaria'] ?? '', 'Criança')) $total_criancas++;
+        else $total_adultos++;
     }
+}
+
+/* Rótulo curto de faixa etária pra exibir na linha do convidado */
+function faixa_rotulo(?string $faixa): string {
+    if (str_starts_with($faixa ?? '', 'Criança de Colo')) return 'Criança de colo';
+    if (str_starts_with($faixa ?? '', 'Criança')) return 'Criança';
+    return 'Adulto';
 }
 
 $lista_forn = [];
@@ -243,11 +255,12 @@ ob_start();
 
 <?php if (isset($mostrar['convidados'])): ?>
 <h2>Convidados <?= "({$total_conf} confirmados, {$total_pend} pendentes)" ?></h2>
+<p class="sub" style="margin-top:-6px;">Total geral: <?= $total_adultos ?> adulto<?= $total_adultos == 1 ? '' : 's' ?>, <?= $total_criancas ?> criança<?= $total_criancas == 1 ? '' : 's' ?></p>
 <?php if (empty($lista_conv)): ?>
   <p class="vazio">Nenhum convidado cadastrado.</p>
 <?php else: ?>
   <table>
-    <thead><tr><th style="width:20%">Nome</th><th style="width:26%">Mesa</th><th style="width:12%">Status</th><th style="width:42%">Observação</th></tr></thead>
+    <thead><tr><th style="width:18%">Nome</th><th style="width:11%">Faixa</th><th style="width:23%">Mesa</th><th style="width:11%">Status</th><th style="width:37%">Observação</th></tr></thead>
     <tbody>
     <?php foreach ($lista_conv as $c):
       $mesa_nome = !empty($c['mesa_id']) ? ($mesas_por_id[$c['mesa_id']] ?? '—') : '—';
@@ -259,6 +272,7 @@ ob_start();
     ?>
       <tr>
         <td><?= h($c['nome']) ?></td>
+        <td><?= h(faixa_rotulo($c['faixa_etaria'] ?? null)) ?></td>
         <td class="mesa-cel"><?= h($mesa_nome) ?></td>
         <td><span class="badge <?= $c['confirmado'] ? 'ok' : 'pend' ?>"><?= $c['confirmado'] ? 'Confirmado' : 'Pendente' ?></span></td>
         <td><?= h($observacao) ?></td>

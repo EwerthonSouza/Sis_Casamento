@@ -124,6 +124,15 @@ body {
     -moz-osx-font-smoothing: grayscale;
 }
 
+/* PWA: com viewport-fit=cover + status bar translúcida (iOS), o conteúdo
+   passa a ocupar a tela inteira, inclusive atrás do relógio/bateria. Sem
+   isso, a navbar (primeiro elemento de quase toda página logada) fica
+   coberta pela barra de status. env(safe-area-inset-top) resolve pra 0
+   em navegador normal/desktop, então não muda nada fora do PWA instalado. */
+.navbar {
+    padding-top: calc(0.5rem + env(safe-area-inset-top));
+}
+
 .transition-all {
     transition: all 0.3s ease;
 }
@@ -285,6 +294,12 @@ body {
     background-color: #fff;
     border-color: #c9a181;
     box-shadow: 0 0 0 4px rgba(169, 116, 79, 0.15);
+}
+
+/* PWA: mesmo motivo do .navbar acima — sem isso, o topo do modal (título/
+   botão de fechar) fica atrás da barra de status translúcida no iOS. */
+.modal {
+    padding-top: env(safe-area-inset-top);
 }
 
 /* Modais Alto Padrão */

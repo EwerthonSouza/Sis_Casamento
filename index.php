@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once 'conexao.php';
+require_once __DIR__ . '/config/central.php';
 garantir_coluna_ultimo_login_usuarios($pdo);
 
 // Evita que o navegador guarde esta página em cache, já causou telas
@@ -52,6 +53,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['primeiro_acesso'] = empty($equipe['ultimo_login']);
                 $pdo->prepare("UPDATE usuarios SET ultimo_login = NOW() WHERE id = ?")->execute([$equipe['id']]);
 
+                centralQueueEvent($pdo, 'user.login', [
+                    'external_id' => (string) $equipe['id'],
+                    'name' => $equipe['nome'] ?? null,
+                    'email' => $equipe['email'] ?? null,
+                ]);
+
                 if ($equipe['tipo'] === 'desenvolvedor') {
                     header("Location: dev_painel.php");
                 } else {
@@ -88,6 +95,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $_SESSION['usuario_id'] = $cliente['id'];
                         $_SESSION['usuario_nome'] = $cliente['nome'] ?? 'Casal';
 
+                        centralQueueEvent($pdo, 'user.login', [
+                            'external_id' => (string) $cliente['id'],
+                            'name' => $cliente['nome'] ?? null,
+                            'email' => $cliente['email'] ?? null,
+                        ]);
+
                         if (count($eventos_cliente) === 1) {
                             $_SESSION['evento_id'] = $eventos_cliente[0];
                             header("Location: noivos.php?id=" . $eventos_cliente[0]);
@@ -115,18 +128,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <html lang="pt-br">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<?php include __DIR__ . '/pwa_head.inc.php'; ?>
 
 <title>Login - Meu Evento PRO</title>
 
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-<link rel="stylesheet" href="css/estilo.css?v=13">
+<link rel="stylesheet" href="css/estilo.css?v=15">
 
 <style>
 
+/* iOS (PWA instalado, tela cheia) às vezes deixa uma faixa sólida embaixo
+   porque 100dvh não cobre a área do indicador de home nesse modo — o body
+   fica um pouco menor que a tela real e sobra o fundo do <html> aparecendo.
+   Por isso o <html> recebe a mesma imagem do body, não só a cor sólida:
+   se sobrar aquela faixa, ela mostra a foto em vez de um retângulo liso. */
 html{
-    background:#6f4a2f;
+    background-color:#6f4a2f;
+    background-image: url('img/fundo_login.webp');
+    background-repeat:no-repeat;
+    background-position:center bottom;
+    background-size:cover;
 }
 
 body{
@@ -135,9 +158,10 @@ body{
     display:flex;
     align-items:center;
     justify-content:center;
-    padding:20px 15px;
+    padding:calc(20px + env(safe-area-inset-top)) 15px calc(20px + env(safe-area-inset-bottom));
     position:relative;
     overflow-x:hidden;
+    background-color:#6f4a2f;
     background-image: url('img/fundo_login.webp');
     background-repeat:no-repeat;
     background-attachment:fixed;
@@ -148,7 +172,8 @@ body{
 .bg-shape{ display:none; }
 
 @media (max-width:767.98px){
-    body{ background-attachment:scroll; background-image: url('img/fundo_login_mobile.webp'); }
+    body{ background-attachment:scroll; background-image: url('img/fundo_login_mobile.jpg'); }
+    html{ background-image: url('img/fundo_login_mobile.jpg'); }
 
     .login-card{ max-width:340px; border-radius:20px; }
 
@@ -240,14 +265,14 @@ body{
 
 .logo-card img{
     display:block;
-    width:400px;
-    max-width:85vw;
+    width:230px;
+    max-width:62vw;
     height:auto;
 }
 
 @media (min-width:768px){
     .logo-card img{
-        width:560px;
+        width:280px;
     }
 }
 
@@ -300,10 +325,10 @@ body{
 
 <div class="container">
 
-    <div class="text-center mb-4">
+    <div class="text-center" style="margin-bottom:-8px;">
 
         <div class="logo-card">
-            <img src="img/logo MEP1.svg" alt="Meu Evento PRO — Sistema de Gestão de Casamentos">
+            <img src="img/logo-login.png" alt="Meu Evento PRO — Sistema de Gestão de Casamentos">
         </div>
 
     </div>
@@ -343,6 +368,7 @@ body{
                         <input
                             type="text"
                             name="usuario"
+                            id="campoUsuario"
                             class="form-control"
                             required
                             autofocus
