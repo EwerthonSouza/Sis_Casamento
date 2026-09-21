@@ -517,8 +517,9 @@ unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
 // Notificações globais (atividade dos noivos em todos os casamentos)
 $notificacoes = buscar_notificacoes($pdo, null, 15, $is_admin ? (int)$_SESSION['usuario_id'] : null);
 $ultima_vista = ultima_visualizacao_notificacoes($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
-$nao_lidas    = contar_nao_lidas($notificacoes, $ultima_vista);
-$notificacoes = array_values(array_filter($notificacoes, fn($item) => !$ultima_vista || $item['quando'] > $ultima_vista));
+$itens_lidos  = itens_lidos_notificacao($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
+$nao_lidas    = contar_nao_lidas($notificacoes, $ultima_vista, $itens_lidos);
+$notificacoes = array_values(array_filter($notificacoes, fn($item) => item_notificacao_nao_lido($item, $ultima_vista, $itens_lidos)));
 
 // Avisos da Central em modo Faixa/Popup — Fase de Avisos (2026-09-15), só
 // pro usuário admin (ver PROJECT_CONTEXT.md). Mostra o mais recente ainda
@@ -818,8 +819,13 @@ if ($is_admin) {
                         // Lembretes da agenda não pertencem a nenhum evento — o clique
                         // volta pro próprio painel em vez de tentar abrir "gerenciar.php?id=".
                         $href = $n['evento_id'] ? 'gerenciar.php?id=' . (int)$n['evento_id'] : 'painel_admin.php';
+                        // Notificação de nota: leva direto pro Bloco de Notas daquele evento, já na nota certa.
+                        if (!empty($n['nota_id']) && $n['evento_id']) {
+                            $href .= '&abrir_nota=' . (int)$n['nota_id'];
+                        }
                     ?>
-                        <a href="<?= $href ?>" class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom text-decoration-none">
+                        <a href="<?= $href ?>" class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom text-decoration-none"
+                           data-chave="<?= htmlspecialchars($n['chave'] ?? '', ENT_QUOTES, 'UTF-8') ?>">
                             <i class="bi <?= htmlspecialchars($n['icone'], ENT_QUOTES, 'UTF-8') ?> mt-1"></i>
                             <div class="flex-fill" style="min-width:0;">
                                 <div class="small fw-bold text-dark"><?= htmlspecialchars($n['evento_nome'], ENT_QUOTES, 'UTF-8') ?></div>
@@ -1609,13 +1615,20 @@ document.addEventListener('DOMContentLoaded', function () {
         fetch('notificacoes_marcar_lidas.php', { method: 'POST' }).catch(() => {});
     });
 
-    // Clicar em uma notificação também marca como lida
+    // Clicar em uma notificação abre o link dela (o item é um <a>) e marca só
+    // ELA como lida via chave individual — não chama notificacoes_marcar_lidas.php
+    // aqui: essa rota marca TODAS as notificações como vistas de uma vez (só
+    // existe um "último visto" geral), e como esta lista só mostra as não
+    // lidas, isso fazia todas as outras "sumirem" na próxima carga da página.
     document.getElementById('lista-notificacoes')?.addEventListener('click', function (e) {
         const item = e.target.closest('.notif-item');
-        if (!item) return;
-        const badge = document.querySelector('#dropdown-notificacoes .badge');
-        if (badge) badge.remove();
-        fetch('notificacoes_marcar_lidas.php', { method: 'POST', keepalive: true }).catch(() => {});
+        if (!item || !item.dataset.chave) return;
+        fetch('notificacoes_marcar_item_lido.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'chave=' + encodeURIComponent(item.dataset.chave),
+            keepalive: true
+        }).catch(() => {});
     });
 
     // Inicializa Tooltips do Bootstrap

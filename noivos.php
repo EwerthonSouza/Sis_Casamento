@@ -102,6 +102,44 @@ if (!schema_ja_verificado('gerenciar_documentos_v1')) {
     } catch (PDOException $e) {}
 }
 
+// Comentários no Bloco de Notas + coluna que marca quem CRIOU a nota
+// ('autor' guarda o nome da pessoa, 'origem' guarda o papel: 'Assessoria'/'Noivos').
+// Mesmo marcador em disco de gerenciar.php ('notas_comentarios_v1'), então roda
+// só uma vez independente de qual página o casal ou a assessoria abrir primeiro.
+if (!schema_ja_verificado('notas_comentarios_v1')) {
+    try {
+        $pdo->query("SELECT origem FROM notas_evento LIMIT 1");
+    } catch (Exception $e) {
+        $pdo->exec("ALTER TABLE notas_evento ADD COLUMN origem VARCHAR(20) NOT NULL DEFAULT 'Assessoria'");
+    }
+    try {
+        $pdo->query("SELECT 1 FROM notas_comentarios LIMIT 1");
+    } catch (Exception $e) {
+        $pdo->exec("
+            CREATE TABLE notas_comentarios (
+                id         INT AUTO_INCREMENT PRIMARY KEY,
+                nota_id    INT NOT NULL,
+                autor      VARCHAR(20) NOT NULL,
+                comentario TEXT NOT NULL,
+                criado_em  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_notas_comentarios_nota (nota_id),
+                CONSTRAINT fk_notas_comentarios_nota FOREIGN KEY (nota_id) REFERENCES notas_evento(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+        ");
+    }
+    marcar_schema_verificado('notas_comentarios_v1');
+}
+
+// Mesmo marcador em disco de gerenciar.php ('notas_comentarios_autor_nome_v1').
+if (!schema_ja_verificado('notas_comentarios_autor_nome_v1')) {
+    try {
+        $pdo->query("SELECT autor_nome FROM notas_comentarios LIMIT 1");
+    } catch (Exception $e) {
+        $pdo->exec("ALTER TABLE notas_comentarios ADD COLUMN autor_nome VARCHAR(100) NULL");
+    }
+    marcar_schema_verificado('notas_comentarios_autor_nome_v1');
+}
+
 /* ============================================================
    HELPER: Resposta JSON para AJAX
    ============================================================ */
@@ -613,6 +651,76 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         json_out(['ok' => true]);
     }
+
+    // 17. Salvar / editar nota do casal (Noivos só edita as próprias notas — origem='Noivos')
+    if (isset($_POST['salvar_nota'])) {
+        $nota_id  = (int)($_POST['nota_id']     ?? 0);
+        $titulo   = trim($_POST['titulo_nota']   ?? '');
+        $conteudo = trim($_POST['conteudo_nota'] ?? '');
+        $cores_ok = ['amarelo', 'verde', 'azul', 'rosa', 'cinza'];
+        $cor      = in_array($_POST['cor_nota'] ?? '', $cores_ok, true) ? $_POST['cor_nota'] : 'amarelo';
+        if ($titulo !== '') {
+            if ($nota_id > 0) {
+                $pdo->prepare("UPDATE notas_evento SET titulo=?, conteudo=?, cor=?, atualizado_em=NOW() WHERE id=? AND evento_id=? AND origem='Noivos'")
+                    ->execute([$titulo, $conteudo, $cor, $nota_id, $evento_id]);
+                $ret_id = $nota_id;
+            } else {
+                $autor_nome = $_SESSION['usuario_nome'] ?? 'Casal';
+                $pdo->prepare("INSERT INTO notas_evento (evento_id, titulo, conteudo, cor, autor, origem) VALUES (?,?,?,?,?,'Noivos')")
+                    ->execute([$evento_id, $titulo, $conteudo, $cor, $autor_nome]);
+                $ret_id = (int)$pdo->lastInsertId();
+            }
+            if ($ajax) json_out([
+                'ok'         => true,
+                'id'         => $ret_id,
+                'novo'       => $nota_id === 0,
+                'titulo'     => htmlspecialchars($titulo,   ENT_QUOTES, 'UTF-8'),
+                'conteudo'   => htmlspecialchars($conteudo, ENT_QUOTES, 'UTF-8'),
+                'cor'        => $cor,
+                'atualizado' => date('d/m/Y \à\s H:i'),
+            ]);
+        } else {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Informe um título para a nota.']);
+        }
+        header("Location: noivos.php"); exit;
+    }
+
+    // 18. Excluir nota do casal (só as próprias — origem='Noivos')
+    if (isset($_POST['excluir_nota'])) {
+        $nota_id = (int)($_POST['nota_id'] ?? 0);
+        if ($nota_id > 0) {
+            $pdo->prepare("DELETE FROM notas_evento WHERE id=? AND evento_id=? AND origem='Noivos'")->execute([$nota_id, $evento_id]);
+        }
+        if ($ajax) json_out(['ok' => true]);
+        header("Location: noivos.php"); exit;
+    }
+
+    // 19. Comentar em qualquer nota do evento (Assessoria ou Casal)
+    if (isset($_POST['comentar_nota'])) {
+        $nota_id = (int)($_POST['nota_id'] ?? 0);
+        $texto   = trim($_POST['texto_comentario'] ?? '');
+        $autor_nome = 'Noivos';
+        $autor_real = $_SESSION['usuario_nome'] ?? 'Casal';
+        if ($nota_id > 0 && $texto !== '') {
+            $chk = $pdo->prepare("SELECT id FROM notas_evento WHERE id=? AND evento_id=?");
+            $chk->execute([$nota_id, $evento_id]);
+            if ($chk->fetch()) {
+                $pdo->prepare("INSERT INTO notas_comentarios (nota_id, autor, autor_nome, comentario) VALUES (?, ?, ?, ?)")
+                    ->execute([$nota_id, $autor_nome, $autor_real, $texto]);
+                if ($ajax) json_out([
+                    'ok'         => true,
+                    'autor'      => htmlspecialchars($autor_nome, ENT_QUOTES, 'UTF-8'),
+                    'autor_nome' => htmlspecialchars($autor_real, ENT_QUOTES, 'UTF-8'),
+                    'texto'      => htmlspecialchars($texto,     ENT_QUOTES, 'UTF-8'),
+                ]);
+            } else {
+                if ($ajax) json_out(['ok' => false, 'msg' => 'Nota não encontrada.']);
+            }
+        } else {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Escreva um comentário.']);
+        }
+        header("Location: noivos.php"); exit;
+    }
 }
 
 /* ============================================================
@@ -623,6 +731,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $rs = $pdo->prepare("SELECT * FROM checklist WHERE evento_id = ? ORDER BY etapa ASC, id ASC");
 $rs->execute([$evento_id]);
 $lista_checklist = $rs->fetchAll();
+
+// Notas do evento (Assessoria + Casal) e seus comentários
+$rs_notas = $pdo->prepare("SELECT * FROM notas_evento WHERE evento_id = ? ORDER BY criado_em DESC");
+$rs_notas->execute([$evento_id]);
+$lista_notas = $rs_notas->fetchAll();
+$total_notas = count($lista_notas);
+
+$coments_nota = [];
+if (!empty($lista_notas)) {
+    $ids_notas = array_column($lista_notas, 'id');
+    $ph = implode(',', array_fill(0, count($ids_notas), '?'));
+    $rs6 = $pdo->prepare("SELECT * FROM notas_comentarios WHERE nota_id IN ($ph) ORDER BY criado_em ASC, id ASC");
+    $rs6->execute($ids_notas);
+    foreach ($rs6->fetchAll() as $c) { $coments_nota[$c['nota_id']][] = $c; }
+}
 
 // Convidados
 $rs2 = $pdo->prepare("SELECT * FROM convidados WHERE evento_id = ? ORDER BY nome ASC");
@@ -672,14 +795,59 @@ $rs3 = $pdo->prepare("
     LIMIT 15
 ");
 $rs3->execute([$evento_id, $evento_id]);
-$notificacoes = $rs3->fetchAll();
+$notificacoes = array_map(fn($n) => $n + ['tipo' => 'comentario', 'chave' => 'comentario:' . $n['id']], $rs3->fetchAll());
 
+// Notas criadas pela assessoria
+try {
+    $rsNota = $pdo->prepare("SELECT id, titulo, criado_em FROM notas_evento WHERE evento_id = ? AND origem = 'Assessoria' ORDER BY criado_em DESC LIMIT 15");
+    $rsNota->execute([$evento_id]);
+    foreach ($rsNota->fetchAll() as $n) {
+        $notificacoes[] = [
+            'tipo'          => 'nota',
+            'nota_id'       => (int)$n['id'],
+            'titulo_nota'   => $n['titulo'],
+            'chave'         => 'nota:' . $n['id'],
+            'data_cadastro' => $n['criado_em'],
+        ];
+    }
+} catch (Exception $e) {}
+
+// Comentários da assessoria nas notas
+try {
+    $rsNotaC = $pdo->prepare("
+        SELECT nc.id, nc.nota_id, nc.comentario, nc.autor_nome, nc.criado_em, n.titulo AS titulo_nota
+        FROM notas_comentarios nc
+        INNER JOIN notas_evento n ON n.id = nc.nota_id
+        WHERE n.evento_id = ? AND nc.autor = 'Assessoria'
+        ORDER BY nc.criado_em DESC LIMIT 15
+    ");
+    $rsNotaC->execute([$evento_id]);
+    foreach ($rsNotaC->fetchAll() as $n) {
+        $notificacoes[] = [
+            'tipo'          => 'nota_comentario',
+            'nota_id'       => (int)$n['nota_id'],
+            'titulo_nota'   => $n['titulo_nota'],
+            'autor_nome'    => $n['autor_nome'] ?: 'Assessoria',
+            'comentario'    => $n['comentario'],
+            'chave'         => 'nota_comentario:' . $n['id'],
+            'data_cadastro' => $n['criado_em'],
+        ];
+    }
+} catch (Exception $e) {}
+
+usort($notificacoes, fn($a, $b) => strcmp($b['data_cadastro'], $a['data_cadastro']));
+$notificacoes = array_slice($notificacoes, 0, 15);
+
+// Item não lido = mais novo que o "último visto" geral E não dispensado
+// individualmente (ver notificacoes.inc.php — o mesmo "último visto" único
+// pra tudo é o que fazia clicar em 1 notificação apagar todas as outras).
 $ultima_vista_noivos = ultima_visualizacao_notificacoes($pdo, 'noivos', (int)($_SESSION['usuario_id'] ?? 0));
+$itens_lidos_noivos  = itens_lidos_notificacao($pdo, 'noivos', (int)($_SESSION['usuario_id'] ?? 0));
 $nao_lidas = 0;
 foreach ($notificacoes as $n) {
-    if (!$ultima_vista_noivos || $n['data_cadastro'] > $ultima_vista_noivos) $nao_lidas++;
+    if (item_notificacao_nao_lido($n + ['quando' => $n['data_cadastro']], $ultima_vista_noivos, $itens_lidos_noivos)) $nao_lidas++;
 }
-$notificacoes = array_values(array_filter($notificacoes, fn($n) => !$ultima_vista_noivos || $n['data_cadastro'] > $ultima_vista_noivos));
+$notificacoes = array_values(array_filter($notificacoes, fn($n) => item_notificacao_nao_lido($n + ['quando' => $n['data_cadastro']], $ultima_vista_noivos, $itens_lidos_noivos)));
 
 // Fornecedores
 $rs4 = $pdo->prepare("SELECT * FROM fornecedores_evento WHERE evento_id = ? AND status != 'Cancelado' ORDER BY status ASC, servico ASC");
@@ -1698,14 +1866,31 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                 <div class="text-center text-muted p-4 small">
                   <i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.
                 </div>
-              <?php else: foreach ($notificacoes as $n): ?>
-                <div class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom" style="cursor:pointer;">
-                  <i class="bi bi-chat-left-text-fill text-primary mt-1"></i>
-                  <div class="flex-fill" style="min-width:0;">
-                    <div class="small fw-bold text-dark"><?= htmlspecialchars(!empty($n['etapa_nome']) ? 'Etapa: ' . $n['etapa_nome'] : 'Tarefa: ' . $n['tarefa'], ENT_QUOTES, 'UTF-8') ?></div>
-                    <div class="small text-body"><?= htmlspecialchars($n['comentario'], ENT_QUOTES, 'UTF-8') ?></div>
-                    <div class="text-muted" style="font-size:.7rem;"><?= tempo_relativo($n['data_cadastro']) ?></div>
-                  </div>
+              <?php else: foreach ($notificacoes as $n): $tipo = $n['tipo'] ?? 'comentario'; ?>
+                <div class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom" style="cursor:pointer;"
+                     data-chave="<?= htmlspecialchars($n['chave'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                     <?= !empty($n['nota_id']) ? 'data-nota-id="' . (int)$n['nota_id'] . '"' : '' ?>>
+                  <?php if ($tipo === 'nota'): ?>
+                    <i class="bi bi-journal-plus text-warning mt-1"></i>
+                    <div class="flex-fill" style="min-width:0;">
+                      <div class="small fw-bold text-dark">Nova nota: <?= htmlspecialchars($n['titulo_nota'], ENT_QUOTES, 'UTF-8') ?></div>
+                      <div class="text-muted" style="font-size:.7rem;"><?= tempo_relativo($n['data_cadastro']) ?></div>
+                    </div>
+                  <?php elseif ($tipo === 'nota_comentario'): ?>
+                    <i class="bi bi-chat-square-text-fill text-warning mt-1"></i>
+                    <div class="flex-fill" style="min-width:0;">
+                      <div class="small fw-bold text-dark"><?= htmlspecialchars($n['autor_nome'] ?? 'Assessoria', ENT_QUOTES, 'UTF-8') ?> comentou em "<?= htmlspecialchars($n['titulo_nota'], ENT_QUOTES, 'UTF-8') ?>"</div>
+                      <div class="small text-body"><?= htmlspecialchars($n['comentario'], ENT_QUOTES, 'UTF-8') ?></div>
+                      <div class="text-muted" style="font-size:.7rem;"><?= tempo_relativo($n['data_cadastro']) ?></div>
+                    </div>
+                  <?php else: ?>
+                    <i class="bi bi-chat-left-text-fill text-primary mt-1"></i>
+                    <div class="flex-fill" style="min-width:0;">
+                      <div class="small fw-bold text-dark"><?= htmlspecialchars(!empty($n['etapa_nome']) ? 'Etapa: ' . $n['etapa_nome'] : 'Tarefa: ' . $n['tarefa'], ENT_QUOTES, 'UTF-8') ?></div>
+                      <div class="small text-body"><?= htmlspecialchars($n['comentario'], ENT_QUOTES, 'UTF-8') ?></div>
+                      <div class="text-muted" style="font-size:.7rem;"><?= tempo_relativo($n['data_cadastro']) ?></div>
+                    </div>
+                  <?php endif; ?>
                 </div>
               <?php endforeach; endif; ?>
               </div>
@@ -2058,23 +2243,48 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
           </div>
         </a>
 
-        <a href="fornecedores_evento.php" class="btn-musicas-sidebar text-decoration-none" style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border-color: #fcd34d;">
+        <a href="fornecedores_evento.php" class="btn-musicas-sidebar text-decoration-none" style="background: linear-gradient(135deg, #ede9fe 0%, #ddd6fe 100%); border-color: #c4b5fd;">
           <div class="d-flex justify-content-between align-items-center p-3">
             <div class="d-flex align-items-center gap-3">
               <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0"
                    style="width:44px;height:44px;">
-                <i class="bi bi-briefcase-fill fs-4" style="color:#b45309;"></i>
+                <i class="bi bi-briefcase-fill fs-4" style="color:#7c3aed;"></i>
               </div>
               <div class="text-start">
                 <h6 class="mb-0 fw-bold text-dark">Fornecedores &amp; Orçamentos</h6>
                 <small class="text-dark" style="font-size:.78rem;opacity:.6;">Contratar profissionais e ver valores</small>
               </div>
             </div>
-            <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:#b45309; border:none; color:#fff;">
+            <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:#7c3aed; border:none; color:#fff;">
               Abrir <i class="bi bi-arrow-right ms-1"></i>
             </span>
           </div>
         </a>
+
+        <button type="button"
+                class="btn-musicas-sidebar mt-0 mb-0"
+                data-bs-toggle="modal"
+                data-bs-target="#modalNotas"
+                style="background: linear-gradient(135deg, #fef9c3 0%, #fde68a 100%); border-color: #fbbf24;">
+          <div class="d-flex justify-content-between align-items-center p-3">
+            <div class="d-flex align-items-center gap-3">
+              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0"
+                   style="width:44px;height:44px;">
+                <i class="bi bi-journal-text fs-4" style="color:#a16207;"></i>
+              </div>
+              <div class="text-start">
+                <h6 class="mb-0 fw-bold text-dark">Bloco de Notas</h6>
+                <small class="text-dark" style="font-size:.78rem;opacity:.6;">
+                  <span id="notas-count-badge"><?= $total_notas ?> nota<?= $total_notas !== 1 ? 's' : '' ?></span>
+                  · avisos da assessoria
+                </small>
+              </div>
+            </div>
+            <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm" style="pointer-events:none; background:#a16207; border:none; color:#fff;">
+              Abrir <i class="bi bi-arrow-right ms-1"></i>
+            </span>
+          </div>
+        </button>
 
         <div class="card shadow-sm border-0" style="border-radius: var(--radius);">
           <div class="card-header bg-white border-0 pt-4 pb-0 text-center">
@@ -2485,6 +2695,162 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                 </div>
               <?php endforeach; ?>
             </div>
+          <?php endif; ?>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal de Notas -->
+<div class="modal fade" id="modalNotas" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+    <div class="modal-content border-0 shadow-lg rounded-4" style="background:#f8fafc;">
+
+      <div class="modal-header border-0 px-4 pt-4 pb-2" style="background:transparent;">
+        <div class="d-flex align-items-center gap-3">
+          <div class="rounded-3 d-flex align-items-center justify-content-center shadow-sm"
+               style="width:42px;height:42px;background:#fef9c3;border:1.5px solid #facc15;">
+            <i class="bi bi-journal-text fs-5" style="color:#a16207;"></i>
+          </div>
+          <div>
+            <h5 class="modal-title fw-bold mb-0 text-dark">Bloco de Notas</h5>
+            <span class="text-muted" style="font-size:.73rem;">Avisos da assessoria e anotações do casal</span>
+          </div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+
+      <div class="modal-body px-4 pb-4 pt-2">
+        <div class="card border-0 shadow-sm rounded-4 mb-4" id="card-form-nota" style="border: 1.5px solid #fde68a !important; background:#fff;">
+          <div class="card-body p-3 p-sm-4">
+            <button type="button" class="btn d-flex align-items-center gap-2 w-100 p-0 border-0 bg-transparent text-start"
+                    data-bs-toggle="collapse" data-bs-target="#form-nota-collapse" aria-expanded="false">
+              <i class="bi bi-plus-circle-fill" style="color:#a16207;"></i>
+              <span class="fw-bold text-dark small text-uppercase" id="form-nota-label" style="letter-spacing:.06em;">Nova Nota</span>
+              <i class="bi bi-chevron-down ms-auto" id="form-nota-chevron" style="color:#a16207;font-size:.75rem;"></i>
+            </button>
+            <div class="collapse" id="form-nota-collapse">
+            <div class="mt-3">
+            <input type="hidden" id="nota-id-edit" value="0">
+            <div class="mb-2">
+              <input type="text" id="nota-titulo" class="form-control form-control-sm bg-light" placeholder="Título da nota" required>
+            </div>
+            <div class="d-flex gap-2 mb-3">
+              <?php $cores_lbl = ['amarelo'=>'#fde047','verde'=>'#86efac','azul'=>'#93c5fd','rosa'=>'#f9a8d4','cinza'=>'#cbd5e1']; ?>
+              <?php foreach ($cores_lbl as $corK => $corHex): ?>
+              <label class="d-inline-flex" title="<?= ucfirst($corK) ?>">
+                <input type="radio" name="cor-nota" class="cor-nota-radio d-none" value="<?= $corK ?>" <?= $corK === 'amarelo' ? 'checked' : '' ?>>
+                <span class="d-inline-block" style="width:22px;height:22px;border-radius:50%;background:<?= $corHex ?>;border:2px solid #fff;box-shadow:0 0 0 1.5px <?= $corHex ?>;cursor:pointer;"></span>
+              </label>
+              <?php endforeach; ?>
+            </div>
+            <textarea id="nota-conteudo"
+                      class="form-control nota-form-input nota-linhas" rows="4"
+                      placeholder="Escreva aqui a sua anotação…"
+                      style="font-size:.88rem;resize:vertical;padding:.65rem .85rem;line-height:1.7;"></textarea>
+            <div class="d-flex justify-content-between align-items-center mt-3">
+              <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-3 d-none" id="btn-cancelar-nota">
+                <i class="bi bi-x me-1"></i> Cancelar
+              </button>
+              <button type="button" class="btn btn-sm fw-bold rounded-pill px-4 shadow-sm ms-auto" id="btn-salvar-nota" style="background:#facc15;color:#78350f;">
+                <i class="bi bi-floppy me-1"></i> Salvar Nota
+              </button>
+            </div>
+            </div>
+            </div>
+          </div>
+        </div>
+        <div id="lista-notas-wrap">
+          <?php if (empty($lista_notas)): ?>
+          <div class="text-center py-5 text-muted" id="notas-vazia">
+            <i class="bi bi-journal-x fs-1 d-block mb-2" style="opacity:.25;"></i>
+            <small>Nenhuma nota ainda.</small>
+          </div>
+          <?php else: ?>
+          <div class="mb-2 d-flex align-items-center gap-2">
+            <span class="badge rounded-pill px-3 badge-notas-cont" style="font-size:.68rem;background:#fef08a;color:#78350f;">
+              <i class="bi bi-journals me-1"></i>
+              <span id="notas-badge-count"><?= $total_notas ?></span> nota<?= $total_notas !== 1 ? 's' : '' ?>
+            </span>
+            <span class="text-muted" style="font-size:.68rem;">· mais recentes primeiro</span>
+          </div>
+          <div class="row g-3" id="grid-notas">
+            <?php
+            $cores_bg  = ['amarelo'=>'#fef9c3','verde'=>'#dcfce7','azul'=>'#dbeafe','rosa'=>'#fce7f3','cinza'=>'#f1f5f9'];
+            $cores_brd = ['amarelo'=>'#fde047','verde'=>'#86efac','azul'=>'#93c5fd','rosa'=>'#f9a8d4','cinza'=>'#cbd5e1'];
+            $cores_txt = ['amarelo'=>'#78350f','verde'=>'#14532d','azul'=>'#1e3a8a','rosa'=>'#831843','cinza'=>'#1e293b'];
+            foreach ($lista_notas as $nota):
+              $cor  = $nota['cor'] ?? 'amarelo';
+              $bgC  = $cores_bg[$cor]  ?? '#fef9c3';
+              $brdC = $cores_brd[$cor] ?? '#fde047';
+              $txtC = $cores_txt[$cor] ?? '#78350f';
+              $dt   = date('d/m/Y \à\s H:i', strtotime($nota['atualizado_em'] ?? $nota['criado_em']));
+              $eh_do_casal = ($nota['origem'] ?? 'Assessoria') === 'Noivos';
+            ?>
+            <div class="col-12 col-sm-6 nota-card-wrap" data-id="<?= $nota['id'] ?>" data-origem="<?= $eh_do_casal ? 'Noivos' : 'Assessoria' ?>">
+              <div class="card border-0 shadow-sm h-100 rounded-4 nota-card"
+                   style="background:<?= $bgC ?>;border-left:4px solid <?= $brdC ?>!important;">
+                <div class="card-body p-3">
+                  <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                    <h6 class="fw-bold mb-0 text-truncate" style="color:<?= $txtC ?>;font-size:.88rem;line-height:1.3;">
+                      <?= htmlspecialchars($nota['titulo'], ENT_QUOTES, 'UTF-8') ?>
+                    </h6>
+                    <?php if ($eh_do_casal): ?>
+                    <div class="d-flex gap-1 flex-shrink-0">
+                      <button type="button" class="btn p-1 border-0 bg-transparent btn-editar-nota"
+                              data-id="<?= $nota['id'] ?>"
+                              data-titulo="<?= htmlspecialchars($nota['titulo'],   ENT_QUOTES, 'UTF-8') ?>"
+                              data-conteudo="<?= htmlspecialchars($nota['conteudo'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                              data-cor="<?= htmlspecialchars($nota['cor'], ENT_QUOTES, 'UTF-8') ?>"
+                              title="Editar nota">
+                        <i class="bi bi-pencil-fill" style="font-size:.78rem;color:<?= $txtC ?>;opacity:.55;"></i>
+                      </button>
+                      <button type="button" class="btn p-1 border-0 bg-transparent btn-excluir-nota"
+                              data-id="<?= $nota['id'] ?>" title="Excluir nota">
+                        <i class="bi bi-trash-fill" style="font-size:.78rem;color:#ef4444;opacity:.6;"></i>
+                      </button>
+                    </div>
+                    <?php endif; ?>
+                  </div>
+                  <?php if (!empty($nota['conteudo'])): ?>
+                  <p class="mb-0" style="color:<?= $txtC ?>;opacity:.82;white-space:pre-wrap;line-height:1.6;font-size:.8rem;">
+                    <?= htmlspecialchars($nota['conteudo'], ENT_QUOTES, 'UTF-8') ?>
+                  </p>
+                  <?php endif; ?>
+                  <div class="mt-3 pt-2 border-top d-flex justify-content-between align-items-center"
+                       style="border-color:<?= $brdC ?>!important;">
+                    <span style="font-size:.6rem;color:<?= $txtC ?>;opacity:.5;">
+                      <i class="bi bi-clock me-1"></i><?= $dt ?>
+                    </span>
+                    <span class="badge rounded-pill"
+                          style="font-size:.55rem;background:<?= $bgC ?>;border:1px solid <?= $brdC ?>;color:<?= $txtC ?>;opacity:.7;">
+                      <?= $eh_do_casal ? 'Casal' : 'Assessoria' ?>
+                    </span>
+                  </div>
+                  <div class="mt-2 pt-2 border-top nota-comentarios-wrap" style="border-color:<?= $brdC ?>!important;">
+                    <div class="lista-coment-nota mb-2">
+                      <?php foreach ($coments_nota[$nota['id']] ?? [] as $cm):
+                        $corC = $cm['autor'] === 'Noivos' ? 'text-danger' : 'text-primary';
+                        $nomeC = $cm['autor'] === 'Noivos' ? 'Noivos' : ($cm['autor_nome'] ?: $cm['autor']); ?>
+                        <div class="small my-1 bg-white p-2 rounded-3" style="font-size:.74rem;border:1px solid rgba(0,0,0,.06);">
+                          <strong class="<?= $corC ?>"><?= htmlspecialchars($nomeC, ENT_QUOTES, 'UTF-8') ?>:</strong>
+                          <?= htmlspecialchars($cm['comentario'], ENT_QUOTES, 'UTF-8') ?>
+                        </div>
+                      <?php endforeach; ?>
+                    </div>
+                    <form class="d-flex gap-2 form-comentar-nota">
+                      <input type="text" name="texto_comentario" class="form-control form-control-sm" style="font-size:.78rem;" placeholder="Comentar…" required>
+                      <button type="submit" class="btn btn-sm btn-outline-secondary px-3" title="Enviar">
+                        <i class="bi bi-send-fill"></i>
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <?php endforeach; ?>
+          </div>
           <?php endif; ?>
         </div>
       </div>
@@ -2998,19 +3364,66 @@ document.getElementById('btn-marcar-lidas')?.addEventListener('click', function 
   fetch('notificacoes_marcar_lidas.php', { method: 'POST' }).catch(() => {});
 });
 
-/* Clicar em uma notificação também marca como lida e a remove da lista */
+// Diminui (ou remove) o número no sino sem esperar o servidor responder
+function decrementarBadgeNotificacoes() {
+  const badge = document.querySelector('#dropdown-notificacoes .badge');
+  if (!badge) return;
+  const atual = parseInt(badge.textContent, 10) || 0;
+  const novo  = Math.max(0, atual - 1);
+  if (novo === 0) { badge.remove(); return; }
+  badge.textContent = novo > 9 ? '9+' : String(novo);
+}
+
+/* Clicar em uma notificação marca só ELA como lida (chave individual, não o
+   "último visto" geral — que marcava TODAS de uma vez e fazia as outras
+   "sumirem" ao recarregar) e a remove da lista.
+   Notificações de nota, além disso, abrem o Bloco de Notas direto na nota. */
 document.getElementById('lista-notificacoes')?.addEventListener('click', function (e) {
   const item = e.target.closest('.notif-item');
   if (!item) return;
-  const badge = document.querySelector('#dropdown-notificacoes .badge');
-  if (badge) badge.remove();
-  fetch('notificacoes_marcar_lidas.php', { method: 'POST', keepalive: true }).catch(() => {});
+  if (item.dataset.chave) {
+    fetch('notificacoes_marcar_item_lido.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'chave=' + encodeURIComponent(item.dataset.chave),
+      keepalive: true
+    }).catch(() => {});
+    decrementarBadgeNotificacoes();
+  }
+  if (item.dataset.notaId) {
+    bootstrap.Dropdown.getInstance(document.querySelector('#dropdown-notificacoes [data-bs-toggle="dropdown"]'))?.hide();
+    abrirNotaNoModal(item.dataset.notaId);
+  }
   item.remove();
   const lista = document.getElementById('lista-notificacoes');
   if (lista && !lista.querySelector('.notif-item')) {
     lista.innerHTML = '<div class="text-center text-muted p-4 small"><i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.</div>';
   }
 });
+
+// Abre o modal de Notas e rola/realça a nota específica
+function abrirNotaNoModal(notaId) {
+  const modalEl = document.getElementById('modalNotas');
+  if (!modalEl) return;
+  const irParaNota = () => {
+    const card = modalEl.querySelector(`.nota-card-wrap[data-id="${notaId}"] .nota-card`);
+    if (!card) return;
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card.style.transition = 'box-shadow .3s ease';
+    card.style.boxShadow = '0 0 0 3px #f59e0b';
+    setTimeout(() => { card.style.boxShadow = ''; }, 2000);
+  };
+  if (modalEl.classList.contains('show')) {
+    irParaNota();
+  } else {
+    modalEl.addEventListener('shown.bs.modal', irParaNota, { once: true });
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+  }
+}
+
+<?php if (!empty($_GET['abrir_nota'])): ?>
+document.addEventListener('DOMContentLoaded', () => abrirNotaNoModal(<?= (int)$_GET['abrir_nota'] ?>));
+<?php endif; ?>
 
 /* ============================================================
    ABRIR CONVERSA / HISTÓRICO (FIX: função estava ausente)
@@ -3819,6 +4232,236 @@ document.getElementById('form-musica')?.addEventListener('submit', async (e) => 
 });
 
 bindBotoesMusica();
+
+/* ============================================================
+   BLOCO DE NOTAS (Assessoria + Casal)
+   ============================================================ */
+const NOTAS_CORES_BG  = { amarelo:'#fef9c3', verde:'#dcfce7', azul:'#dbeafe', rosa:'#fce7f3', cinza:'#f1f5f9' };
+const NOTAS_CORES_BRD = { amarelo:'#fde047', verde:'#86efac', azul:'#93c5fd', rosa:'#f9a8d4', cinza:'#cbd5e1' };
+const NOTAS_CORES_TXT = { amarelo:'#78350f', verde:'#14532d', azul:'#1e3a8a', rosa:'#831843', cinza:'#1e293b' };
+
+function notaCorSelecionada() {
+  return (document.querySelector('.cor-nota-radio:checked') || {}).value || 'amarelo';
+}
+function resetarFormNota() {
+  document.getElementById('nota-id-edit').value  = '0';
+  document.getElementById('nota-titulo').value   = '';
+  document.getElementById('nota-conteudo').value = '';
+  const rd = document.querySelector('.cor-nota-radio[value="amarelo"]');
+  if (rd) rd.checked = true;
+  document.getElementById('form-nota-label').textContent = 'Nova Nota';
+  document.getElementById('btn-cancelar-nota').classList.add('d-none');
+  document.getElementById('btn-salvar-nota').innerHTML = '<i class="bi bi-floppy me-1"></i> Salvar Nota';
+  bootstrap.Collapse.getOrCreateInstance(document.getElementById('form-nota-collapse'), { toggle: false }).hide();
+}
+
+document.getElementById('form-nota-collapse')?.addEventListener('show.bs.collapse', () => {
+  document.getElementById('form-nota-chevron')?.classList.replace('bi-chevron-down', 'bi-chevron-up');
+});
+document.getElementById('form-nota-collapse')?.addEventListener('hide.bs.collapse', () => {
+  document.getElementById('form-nota-chevron')?.classList.replace('bi-chevron-up', 'bi-chevron-down');
+});
+
+function atualizarContadoresNotas() {
+  const total  = document.querySelectorAll('#grid-notas .nota-card-wrap').length;
+  const sufixo = total !== 1 ? 's' : '';
+  const txt    = total + ' nota' + sufixo;
+
+  const badgeSide = document.getElementById('notas-count-badge');
+  if (badgeSide) badgeSide.textContent = txt;
+
+  const contBadge = document.querySelector('.badge-notas-cont');
+  if (contBadge) {
+    contBadge.innerHTML = `<i class="bi bi-journals me-1"></i>${total} nota${sufixo}`;
+  }
+}
+
+function notaHtmlCard(r, cor) {
+  const bg  = NOTAS_CORES_BG[cor]  || '#fef9c3';
+  const brd = NOTAS_CORES_BRD[cor] || '#fde047';
+  const txt = NOTAS_CORES_TXT[cor] || '#78350f';
+  const dt  = r.atualizado || new Date().toLocaleString('pt-BR', {
+    day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'
+  }).replace(',', ' às');
+
+  const conteudoHtml = r.conteudo
+    ? `<p class="mb-0" style="color:${txt};opacity:.82;white-space:pre-wrap;line-height:1.6;font-size:.8rem;">${r.conteudo}</p>`
+    : '';
+  return `
+    <div class="col-12 col-sm-6 nota-card-wrap" data-id="${r.id}" data-origem="Noivos">
+      <div class="card border-0 shadow-sm h-100 rounded-4 nota-card"
+           style="background:${bg};border-left:4px solid ${brd}!important;">
+        <div class="card-body p-3">
+          <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+            <h6 class="fw-bold mb-0 text-truncate" style="color:${txt};font-size:.88rem;line-height:1.3;">${r.titulo}</h6>
+            <div class="d-flex gap-1 flex-shrink-0">
+              <button type="button" class="btn p-1 border-0 bg-transparent btn-editar-nota"
+                      data-id="${r.id}"
+                      data-titulo="${r.titulo}"
+                      data-conteudo="${r.conteudo}"
+                      data-cor="${cor}" title="Editar nota">
+                <i class="bi bi-pencil-fill" style="font-size:.78rem;color:${txt};opacity:.55;"></i>
+              </button>
+              <button type="button" class="btn p-1 border-0 bg-transparent btn-excluir-nota"
+                      data-id="${r.id}" title="Excluir nota">
+                <i class="bi bi-trash-fill" style="font-size:.78rem;color:#ef4444;opacity:.6;"></i>
+              </button>
+            </div>
+          </div>
+          ${conteudoHtml}
+          <div class="mt-3 pt-2 border-top d-flex justify-content-between align-items-center"
+               style="border-color:${brd}!important;">
+            <span style="font-size:.6rem;color:${txt};opacity:.5;"><i class="bi bi-clock me-1"></i>${dt}</span>
+            <span class="badge rounded-pill"
+                  style="font-size:.55rem;background:${bg};border:1px solid ${brd};color:${txt};opacity:.7;">
+              Casal
+            </span>
+          </div>
+          <div class="mt-2 pt-2 border-top nota-comentarios-wrap" style="border-color:${brd}!important;">
+            <div class="lista-coment-nota mb-2"></div>
+            <form class="d-flex gap-2 form-comentar-nota">
+              <input type="text" name="texto_comentario" class="form-control form-control-sm" style="font-size:.78rem;" placeholder="Comentar…" required>
+              <button type="submit" class="btn btn-sm btn-outline-secondary px-3" title="Enviar">
+                <i class="bi bi-send-fill"></i>
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+document.getElementById('btn-salvar-nota')?.addEventListener('click', async () => {
+  const id       = +(document.getElementById('nota-id-edit').value || 0);
+  const titulo   = document.getElementById('nota-titulo').value.trim();
+  const conteudo = document.getElementById('nota-conteudo').value.trim();
+  const cor      = notaCorSelecionada();
+  if (!titulo) { toast('Informe o título da nota.', 'verm'); return; }
+  const btn  = document.getElementById('btn-salvar-nota');
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Salvando…';
+  btn.disabled  = true;
+  try {
+    const r = await ajax({ salvar_nota: '1', nota_id: id, titulo_nota: titulo, conteudo_nota: conteudo, cor_nota: cor });
+    if (r.ok) {
+      document.getElementById('notas-vazia')?.remove();
+      let grid = document.getElementById('grid-notas');
+      if (!grid) {
+        const wrap = document.getElementById('lista-notas-wrap');
+        wrap.innerHTML = `
+          <div class="mb-2 d-flex align-items-center gap-2">
+            <span class="badge rounded-pill px-3 badge-notas-cont" style="font-size:.68rem;background:#fef08a;color:#78350f;">
+              <i class="bi bi-journals me-1"></i>0 notas
+            </span>
+            <span class="text-muted" style="font-size:.68rem;">· mais recentes primeiro</span>
+          </div>
+          <div class="row g-3" id="grid-notas"></div>`;
+        grid = document.getElementById('grid-notas');
+      }
+      const html = notaHtmlCard(r, cor);
+      if (r.novo) { grid.insertAdjacentHTML('afterbegin', html); }
+      else {
+        const antigo = grid.querySelector(`.nota-card-wrap[data-id="${r.id}"]`);
+        if (antigo) {
+          // Preserva os comentários já carregados na tela — a resposta do
+          // salvar_nota não traz os comentários, então recriar o card do zero
+          // apagaria a lista até a página ser recarregada.
+          const comentariosWrap = antigo.querySelector('.nota-comentarios-wrap');
+          const temp = document.createElement('div');
+          temp.innerHTML = html;
+          const novoCard = temp.firstElementChild;
+          const novoComentariosWrap = novoCard?.querySelector('.nota-comentarios-wrap');
+          if (comentariosWrap && novoComentariosWrap) novoComentariosWrap.replaceWith(comentariosWrap);
+          antigo.replaceWith(novoCard);
+        }
+      }
+      bindBotoesNota();
+      resetarFormNota();
+      atualizarContadoresNotas();
+      toast(r.novo ? 'Nota criada! 📝' : 'Nota atualizada! ✏️', 'verde');
+    } else { toast(r.msg || 'Erro ao salvar nota.', 'verm'); }
+  } catch { toast('Erro de conexão. Tente novamente.', 'verm'); }
+  btn.innerHTML = orig;
+  btn.disabled  = false;
+});
+
+document.getElementById('btn-cancelar-nota')?.addEventListener('click', resetarFormNota);
+
+function bindBotoesNota() {
+  document.querySelectorAll('.btn-editar-nota').forEach(btn => {
+    btn.onclick = () => {
+      document.getElementById('nota-id-edit').value  = btn.dataset.id;
+      document.getElementById('nota-titulo').value   = btn.dataset.titulo;
+      document.getElementById('nota-conteudo').value = btn.dataset.conteudo;
+      const rd = document.querySelector(`.cor-nota-radio[value="${btn.dataset.cor}"]`);
+      if (rd) rd.checked = true;
+      document.getElementById('form-nota-label').textContent = '✏️ Editando Nota';
+      document.getElementById('btn-cancelar-nota').classList.remove('d-none');
+      bootstrap.Collapse.getOrCreateInstance(document.getElementById('form-nota-collapse'), { toggle: false }).show();
+      document.getElementById('card-form-nota').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setTimeout(() => document.getElementById('nota-titulo').focus(), 350);
+    };
+  });
+  document.querySelectorAll('.btn-excluir-nota').forEach(btn => {
+    btn.onclick = () => {
+      const id   = btn.dataset.id;
+      const wrap = btn.closest('.nota-card-wrap');
+      if (!confirm('Excluir esta nota? Esta ação não pode ser desfeita.')) return;
+      ajax({ excluir_nota: '1', nota_id: id }).then(r => {
+        if (r.ok) {
+          wrap.style.transition = 'opacity .25s, transform .25s';
+          wrap.style.opacity    = '0';
+          wrap.style.transform  = 'scale(.92)';
+          setTimeout(() => {
+            wrap.remove();
+            const grid = document.getElementById('grid-notas');
+            if (grid && !grid.querySelector('.nota-card-wrap')) {
+              document.getElementById('lista-notas-wrap').innerHTML =
+                `<div class="text-center py-5 text-muted" id="notas-vazia">
+                  <i class="bi bi-journal-x fs-1 d-block mb-2" style="opacity:.25;"></i>
+                  <small>Nenhuma nota ainda.</small>
+                </div>`;
+            }
+            atualizarContadoresNotas();
+          }, 280);
+          toast('Nota excluída.', 'verm');
+        }
+      }).catch(() => toast('Erro ao excluir nota.', 'verm'));
+    };
+  });
+}
+
+bindBotoesNota();
+document.getElementById('modalNotas')?.addEventListener('hidden.bs.modal', resetarFormNota);
+
+/* Comentários nas notas — delegado porque os cards são recriados via AJAX */
+document.getElementById('lista-notas-wrap')?.addEventListener('submit', async function (e) {
+  const form = e.target.closest('.form-comentar-nota');
+  if (!form) return;
+  e.preventDefault();
+  const wrap    = form.closest('.nota-card-wrap');
+  const notaId  = wrap?.dataset.id;
+  const input   = form.querySelector('input[name="texto_comentario"]');
+  const texto   = input.value.trim();
+  if (!texto) return;
+  const btn  = form.querySelector('button');
+  btn.disabled = true;
+  try {
+    const r = await ajax({ comentar_nota: '1', nota_id: notaId, texto_comentario: texto });
+    if (r.ok) {
+      const corC  = r.autor === 'Noivos' ? 'text-danger' : 'text-primary';
+      const nomeC = r.autor === 'Noivos' ? 'Noivos' : (r.autor_nome || r.autor);
+      form.closest('.nota-comentarios-wrap').querySelector('.lista-coment-nota').insertAdjacentHTML('beforeend',
+        `<div class="small my-1 bg-white p-2 rounded-3" style="font-size:.74rem;border:1px solid rgba(0,0,0,.06);">
+          <strong class="${corC}">${nomeC}:</strong> ${r.texto}
+        </div>`);
+      input.value = '';
+    } else {
+      toast(r.msg || 'Erro ao comentar.', 'verm');
+    }
+  } catch { toast('Erro de conexão. Tente novamente.', 'verm'); }
+  btn.disabled = false;
+});
 
 /* ---- MODAL DE UPLOADS (documentos/arquivos do evento) ---- */
 function cssEscape(str) {

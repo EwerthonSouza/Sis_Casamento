@@ -195,6 +195,48 @@ if (!schema_ja_verificado('gerenciar_documentos_v1')) {
     } catch (PDOException $e) {}
 }
 
+// Comentários no Bloco de Notas (casal comentando nota da assessoria e
+// vice-versa) + coluna que marca quem CRIOU a nota (`autor` já guarda o
+// nome da pessoa, então `origem` guarda o papel: 'Assessoria' ou 'Noivos').
+// Checagem própria, mesmo motivo do bloco de documentos acima.
+if (!schema_ja_verificado('notas_comentarios_v1')) {
+    try {
+        $pdo->query("SELECT origem FROM notas_evento LIMIT 1");
+    } catch (Exception $e) {
+        $pdo->exec("ALTER TABLE notas_evento ADD COLUMN origem VARCHAR(20) NOT NULL DEFAULT 'Assessoria'");
+    }
+    try {
+        $pdo->query("SELECT 1 FROM notas_comentarios LIMIT 1");
+    } catch (Exception $e) {
+        $pdo->exec("
+            CREATE TABLE notas_comentarios (
+                id         INT AUTO_INCREMENT PRIMARY KEY,
+                nota_id    INT NOT NULL,
+                autor      VARCHAR(20) NOT NULL,
+                comentario TEXT NOT NULL,
+                criado_em  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_notas_comentarios_nota (nota_id),
+                CONSTRAINT fk_notas_comentarios_nota FOREIGN KEY (nota_id) REFERENCES notas_evento(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+        ");
+    }
+    marcar_schema_verificado('notas_comentarios_v1');
+}
+
+// `autor` em notas_comentarios guarda o papel ('Assessoria'/'Noivos'), igual
+// checklist_comentarios — mas o sino de notificações precisa mostrar QUEM
+// especificamente comentou (pode ter mais de uma pessoa na assessoria).
+// Marcador separado do bloco acima porque esse já pode ter rodado antes
+// dessa coluna existir.
+if (!schema_ja_verificado('notas_comentarios_autor_nome_v1')) {
+    try {
+        $pdo->query("SELECT autor_nome FROM notas_comentarios LIMIT 1");
+    } catch (Exception $e) {
+        $pdo->exec("ALTER TABLE notas_comentarios ADD COLUMN autor_nome VARCHAR(100) NULL");
+    }
+    marcar_schema_verificado('notas_comentarios_autor_nome_v1');
+}
+
 require_once 'notificacoes.inc.php';
 
 /* ============================================================
@@ -637,7 +679,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $ret_id = $nota_id;
             } else {
                 $autor_nome = $_SESSION['usuario_nome'] ?? 'Assessoria';
-                $pdo->prepare("INSERT INTO notas_evento (evento_id, titulo, conteudo, cor, autor) VALUES (?,?,?,?,?)")
+                $pdo->prepare("INSERT INTO notas_evento (evento_id, titulo, conteudo, cor, autor, origem) VALUES (?,?,?,?,?,'Assessoria')")
                     ->execute([$evento_id, $titulo, $conteudo, $cor, $autor_nome]);
                 $ret_id = (int)$pdo->lastInsertId();
             }
@@ -663,6 +705,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->prepare("DELETE FROM notas_evento WHERE id=? AND evento_id=?")->execute([$nota_id, $evento_id]);
         }
         if ($ajax) json_out(['ok' => true]);
+        header("Location: gerenciar.php?id=$evento_id"); exit;
+    }
+
+    // 16b. Comentar nota (AJAX)
+    if (isset($_POST['comentar_nota'])) {
+        $nota_id = (int)($_POST['nota_id'] ?? 0);
+        $texto   = trim($_POST['texto_comentario'] ?? '');
+        // A coluna `autor` guarda o papel ('Assessoria'/'Noivos'), igual checklist_comentarios;
+        // `autor_nome` guarda quem especificamente comentou, pra exibir no sino.
+        $autor_nome = 'Assessoria';
+        $autor_real = $_SESSION['usuario_nome'] ?? 'Assessoria';
+        if ($nota_id > 0 && $texto !== '') {
+            $chk = $pdo->prepare("SELECT id FROM notas_evento WHERE id=? AND evento_id=?");
+            $chk->execute([$nota_id, $evento_id]);
+            if ($chk->fetch()) {
+                $pdo->prepare("INSERT INTO notas_comentarios (nota_id, autor, autor_nome, comentario) VALUES (?, ?, ?, ?)")
+                    ->execute([$nota_id, $autor_nome, $autor_real, $texto]);
+                if ($ajax) json_out([
+                    'ok'         => true,
+                    'autor'      => htmlspecialchars($autor_nome, ENT_QUOTES, 'UTF-8'),
+                    'autor_nome' => htmlspecialchars($autor_real, ENT_QUOTES, 'UTF-8'),
+                    'texto'      => htmlspecialchars($texto,     ENT_QUOTES, 'UTF-8'),
+                ]);
+            } else {
+                if ($ajax) json_out(['ok' => false, 'msg' => 'Nota não encontrada.']);
+            }
+        } else {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Escreva um comentário.']);
+        }
         header("Location: gerenciar.php?id=$evento_id"); exit;
     }
 
@@ -820,6 +891,16 @@ $rs_notas = $pdo->prepare("SELECT * FROM notas_evento WHERE evento_id = ? ORDER 
 $rs_notas->execute([$evento_id]);
 $lista_notas = $rs_notas->fetchAll();
 $total_notas = count($lista_notas);
+
+// Comentários das notas, agrupados por nota_id
+$coments_nota = [];
+if (!empty($lista_notas)) {
+    $ids_notas = array_column($lista_notas, 'id');
+    $ph = implode(',', array_fill(0, count($ids_notas), '?'));
+    $rs6 = $pdo->prepare("SELECT * FROM notas_comentarios WHERE nota_id IN ($ph) ORDER BY criado_em ASC, id ASC");
+    $rs6->execute($ids_notas);
+    foreach ($rs6->fetchAll() as $c) { $coments_nota[$c['nota_id']][] = $c; }
+}
 
 // Músicas do evento — separadas por status
 $rs_mus = $pdo->prepare("SELECT * FROM musicas_evento WHERE evento_id = ? ORDER BY momento ASC, id ASC");
@@ -996,8 +1077,9 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 // Notificações (atividade dos noivos neste evento)
 $notificacoes    = buscar_notificacoes($pdo, $evento_id, 15);
 $ultima_vista    = ultima_visualizacao_notificacoes($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
-$nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista);
-$notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultima_vista || $item['quando'] > $ultima_vista));
+$itens_lidos     = itens_lidos_notificacao($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
+$nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista, $itens_lidos);
+$notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_notificacao_nao_lido($item, $ultima_vista, $itens_lidos)));
 ?>
 <!DOCTYPE html>
 <html lang="pt-br">
@@ -1630,7 +1712,9 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
                 <i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.
               </div>
             <?php else: foreach ($notificacoes as $n): ?>
-              <div class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom" style="cursor:pointer;">
+              <div class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom" style="cursor:pointer;"
+                   data-chave="<?= htmlspecialchars($n['chave'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                   <?= !empty($n['nota_id']) ? 'data-nota-id="' . (int)$n['nota_id'] . '"' : '' ?>>
                 <i class="bi <?= htmlspecialchars($n['icone'], ENT_QUOTES, 'UTF-8') ?> mt-1"></i>
                 <div class="flex-fill" style="min-width:0;">
                   <div class="small text-dark"><?= htmlspecialchars($n['texto'], ENT_QUOTES, 'UTF-8') ?></div>
@@ -3000,11 +3084,14 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
         <div class="card border-0 shadow-sm rounded-4 mb-4" id="card-form-nota"
               style="border: 1.5px solid #fde68a !important; background:#fff;">
           <div class="card-body p-3 p-sm-4">
-            <div class="d-flex align-items-center gap-2 mb-3">
+            <button type="button" class="btn d-flex align-items-center gap-2 w-100 p-0 border-0 bg-transparent text-start"
+                    data-bs-toggle="collapse" data-bs-target="#form-nota-collapse" aria-expanded="false">
               <i class="bi bi-plus-circle-fill text-warning fs-6"></i>
               <span class="fw-bold text-dark small text-uppercase" id="form-nota-label" style="letter-spacing:.06em;">Nova Nota</span>
-            </div>
-            <div class="d-flex align-items-center gap-3 mb-3">
+              <i class="bi bi-chevron-down ms-auto" id="form-nota-chevron" style="color:#a16207;font-size:.75rem;"></i>
+            </button>
+            <div class="collapse" id="form-nota-collapse">
+            <div class="d-flex align-items-center gap-3 mb-3 mt-3">
               <span class="text-muted" style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;">Cor:</span>
               <?php
               $swatches = [
@@ -3038,6 +3125,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
               <button type="button" class="btn btn-sm btn-warning fw-bold rounded-pill px-4 shadow-sm ms-auto" id="btn-salvar-nota">
                 <i class="bi bi-floppy me-1"></i> Salvar Nota
               </button>
+            </div>
             </div>
           </div>
         </div>
@@ -3102,8 +3190,28 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !$ultim
                     </span>
                     <span class="badge rounded-pill"
                           style="font-size:.55rem;background:<?= $bgC ?>;border:1px solid <?= $brdC ?>;color:<?= $txtC ?>;opacity:.7;">
-                      <?= htmlspecialchars($nota['autor'], ENT_QUOTES, 'UTF-8') ?>
+                      <?= htmlspecialchars($nota['autor'], ENT_QUOTES, 'UTF-8') ?><?= (($nota['origem'] ?? 'Assessoria') === 'Noivos') ? ' · Casal' : '' ?>
                     </span>
+                  </div>
+                  <div class="mt-2 pt-2 border-top nota-comentarios-wrap" style="border-color:<?= $brdC ?>!important;">
+                    <div class="lista-coment-nota mb-2">
+                      <?php foreach ($coments_nota[$nota['id']] ?? [] as $cm):
+                        $corC = $cm['autor'] === 'Noivos' ? 'text-danger' : 'text-primary';
+                        // Comentário do casal mostra "Noivos" (é sempre o mesmo nome
+                        // registrado, não ajuda a diferenciar quem escreveu de fato).
+                        $nomeC = $cm['autor'] === 'Noivos' ? 'Noivos' : ($cm['autor_nome'] ?: $cm['autor']); ?>
+                        <div class="small my-1 bg-white p-2 rounded-3" style="font-size:.74rem;border:1px solid rgba(0,0,0,.06);">
+                          <strong class="<?= $corC ?>"><?= htmlspecialchars($nomeC, ENT_QUOTES, 'UTF-8') ?>:</strong>
+                          <?= htmlspecialchars($cm['comentario'], ENT_QUOTES, 'UTF-8') ?>
+                        </div>
+                      <?php endforeach; ?>
+                    </div>
+                    <form class="d-flex gap-2 form-comentar-nota">
+                      <input type="text" name="texto_comentario" class="form-control form-control-sm" style="font-size:.78rem;" placeholder="Comentar…" required>
+                      <button type="submit" class="btn btn-sm btn-outline-secondary px-3" title="Enviar">
+                        <i class="bi bi-send-fill"></i>
+                      </button>
+                    </form>
                   </div>
                 </div>
               </div>
@@ -3143,19 +3251,67 @@ document.getElementById('btn-marcar-lidas')?.addEventListener('click', function 
   fetch('notificacoes_marcar_lidas.php', { method: 'POST' }).catch(() => {});
 });
 
-// Clicar em uma notificação também marca como lida e a remove da lista
+// Diminui (ou remove) o número no sino sem esperar o servidor responder
+function decrementarBadgeNotificacoes() {
+  const badge = document.querySelector('#dropdown-notificacoes .badge');
+  if (!badge) return;
+  const atual = parseInt(badge.textContent, 10) || 0;
+  const novo  = Math.max(0, atual - 1);
+  if (novo === 0) { badge.remove(); return; }
+  badge.textContent = novo > 9 ? '9+' : String(novo);
+}
+
+// Clicar em uma notificação marca só ELA como lida (não todas — por isso o
+// item.chave individual, em vez do "último visto" geral) e a remove da lista
+// (notificações de nota, além disso, abrem o Bloco de Notas direto na nota)
 document.getElementById('lista-notificacoes')?.addEventListener('click', function (e) {
   const item = e.target.closest('.notif-item');
   if (!item) return;
-  const badge = document.querySelector('#dropdown-notificacoes .badge');
-  if (badge) badge.remove();
-  fetch('notificacoes_marcar_lidas.php', { method: 'POST', keepalive: true }).catch(() => {});
+  if (item.dataset.chave) {
+    fetch('notificacoes_marcar_item_lido.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'chave=' + encodeURIComponent(item.dataset.chave),
+      keepalive: true
+    }).catch(() => {});
+    decrementarBadgeNotificacoes();
+  }
+  if (item.dataset.notaId) {
+    bootstrap.Dropdown.getInstance(document.querySelector('#dropdown-notificacoes [data-bs-toggle="dropdown"]'))?.hide();
+    abrirNotaNoModal(item.dataset.notaId);
+  }
   item.remove();
   const lista = document.getElementById('lista-notificacoes');
   if (lista && !lista.querySelector('.notif-item')) {
     lista.innerHTML = '<div class="text-center text-muted p-4 small"><i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.</div>';
   }
 });
+
+// Abre o modal de Notas e rola/realça a nota específica (usado pelo clique na
+// notificação e por ?abrir_nota=ID vindo do sino global do painel_admin.php)
+function abrirNotaNoModal(notaId) {
+  const modalEl = document.getElementById('modalNotas');
+  if (!modalEl) return;
+  const irParaNota = () => {
+    const card = modalEl.querySelector(`.nota-card-wrap[data-id="${notaId}"] .nota-card`);
+    if (!card) return;
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card.style.transition = 'box-shadow .3s ease';
+    card.style.boxShadow = '0 0 0 3px #f59e0b';
+    setTimeout(() => { card.style.boxShadow = ''; }, 2000);
+  };
+  const jaAberto = modalEl.classList.contains('show');
+  if (jaAberto) {
+    irParaNota();
+  } else {
+    modalEl.addEventListener('shown.bs.modal', irParaNota, { once: true });
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+  }
+}
+
+<?php if (!empty($_GET['abrir_nota'])): ?>
+document.addEventListener('DOMContentLoaded', () => abrirNotaNoModal(<?= (int)$_GET['abrir_nota'] ?>));
+<?php endif; ?>
 
 /* ---- EXPORTAR PDF: SEÇÕES ESCOLHIDAS ---- */
 document.getElementById('btnGerarPdfSecoes')?.addEventListener('click', function () {
@@ -3929,7 +4085,15 @@ function resetarFormNota() {
   document.getElementById('form-nota-label').textContent = 'Nova Nota';
   document.getElementById('btn-cancelar-nota').classList.add('d-none');
   document.getElementById('btn-salvar-nota').innerHTML = '<i class="bi bi-floppy me-1"></i> Salvar Nota';
+  bootstrap.Collapse.getOrCreateInstance(document.getElementById('form-nota-collapse'), { toggle: false }).hide();
 }
+
+document.getElementById('form-nota-collapse')?.addEventListener('show.bs.collapse', () => {
+  document.getElementById('form-nota-chevron')?.classList.replace('bi-chevron-down', 'bi-chevron-up');
+});
+document.getElementById('form-nota-collapse')?.addEventListener('hide.bs.collapse', () => {
+  document.getElementById('form-nota-chevron')?.classList.replace('bi-chevron-up', 'bi-chevron-down');
+});
 
 function atualizarContadoresNotas() {
   const total  = document.querySelectorAll('#grid-notas .nota-card-wrap').length;
@@ -3986,6 +4150,15 @@ function notaHtmlCard(r, cor) {
               Assessoria
             </span>
           </div>
+          <div class="mt-2 pt-2 border-top nota-comentarios-wrap" style="border-color:${brd}!important;">
+            <div class="lista-coment-nota mb-2"></div>
+            <form class="d-flex gap-2 form-comentar-nota">
+              <input type="text" name="texto_comentario" class="form-control form-control-sm" style="font-size:.78rem;" placeholder="Comentar…" required>
+              <button type="submit" class="btn btn-sm btn-outline-secondary px-3" title="Enviar">
+                <i class="bi bi-send-fill"></i>
+              </button>
+            </form>
+          </div>
         </div>
       </div>
     </div>`;
@@ -4022,7 +4195,18 @@ document.getElementById('btn-salvar-nota')?.addEventListener('click', async () =
       if (r.novo) { grid.insertAdjacentHTML('afterbegin', html); }
       else {
         const antigo = grid.querySelector(`.nota-card-wrap[data-id="${r.id}"]`);
-        if (antigo) antigo.outerHTML = html;
+        if (antigo) {
+          // Preserva os comentários já carregados na tela — a resposta do
+          // salvar_nota não traz os comentários, então recriar o card do zero
+          // apagaria a lista até a página ser recarregada.
+          const comentariosWrap = antigo.querySelector('.nota-comentarios-wrap');
+          const temp = document.createElement('div');
+          temp.innerHTML = html;
+          const novoCard = temp.firstElementChild;
+          const novoComentariosWrap = novoCard?.querySelector('.nota-comentarios-wrap');
+          if (comentariosWrap && novoComentariosWrap) novoComentariosWrap.replaceWith(comentariosWrap);
+          antigo.replaceWith(novoCard);
+        }
       }
       bindBotoesNota();
       resetarFormNota();
@@ -4046,6 +4230,7 @@ function bindBotoesNota() {
       if (rd) rd.checked = true;
       document.getElementById('form-nota-label').textContent = '✏️ Editando Nota';
       document.getElementById('btn-cancelar-nota').classList.remove('d-none');
+      bootstrap.Collapse.getOrCreateInstance(document.getElementById('form-nota-collapse'), { toggle: false }).show();
       document.getElementById('card-form-nota').scrollIntoView({ behavior: 'smooth', block: 'start' });
       setTimeout(() => document.getElementById('nota-titulo').focus(), 350);
     };
@@ -4088,6 +4273,35 @@ function bindBotoesNota() {
 
 bindBotoesNota();
 document.getElementById('modalNotas')?.addEventListener('hidden.bs.modal', resetarFormNota);
+
+/* Comentários nas notas — delegado porque os cards são recriados via AJAX */
+document.getElementById('lista-notas-wrap')?.addEventListener('submit', async function (e) {
+  const form = e.target.closest('.form-comentar-nota');
+  if (!form) return;
+  e.preventDefault();
+  const wrap    = form.closest('.nota-card-wrap');
+  const notaId  = wrap?.dataset.id;
+  const input   = form.querySelector('input[name="texto_comentario"]');
+  const texto   = input.value.trim();
+  if (!texto) return;
+  const btn  = form.querySelector('button');
+  btn.disabled = true;
+  try {
+    const r = await ajax({ comentar_nota: '1', nota_id: notaId, texto_comentario: texto });
+    if (r.ok) {
+      const corC  = r.autor === 'Noivos' ? 'text-danger' : 'text-primary';
+      const nomeC = r.autor === 'Noivos' ? 'Noivos' : (r.autor_nome || r.autor);
+      form.closest('.nota-comentarios-wrap').querySelector('.lista-coment-nota').insertAdjacentHTML('beforeend',
+        `<div class="small my-1 bg-white p-2 rounded-3" style="font-size:.74rem;border:1px solid rgba(0,0,0,.06);">
+          <strong class="${corC}">${nomeC}:</strong> ${r.texto}
+        </div>`);
+      input.value = '';
+    } else {
+      toast(r.msg || 'Erro ao comentar.', 'verm');
+    }
+  } catch { toast('Erro de conexão. Tente novamente.', 'verm'); }
+  btn.disabled = false;
+});
 
 /* ============================================================
    PLAYLIST — MÚSICAS COM SUGESTÃO E CONFIRMAÇÃO
