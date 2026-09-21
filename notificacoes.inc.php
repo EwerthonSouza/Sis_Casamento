@@ -26,8 +26,9 @@ if (!schema_ja_verificado('notificacoes')) {
 // "Última vez que viu" passou a ser por escopo (módulo inteiro, ou um evento
 // específico) — antes era só por conta, então abrir o sino num módulo/evento
 // zerava o contador de todos os outros, mesmo sem ter visto nada lá.
-// (Usado hoje só pelo sino do portal do cliente — o da equipe usa o controle
-// item a item de notificacoes_vistas, mais abaixo.)
+// (Usado hoje só pelo botão "Marcar lidas em massa" — o clique individual,
+// em qualquer tela, usa o controle item a item de notificacoes_vistas, logo
+// abaixo, que também é o que decide o que aparece na lista.)
 if (!schema_ja_verificado('notificacoes_escopo')) {
     try {
         $pdo->query("SELECT escopo FROM notificacoes_lidas LIMIT 1");
@@ -39,10 +40,12 @@ if (!schema_ja_verificado('notificacoes_escopo')) {
     marcar_schema_verificado('notificacoes_escopo');
 }
 
-// Controle item a item: cada notificação (tarefa concluída, comentário, RSVP...)
-// tem uma "chave" própria (ex: "checklist:328"). Clicar numa marca só aquela
-// chave como vista — as outras continuam aparecendo, em vez de um corte por
-// data que apagava a lista inteira de uma vez só.
+// Controle item a item: cada notificação (tarefa concluída, comentário, RSVP,
+// nota, comentário de nota...) tem uma "chave" própria (ex: "checklist:328",
+// "nota:12"). Clicar numa marca só aquela chave como vista — as outras
+// continuam aparecendo, em vez de um corte por data que apagava a lista
+// inteira de uma vez só. Usado por painel_admin.php, gerenciar.php e
+// noivos.php — o mesmo mecanismo pros três, equipe ou casal.
 if (!schema_ja_verificado('notificacoes_vistas')) {
     $pdo->exec("CREATE TABLE IF NOT EXISTS notificacoes_vistas (
         usuario_tipo VARCHAR(20) NOT NULL,
@@ -179,6 +182,65 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?strin
         }
     }
 
+    // 6. Notas criadas pelo casal (tabela pode não existir ainda num deploy
+    // antigo que nunca abriu gerenciar.php/noivos.php pra rodar a migração —
+    // ignora silenciosamente, igual ao lembrete de agenda acima).
+    try {
+        $sql6 = "
+            SELECT n.id, n.titulo, n.criado_em AS quando, n.evento_id, cl.nome AS evento_nome
+            FROM notas_evento n
+            INNER JOIN eventos e ON e.id = n.evento_id
+            INNER JOIN clientes cl ON cl.id = e.cliente_id
+            WHERE n.origem = 'Noivos'
+        " . ($evento_id ? " AND n.evento_id = ?" : "") . "
+            ORDER BY n.criado_em DESC LIMIT " . (int)$limite;
+        $stmt6 = $pdo->prepare($sql6);
+        $stmt6->execute($evento_id ? [$evento_id] : []);
+        foreach ($stmt6->fetchAll() as $r) {
+            $itens[] = [
+                'tipo'        => 'nota',
+                'icone'       => 'bi-journal-plus text-warning',
+                'evento_id'   => (int)$r['evento_id'],
+                'evento_nome' => $r['evento_nome'],
+                'nota_id'     => (int)$r['id'],
+                'chave'       => 'nota:' . $r['id'],
+                'texto'       => 'Criou a nota "' . $r['titulo'] . '"',
+                'quando'      => $r['quando'],
+            ];
+        }
+    } catch (Exception $e) {}
+
+    // 7. Comentários do casal em notas
+    try {
+        $sql7 = "
+            SELECT nc.id, nc.nota_id, nc.comentario, nc.criado_em AS quando,
+                   n.titulo AS nota_titulo, n.evento_id, cl.nome AS evento_nome
+            FROM notas_comentarios nc
+            INNER JOIN notas_evento n ON n.id = nc.nota_id
+            INNER JOIN eventos e ON e.id = n.evento_id
+            INNER JOIN clientes cl ON cl.id = e.cliente_id
+            WHERE nc.autor = 'Noivos'
+        " . ($evento_id ? " AND n.evento_id = ?" : "") . "
+            ORDER BY nc.criado_em DESC LIMIT " . (int)$limite;
+        $stmt7 = $pdo->prepare($sql7);
+        $stmt7->execute($evento_id ? [$evento_id] : []);
+        foreach ($stmt7->fetchAll() as $r) {
+            // Comentário do casal: mostra "Noivos" (papel), não o nome real
+            // registrado do casal — é sempre o mesmo texto pra qualquer um
+            // dos dois, então mostrar o nome não ajuda a diferenciar nada.
+            $itens[] = [
+                'tipo'        => 'nota_comentario',
+                'icone'       => 'bi-chat-square-text-fill text-warning',
+                'evento_id'   => (int)$r['evento_id'],
+                'evento_nome' => $r['evento_nome'],
+                'nota_id'     => (int)$r['nota_id'],
+                'chave'       => 'nota_comentario:' . $r['id'],
+                'texto'       => 'Noivos comentou na nota "' . $r['nota_titulo'] . '": ' . mb_substr($r['comentario'], 0, 80, 'UTF-8') . (mb_strlen($r['comentario'], 'UTF-8') > 80 ? '…' : ''),
+                'quando'      => $r['quando'],
+            ];
+        }
+    } catch (Exception $e) {}
+
     // 5. Avisos da Central (modo sino), só quando o chamador informa o admin
     // logado (painel_admin.php) — nunca em gerenciar.php/noivos.php.
     if ($avisos_central_admin_id !== null) {
@@ -198,6 +260,7 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?strin
                 'icone'       => 'bi-megaphone-fill text-primary',
                 'evento_id'   => null,
                 'evento_nome' => 'Aviso da Central',
+                'chave'       => 'central:' . $r['id'],
                 'texto'       => $r['titulo'] . ($r['mensagem'] ? ': ' . mb_substr($r['mensagem'], 0, 100, 'UTF-8') : ''),
                 'quando'      => $r['quando'],
             ];
@@ -232,7 +295,9 @@ function ultima_visualizacao_notificacoes(PDO $pdo, string $usuario_tipo, int $u
 }
 
 /** Conta quantos itens da lista são mais recentes que a última visualização
- *  (usado só pelo sino do portal do cliente, que ainda é por escopo/data). */
+ *  (usado só pelo botão "Marcar lidas em massa" — o filtro item a item de
+ *  quem já foi vista individualmente é feito com contar_nao_vistas, abaixo,
+ *  que é o mesmo mecanismo pra painel_admin.php, gerenciar.php e noivos.php). */
 function contar_nao_lidas(array $notificacoes, ?string $ultima_vista): int
 {
     if (!$ultima_vista) return count($notificacoes);

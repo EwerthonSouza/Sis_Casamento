@@ -955,8 +955,13 @@ if ($is_admin) {
                         // Lembretes da agenda não pertencem a nenhum evento — o clique
                         // volta pro próprio painel em vez de tentar abrir "gerenciar.php?id=".
                         $href = $n['evento_id'] ? 'gerenciar.php?id=' . (int)$n['evento_id'] : 'painel_admin.php';
+                        // Notificação de nota: leva direto pro Bloco de Notas daquele evento, já na nota certa.
+                        if (!empty($n['nota_id']) && $n['evento_id']) {
+                            $href .= '&abrir_nota=' . (int)$n['nota_id'];
+                        }
                     ?>
-                        <a href="<?= $href ?>" class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom text-decoration-none" data-chave="<?= htmlspecialchars($n['chave'], ENT_QUOTES, 'UTF-8') ?>">
+                        <a href="<?= $href ?>" class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom text-decoration-none"
+                           data-chave="<?= htmlspecialchars($n['chave'] ?? '', ENT_QUOTES, 'UTF-8') ?>">
                             <i class="bi <?= htmlspecialchars($n['icone'], ENT_QUOTES, 'UTF-8') ?> mt-1"></i>
                             <div class="flex-fill" style="min-width:0;">
                                 <div class="small fw-bold text-dark"><?= htmlspecialchars($n['evento_nome'], ENT_QUOTES, 'UTF-8') ?></div>
@@ -1760,8 +1765,9 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    // Clicar numa notificação marca só ELA como vista — as outras continuam
-    // aparecendo pra quem ainda não abriu.
+    // Clicar em uma notificação abre o link dela (o item é um <a>) e marca só
+    // ELA como lida via chave individual — as outras continuam aparecendo
+    // pra quem ainda não abriu.
     document.getElementById('lista-notificacoes')?.addEventListener('click', function (e) {
         const item = e.target.closest('.notif-item');
         if (!item || !item.dataset.chave) return;
