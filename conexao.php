@@ -83,6 +83,21 @@ function garantir_coluna_criado_por(PDO $pdo): void {
     marcar_schema_verificado('coluna_criado_por');
 }
 
+// Segundo nome do cliente (ex: responsável pelo evento acadêmico/corporativo)
+// guardado à parte — só em Casamentos os dois nomes são pares (Noiva & Noivo);
+// nos outros módulos o 2º nome é um papel diferente (responsável), então não
+// pode ser concatenado direto no título em todo canto que exibe o nome do
+// cliente (fica parecendo duas instituições, não uma instituição + pessoa).
+function garantir_coluna_nome_secundario_cliente(PDO $pdo): void {
+    if (schema_ja_verificado('coluna_nome_secundario_cliente')) return;
+    try {
+        $pdo->query("SELECT nome_secundario FROM clientes LIMIT 1");
+    } catch (Exception $e) {
+        $pdo->exec("ALTER TABLE clientes ADD COLUMN nome_secundario VARCHAR(150) NULL");
+    }
+    marcar_schema_verificado('coluna_nome_secundario_cliente');
+}
+
 // Pedidos de upgrade de plano: o admin/assistente clica em "Solicitar upgrade" num
 // módulo bloqueado no hub, e o pedido fica pendente até o desenvolvedor liberar
 // (ou dispensar) manualmente em dev_painel.php. Sem cobrança automática nenhuma —
@@ -151,4 +166,20 @@ function garantir_indices_performance(PDO $pdo): void {
     marcar_schema_verificado('indices_performance_v1');
 }
 garantir_indices_performance($pdo);
+
+// eventos.tipo_evento é filtrado em quase toda consulta do sistema multi-módulo
+// (listagem do painel, notificações, contagens do hub...) desde que os módulos
+// foram introduzidos, mas ficou sem índice — passa despercebido com poucos
+// eventos de teste, mas pesa conforme a base cresce. Marcador própria porque
+// 'indices_performance_v1' já rodou antes de este índice existir.
+function garantir_indice_tipo_evento(PDO $pdo): void {
+    if (schema_ja_verificado('indice_tipo_evento_v1')) return;
+    try {
+        $pdo->exec("CREATE INDEX idx_eventos_tipo_evento ON eventos (tipo_evento)");
+    } catch (Exception $e) {
+        // Índice já existe, ou coluna ainda não existe nesta instalação — ignora.
+    }
+    marcar_schema_verificado('indice_tipo_evento_v1');
+}
+garantir_indice_tipo_evento($pdo);
 ?>

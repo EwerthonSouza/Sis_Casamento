@@ -234,6 +234,21 @@ function cor_painel_evento(PDO $pdo, array $evento): string {
     return cor_modulo_evento($pdo, $evento['tipo_evento'] ?? null);
 }
 
+// Título e subtítulo do cabeçalho do evento: só em Casamentos os dois nomes
+// são pares (Noiva & Noivo) e ficam juntos num "X & Y" — nos outros módulos
+// o 2º nome é o responsável pelo evento, um papel diferente, então vira uma
+// linha de subtítulo separada em vez de ficar concatenado com "&" (o que
+// deixava "Faculdade Central & Rodrigo Pires" parecendo duas instituições).
+function titulo_subtitulo_evento(string $tipoEvento, string $nomePrincipal, ?string $nomeSecundario, string $subtituloBase): array {
+    $nomeSecundario = trim((string)$nomeSecundario);
+    if ($tipoEvento === 'casamento') {
+        $titulo = $nomePrincipal . ($nomeSecundario !== '' ? ' & ' . $nomeSecundario : '');
+        return [$titulo, $subtituloBase];
+    }
+    $subtitulo = $nomeSecundario !== '' ? 'Responsável: ' . $nomeSecundario . ' · ' . $subtituloBase : $subtituloBase;
+    return [$nomePrincipal, $subtitulo];
+}
+
 function salvar_cor_modulo_evento(PDO $pdo, string $tipo, string $cor): bool {
     if (!modulo_evento_valido($tipo) || !preg_match('/^#[0-9a-fA-F]{6}$/', $cor)) {
         return false;
@@ -291,11 +306,17 @@ function decoracao_hero_svg(?string $tipo): string {
             <path d="M62,42 C42,20 8,32 8,58 C8,84 42,98 62,120 C82,98 116,84 116,58 C116,32 82,20 62,42 Z" fill="none" stroke="rgba(255,222,160,.95)" stroke-width="3.5"/>
             <path d="M104,74 C90,60 68,68 68,86 C68,104 90,112 104,128 C118,112 140,104 140,86 C140,68 118,60 104,74 Z" fill="none" stroke="rgba(255,222,160,.8)" stroke-width="3.5"/>
         ',
-        // Três balões de festa
+        // Balões de festa lado a lado, sem se sobrepor (cada um com sua faixa
+        // de largura própria), com cordinha e um brilho pra não ficar chapado.
         'aniversario' => '
-            <path d="M62,10 C86,10 100,36 100,60 C100,86 82,104 62,118 C42,104 24,86 24,60 C24,36 38,10 62,10 Z M58,118 Q62,124 66,118" fill="none" stroke="rgba(255,222,160,.95)" stroke-width="3.5"/>
-            <path d="M104,42 C124,42 136,64 136,84 C136,106 122,120 104,132 C86,120 72,106 72,84 C72,64 84,42 104,42 Z M100,132 Q104,138 108,132" fill="none" stroke="rgba(255,222,160,.8)" stroke-width="3.5"/>
-            <path d="M78,66 C92,66 100,80 100,94 C100,110 90,120 78,128 C66,120 56,110 56,94 C56,80 64,66 78,66 Z M75,128 Q78,132 81,128" fill="none" stroke="rgba(255,222,160,.65)" stroke-width="3.5"/>
+            <path d="M38,8 C56,8 68,34 68,51 C68,69 53,82 38,93 C23,82 8,69 8,51 C8,34 20,8 38,8 Z M34,93 Q38,99 42,93 M38,99 C36,105 41,109 38,115 C35,121 40,124 38,130" fill="none" stroke="rgba(255,222,160,.95)" stroke-width="3.5"/>
+            <path d="M98,6 C114,6 124,28 124,42 C124,58 111,69 98,78 C85,69 72,58 72,42 C72,28 82,6 98,6 Z M94,78 Q98,84 102,78 M98,84 C96,89 100,93 98,98 C96,103 100,106 98,111" fill="none" stroke="rgba(255,222,160,.8)" stroke-width="3.5"/>
+            <path d="M150,44 C162,44 170,61 170,72 C170,84 160,93 150,100 C140,93 130,84 130,72 C130,61 138,44 150,44 Z M147,100 Q150,104 153,100 M150,104 C148,108 152,111 150,115 C148,119 152,122 150,126" fill="none" stroke="rgba(255,222,160,.65)" stroke-width="3.5"/>
+            <path d="M186,86 C194,86 199,97 199,104 C199,112 192,117 186,122 C180,117 173,112 173,104 C173,97 178,86 186,86 Z M183,122 Q186,126 189,122 M186,126 C184,130 188,133 186,137" fill="none" stroke="rgba(255,222,160,.5)" stroke-width="3"/>
+            <path d="M20,32 Q26,16 44,19" fill="none" stroke="rgba(255,255,255,.6)" stroke-width="3" stroke-linecap="round"/>
+            <path d="M80,29 Q86,15 102,18" fill="none" stroke="rgba(255,255,255,.55)" stroke-width="2.6" stroke-linecap="round"/>
+            <path d="M137,58 Q142,48 155,50" fill="none" stroke="rgba(255,255,255,.5)" stroke-width="2.2" stroke-linecap="round"/>
+            <path d="M178,94 Q182,88 190,90" fill="none" stroke="rgba(255,255,255,.45)" stroke-width="2" stroke-linecap="round"/>
         ',
         // Duas maletas executivas
         'corporativo' => '

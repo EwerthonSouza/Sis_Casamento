@@ -13,6 +13,7 @@ if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['
 $is_admin = in_array($_SESSION['usuario_tipo'], ['admin', 'desenvolvedor'], true);
 
 garantir_coluna_tipo_evento($pdo);
+garantir_coluna_nome_secundario_cliente($pdo);
 
 // Evita que o navegador guarde esta página (dados financeiros/de convidados) em cache,
 // o que já causou telas desatualizadas aparecerem depois de mudanças no sistema.
@@ -344,23 +345,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verificar_csrf();
 
     $ajax = isset($_POST['is_ajax']);
-
-    // 1. Adicionar fornecedor
-    if (isset($_POST['adicionar_fornecedor'])) {
-        $nome    = trim($_POST['nome_fornecedor']    ?? '');
-        $servico = trim($_POST['servico_fornecedor'] ?? '');
-        $contato = trim($_POST['contato_fornecedor'] ?? '');
-        $status  = trim($_POST['status_fornecedor']  ?? 'Orçamento');
-        $valor   = ($is_admin && !empty($_POST['valor_fornecedor']))
-                    ? (float)str_replace(['.', ','], ['', '.'], $_POST['valor_fornecedor'])
-                    : 0.00;
-        if ($nome !== '' && $servico !== '') {
-            $pdo->prepare("INSERT INTO fornecedores_evento (evento_id, nome, servico, contato, status, valor, valor_pago) VALUES (?, ?, ?, ?, ?, ?, 0)")
-                ->execute([$evento_id, $nome, $servico, $contato, $status, $valor]);
-            $_SESSION['msg_sucesso'] = "Fornecedor adicionado com sucesso!";
-        }
-        header("Location: gerenciar.php?id=$evento_id"); exit;
-    }
 
     // 2. Importar padrão (Apenas Admin)
     if (isset($_POST['gerar_padrao'])) {
@@ -930,7 +914,7 @@ if ($is_admin) {
 }
 
 // Evento
-$s = $pdo->prepare("SELECT e.*, c.nome, c.email, c.telefone, c.cpf FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
+$s = $pdo->prepare("SELECT e.*, c.nome, c.nome_secundario, c.email, c.telefone, c.cpf FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
 $s->execute([$evento_id]);
 $evento = $s->fetch();
 if (!$evento) { die("Evento não encontrado."); }
@@ -1216,7 +1200,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
       display: none;
     }
     .hero-hearts {
-      position: absolute; top: 10%; right: 3%; width: 150px; height: auto; display: none;
+      position: absolute; top: 6%; right: 2%; width: 260px; height: auto; display: none;
     }
     /* Efeito de "desenhar" o contorno: a linha some (dashoffset positivo),
        vai sendo traçada até completar o coração, segura um instante e
@@ -1229,6 +1213,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
     }
     .hero-hearts path:nth-of-type(2) { animation-delay: 1.2s; }
     .hero-hearts path:nth-of-type(3) { animation-delay: 2.4s; }
+    .hero-hearts path:nth-of-type(4) { animation-delay: 3.6s; }
     @keyframes heroHeartsDraw {
       0%   { stroke-dashoffset: 1000; }
       42%  { stroke-dashoffset: 0; }
@@ -1266,52 +1251,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
       .btn-uploads-tile .badge { font-size: .55rem; padding: .25em .45em; }
     }
 
-    /* ---- PAGAMENTO FORNECEDOR ---- */
-    .forn-pago-row {
-      border-top: 1px solid #f1f5f9;
-      padding: .55rem .75rem .55rem 1rem;
-      display: grid;
-      grid-template-columns: 1fr auto auto;
-      align-items: center;
-      gap: .5rem;
-      background: #fff;
-      transition: background .15s;
-    }
-    .forn-pago-row:hover { background: #f8fafc; }
-    .forn-pago-row:last-child { border-bottom-left-radius: 6px; border-bottom-right-radius: 6px; }
-    .forn-info-nome { font-size: .78rem; font-weight: 700; color: #1e293b; line-height: 1.2; }
-    .forn-info-sub  { font-size: .67rem; color: #94a3b8; }
-    .forn-valores   { display: flex; flex-direction: column; align-items: flex-end; gap: .1rem; }
-    .forn-val-total { font-size: .72rem; color: #64748b; }
-    .forn-val-rest  { font-size: .75rem; font-weight: 700; }
-    .forn-val-rest.ok  { color: #16a34a; }
-    .forn-val-rest.nok { color: #dc2626; }
-    .forn-val-pago-linha { font-size: .72rem; font-weight: 700; color: #2563eb; display: flex; align-items: center; gap: .25rem; }
-    .forn-btn-editar-pago, .forn-btn-cancelar-edit {
-      border: none; background: transparent; color: #94a3b8; padding: 0; font-size: .68rem;
-      cursor: pointer; transition: color .15s; line-height: 1;
-    }
-    .forn-btn-editar-pago:hover  { color: #2563eb; }
-    .forn-btn-cancelar-edit:hover { color: #dc2626; }
-    .forn-input-wrap { display: flex; align-items: center; gap: .35rem; }
-    .forn-input-pago-adm {
-      width: 90px; font-size: .75rem; border: 1.5px solid #e2e8f0;
-      border-radius: 7px; padding: .28rem .5rem;
-      background: #f8fafc; transition: border-color .2s, background .2s;
-      text-align: right;
-    }
-    .forn-input-pago-adm:focus { outline: none; border-color: #22c55e; background: #fff; }
-    .forn-btn-salvar {
-      font-size: .7rem; font-weight: 700; padding: .28rem .6rem;
-      border-radius: 7px; border: none; background: #22c55e; color: #fff;
-      cursor: pointer; white-space: nowrap; transition: background .15s, transform .1s;
-    }
-    .forn-btn-salvar:hover  { background: #16a34a; }
-    .forn-btn-salvar:active { transform: scale(.95); }
-    .forn-pago-badge {
-      font-size: .58rem; font-weight: 700; padding: .22em .55em;
-      border-radius: 999px; text-transform: uppercase; letter-spacing: .04em;
-    }
+    /* ---- PAGAMENTO FORNECEDOR (resumo financeiro) ---- */
     .barra-pag-wrap { height: 5px; background: #dde3ea; border-radius: 999px; overflow: hidden; margin-top: .3rem; box-shadow: inset 0 1px 2px rgba(0,0,0,.08); }
     .barra-pag-fill {
       height: 100%; border-radius: 999px; transition: width .4s ease;
@@ -1338,7 +1278,6 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
     }
     .fin-chip-label { font-size: .55rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 700; opacity: .75; }
     .fin-chip-val   { font-size: .85rem; font-weight: 800; line-height: 1.1; margin-top: .15rem; white-space: nowrap; }
-    .scroll-lista-pequena { max-height: 360px; overflow-y: auto; }
     .scroll-lista-grande  { max-height: 420px; overflow-y: auto; }
 
     /* ---- BLOCO DE NOTAS ---- */
@@ -1550,11 +1489,6 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
       .musica-item { flex-wrap: wrap; }
       .musica-item .musica-acoes { flex-basis: 100%; justify-content: flex-end; margin-top: .35rem; }
 
-      .forn-pago-row { grid-template-columns: 1fr; row-gap: .35rem; }
-      .forn-valores { align-items: flex-start !important; }
-      .forn-input-wrap { justify-content: flex-end; }
-      .forn-input-pago-adm { width: auto; flex: 1 1 auto; min-width: 0; }
-
       .checklist-btns-row { gap: .4rem !important; overflow-x: auto; -webkit-overflow-scrolling: touch; }
       .checklist-btns-row .btn { font-size: .74rem; padding: .35rem .6rem; }
       .checklist-btns-row .btn i { font-size: .78rem; }
@@ -1737,10 +1671,11 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
             <span class="dias-pill-mobile dias-pill-passado d-md-none">Há <?= abs($dias) ?> dia<?= abs($dias) > 1 ? 's' : '' ?></span>
           <?php endif; ?>
         </div>
+        <?php [$titulo_evento_hero, $subtitulo_evento_hero] = titulo_subtitulo_evento($evento['tipo_evento'] ?? 'casamento', $evento['nome'], $evento['nome_secundario'] ?? null, 'Painel de controle do evento'); ?>
         <h2 class="mb-1 text-white nome-noivos-titulo">
-          <?= htmlspecialchars($evento['nome'], ENT_QUOTES, 'UTF-8') ?>
+          <?= htmlspecialchars($titulo_evento_hero, ENT_QUOTES, 'UTF-8') ?>
         </h2>
-        <p class="header-hero-subtitle mb-0">Painel de controle do evento</p>
+        <p class="header-hero-subtitle mb-0"><?= htmlspecialchars($subtitulo_evento_hero, ENT_QUOTES, 'UTF-8') ?></p>
 
         <div class="d-flex flex-wrap gap-2 info-tiles">
           <div class="info-tile">
@@ -1784,6 +1719,13 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
             </div>
           </div>
           <?php endif; ?>
+          <a href="convidados.php?id=<?= $evento_id ?>" class="info-tile text-decoration-none">
+            <span class="info-tile-icon"><i class="bi bi-people-fill"></i></span>
+            <div>
+              <div class="info-tile-val"><span id="cnt-badge-conf"><?= $total_conf ?></span> confirmados</div>
+              <div class="info-tile-lbl">Gerenciar Convidados</div>
+            </div>
+          </a>
         </div>
       </div>
     </div>
@@ -2148,6 +2090,25 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
           </div>
         </button>
 
+        <a href="fornecedores_evento.php?id=<?= $evento_id ?>" class="btn-musicas-sidebar text-decoration-none" style="background: linear-gradient(135deg, #ede9fe 0%, #ddd6fe 100%); border-color: #c4b5fd;">
+          <div class="d-flex justify-content-between align-items-center gap-2 p-3">
+            <div class="d-flex align-items-center gap-3" style="min-width:0;">
+              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0" style="width:44px;height:44px;">
+                <i class="bi bi-briefcase-fill fs-4" style="color:#7c3aed;"></i>
+              </div>
+              <div style="min-width:0;">
+                <h6 class="mb-0 fw-bold text-dark text-truncate">Fornecedores &amp; Orçamentos</h6>
+                <small class="text-dark text-truncate d-block" style="font-size:.78rem;opacity:.6;">
+                  <?= count($lista_forn) ?> fornecedor<?= count($lista_forn) !== 1 ? 'es' : '' ?> · R$ <?= number_format($total_forn, 2, ',', '.') ?> previsto
+                </small>
+              </div>
+            </div>
+            <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm flex-shrink-0" style="pointer-events:none; background:#7c3aed; border:none; color:#fff;">
+              Abrir <i class="bi bi-arrow-right ms-1"></i>
+            </span>
+          </div>
+        </a>
+
         <div class="card shadow-sm border-0" style="border-radius: var(--radius);">
           <div class="card-body p-3">
             <div class="d-flex justify-content-between align-items-center mb-3 border-bottom pb-2">
@@ -2212,173 +2173,6 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
         </div>
         <?php endif; ?>
 
-        <div class="row g-2" id="grupoAcessos">
-          <div class="col-6">
-            <button class="btn w-100 d-flex flex-column align-items-center justify-content-center p-2 shadow-sm text-white h-100"
-                    style="background: #1e293b; border-radius: var(--radius); border: none;"
-                    data-bs-toggle="collapse" data-bs-target="#collapseEquipe"
-                    aria-expanded="false" aria-controls="collapseEquipe">
-              <i class="bi bi-person-badge-fill text-info fs-3 mb-2"></i>
-              <span class="fw-bold" style="font-size:.85rem;">Equipe Contratada</span>
-              <?php if (!$is_admin): ?>
-              <span class="mt-2 text-white-50" style="font-size:.7rem;"><i class="bi bi-lock-fill me-1"></i>Acesso restrito</span>
-              <?php endif; ?>
-            </button>
-          </div>
-          <div class="col-6">
-            <button class="btn w-100 d-flex flex-column align-items-center justify-content-center p-2 shadow-sm text-white h-100"
-                    style="background: #334155; border-radius: var(--radius); border: none;"
-                    data-bs-toggle="collapse" data-bs-target="#collapseConvidados"
-                    aria-expanded="false" aria-controls="collapseConvidados">
-              <i class="bi bi-people-fill text-info fs-3 mb-2"></i>
-              <span class="fw-bold" style="font-size:.85rem;">Convidados</span>
-              <div class="mt-2 text-success fw-bold" style="font-size:.85rem;">
-                <span id="cnt-badge-conf"><?= $total_conf ?></span> confirmados
-              </div>
-            </button>
-          </div>
-        </div>
-
-        <div class="accordion" id="accordionAcessos">
-
-          <div class="collapse" id="collapseEquipe" data-bs-parent="#accordionAcessos">
-            <div class="card shadow-sm border-0" style="border-radius: var(--radius);">
-              <?php if (!$is_admin): ?>
-              <div class="text-center text-muted py-5">
-                <i class="bi bi-lock-fill fs-1 d-block mb-2"></i>
-                <span class="fw-bold">Restrito</span>
-              </div>
-              <?php else: ?>
-              <div class="etapa-body bg-white rounded-3">
-                <div class="p-3 border-bottom bg-light rounded-top">
-                  <div class="d-flex justify-content-between align-items-center mb-2">
-                    <small class="text-muted fw-bold" style="font-size:.68rem;text-transform:uppercase;">Resumo Financeiro</small>
-                    <div class="d-flex gap-2">
-                      <button class="btn btn-sm btn-primary shadow-sm" data-bs-toggle="modal" data-bs-target="#modalFornecedor">
-                        <i class="bi bi-plus-lg me-1"></i> Novo
-                      </button>
-                      <a href="fornecedores_evento.php?id=<?= $evento_id ?>" class="btn btn-sm btn-outline-dark shadow-sm">
-                        <i class="bi bi-gear-fill me-1"></i> Completo
-                      </a>
-                    </div>
-                  </div>
-                </div>
-                <div class="scroll-lista-pequena">
-                  <?php if (empty($lista_forn)): ?>
-                    <div class="text-center text-muted py-4 small">
-                      <i class="bi bi-inbox d-block fs-3 mb-2"></i>
-                      Nenhum fornecedor contratado ainda.
-                    </div>
-                  <?php else: ?>
-                    <?php foreach ($lista_forn as $f):
-                      $fid    = (int)$f['id'];
-                      $fValor = (float)$f['valor'];
-                      $fPago  = (float)($f['valor_pago'] ?? 0);
-                      $fRest  = max(0.0, $fValor - $fPago);
-                      $fPct   = $fValor > 0 ? round($fPago / $fValor * 100) : 0;
-                      $fQuit  = $fRest <= 0;
-                      $barClr = $fQuit ? 'bg-success' : ($fPct >= 50 ? 'bg-info' : 'bg-warning');
-                    ?>
-                    <div class="forn-pago-row" id="forn-adm-<?= $fid ?>" data-pago="<?= $fPago ?>">
-                      <div>
-                        <div class="forn-info-nome"><?= htmlspecialchars($f['servico'], ENT_QUOTES, 'UTF-8') ?></div>
-                        <div class="forn-info-sub"><?= htmlspecialchars($f['nome'], ENT_QUOTES, 'UTF-8') ?></div>
-                        <div class="d-flex align-items-center gap-2 mt-1">
-                          <div style="flex:1;height:3px;background:#e2e8f0;border-radius:999px;overflow:hidden;">
-                            <div class="forn-barra-fill-adm <?= $barClr ?>" style="height:100%;width:<?= $fPct ?>%;border-radius:999px;transition:width .4s;"></div>
-                          </div>
-                          <span class="forn-pago-badge <?= $fQuit ? 'bg-success text-white' : 'bg-warning text-dark' ?> forn-badge-adm">
-                            <?= $fQuit ? '✓ Quitado' : ($fPct > 0 ? $fPct.'%' : '—') ?>
-                          </span>
-                        </div>
-                      </div>
-                      <div class="forn-valores">
-                        <div class="forn-val-total">R$ <?= number_format($fValor, 2, ',', '.') ?></div>
-                        <div class="forn-val-pago-linha">
-                          Pago: R$ <span class="forn-pago-valor-txt"><?= number_format($fPago, 2, ',', '.') ?></span>
-                          <button type="button" class="forn-btn-editar-pago" data-id="<?= $fid ?>" title="Corrigir valor pago">
-                            <i class="bi bi-pencil-fill"></i>
-                          </button>
-                        </div>
-                        <div class="forn-val-rest <?= $fQuit ? 'ok' : 'nok' ?> forn-rest-adm">
-                          <?= $fQuit ? '✓ Quitado' : 'Resta R$ '.number_format($fRest, 2, ',', '.') ?>
-                        </div>
-                      </div>
-                      <div class="forn-input-wrap forn-add-wrap">
-                        <input type="text" class="forn-input-pago-adm forn-input-add"
-                               data-id="<?= $fid ?>" data-total="<?= $fValor ?>"
-                               placeholder="+ pagamento" inputmode="decimal" title="Somar novo pagamento (R$)">
-                        <button type="button" class="forn-btn-salvar forn-btn-add-adm"
-                                 data-id="<?= $fid ?>" title="Adicionar pagamento">
-                          <i class="bi bi-plus-lg"></i>
-                        </button>
-                      </div>
-                      <div class="forn-input-wrap forn-edit-wrap" style="display:none;">
-                        <input type="text" class="forn-input-pago-adm forn-input-edit"
-                               data-id="<?= $fid ?>" data-total="<?= $fValor ?>"
-                               value="<?= number_format($fPago, 2, ',', '.') ?>"
-                               placeholder="0,00" inputmode="decimal" title="Corrigir valor pago (R$)">
-                        <button type="button" class="forn-btn-salvar forn-btn-salvar-edit-adm"
-                                 data-id="<?= $fid ?>" title="Salvar correção">
-                          <i class="bi bi-check-lg"></i>
-                        </button>
-                        <button type="button" class="forn-btn-cancelar-edit" title="Cancelar">
-                          <i class="bi bi-x-lg"></i>
-                        </button>
-                      </div>
-                    </div>
-                    <?php endforeach; ?>
-                    <div class="px-3 py-2 bg-light border-top d-flex justify-content-between align-items-center" style="font-size:.72rem;">
-                      <span class="text-muted fw-bold text-uppercase">Total contratado:</span>
-                      <span class="fw-bold text-dark">R$ <?= number_format($total_forn, 2, ',', '.') ?></span>
-                    </div>
-                  <?php endif; ?>
-                </div>
-              </div>
-              <?php endif; ?>
-            </div>
-          </div>
-
-          <div class="collapse" id="collapseConvidados" data-bs-parent="#accordionAcessos">
-            <div class="card shadow-sm border-0" style="border-radius: var(--radius);">
-              <div class="etapa-body bg-white p-3 rounded-3">
-                <div class="row g-2 mb-3">
-                  <div class="col-12 col-sm-4">
-                    <button type="button" class="btn btn-success w-100 btn-sm fw-bold shadow-sm py-2 rounded-3 h-100"
-                            data-bs-toggle="modal" data-bs-target="#modalAddConvidado">
-                      <i class="bi bi-person-plus-fill me-1"></i> Criar Convite
-                    </button>
-                  </div>
-                  <div class="col-12 col-sm-4">
-                    <a href="convidados.php?id=<?= $evento_id ?>" class="btn btn-info w-100 btn-sm fw-bold shadow-sm py-2 rounded-3 h-100 d-flex align-items-center justify-content-center text-dark">
-                      <i class="bi bi-people-fill me-2"></i> Gerenciar
-                    </a>
-                  </div>
-                  <div class="col-12 col-sm-4">
-                    <a href="organizar_mesas.php?id=<?= $evento_id ?>" class="btn btn-primary w-100 btn-sm fw-bold shadow-sm py-2 rounded-3 h-100 d-flex align-items-center justify-content-center">
-                      <i class="bi bi-grid-3x3-gap-fill me-2"></i> Organizar Mesas
-                    </a>
-                  </div>
-                </div>
-                <div class="row g-2 mb-3">
-                  <div class="col-6">
-                    <div class="bg-success bg-opacity-10 rounded-3 p-3 text-center border border-success border-opacity-25">
-                      <h4 class="mb-0 fw-bold text-success" id="cnt-conf"><?= $total_conf ?></h4>
-                      <small class="text-muted" style="font-size:.7rem;">Confirmados</small>
-                    </div>
-                  </div>
-                  <div class="col-6">
-                    <div class="bg-warning bg-opacity-10 rounded-3 p-3 text-center border border-warning border-opacity-25">
-                      <h4 class="mb-0 fw-bold" id="cnt-pend" style="color:#d97706;"><?= $total_pend ?></h4>
-                      <small class="text-muted" style="font-size:.7rem;">Pendentes</small>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-        </div>
       </div>
     </div>
   </div>
@@ -2448,50 +2242,6 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
   </div>
 </div>
 <?php endif; ?>
-
-<div class="modal fade" id="modalFornecedor" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content border-0 shadow-lg rounded-4">
-      <div class="modal-header bg-light border-0">
-        <h5 class="modal-title fw-bold"><i class="bi bi-person-plus text-success me-2"></i> Adicionar Fornecedor</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-      </div>
-      <form method="POST" action="?id=<?= $evento_id ?>">
-        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
-        <input type="hidden" name="adicionar_fornecedor" value="1">
-        <div class="modal-body p-4">
-          <div class="mb-3">
-            <label class="form-label small fw-bold text-secondary">Serviço Prestado</label>
-            <input type="text" name="servico_fornecedor" class="form-control" placeholder="Ex: Fotografia, Buffet…" required>
-          </div>
-          <div class="mb-3">
-            <label class="form-label small fw-bold text-secondary">Nome / Empresa</label>
-            <input type="text" name="nome_fornecedor" class="form-control" required>
-          </div>
-          <div class="row g-3">
-            <div class="<?= $is_admin ? 'col-12 col-sm-6' : 'col-12' ?>">
-              <label class="form-label small fw-bold text-secondary">Status</label>
-              <select name="status_fornecedor" class="form-select">
-                <option value="Contratado">Contratado</option>
-                <option value="Orçamento">Apenas Orçamento</option>
-              </select>
-            </div>
-            <?php if ($is_admin): ?>
-            <div class="col-12 col-sm-6">
-              <label class="form-label small fw-bold text-secondary">Valor Total (R$)</label>
-              <input type="text" name="valor_fornecedor" class="form-control" placeholder="0,00">
-            </div>
-            <?php endif; ?>
-          </div>
-        </div>
-        <div class="modal-footer border-0 pt-0">
-          <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
-          <button type="submit" class="btn btn-success btn-sm px-4 rounded-pill fw-bold">Salvar</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
 
 <div class="modal fade" id="modalLocais" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
@@ -3229,12 +2979,6 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
 const SELF       = window.location.href;
 const CSRF_TOKEN  = <?= json_encode($csrf_token) ?>;
 
-/* ---- Ao abrir "Convidados" ou "Equipe Contratada", rola a página até as opções aparecerem ---- */
-['collapseConvidados', 'collapseEquipe'].forEach(id => {
-  document.getElementById(id)?.addEventListener('shown.bs.collapse', function () {
-    this.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  });
-});
 
 /* ---- SINO DE NOTIFICAÇÕES ---- */
 
@@ -3649,152 +3393,6 @@ document.querySelectorAll('.form-ajax-tarefa').forEach(form => {
     } catch { toast('Erro ao comentar.', 'verm'); }
     btn.innerHTML = orig;
   });
-});
-
-/* ---- PAGAMENTO FORNECEDORES (AJAX) ---- */
-let totalPagoGeralAdm = <?= json_encode($total_forn_pago) ?>;
-const totalContratoGeralAdm = <?= json_encode($total_forn) ?>;
-
-function atualizarChipsGeraisAdm() {
-  const restante = Math.max(0, totalContratoGeralAdm - totalPagoGeralAdm);
-  const pct      = totalContratoGeralAdm > 0 ? Math.round(totalPagoGeralAdm / totalContratoGeralAdm * 100) : 0;
-  const elPago   = document.getElementById('adm-total-pago');
-  const elRest   = document.getElementById('adm-total-rest');
-  const elBarra  = document.getElementById('adm-barra-pago');
-  const elPct    = document.getElementById('adm-pct-pago');
-  if (elPago)  elPago.textContent  = brl(totalPagoGeralAdm);
-  if (elRest)  elRest.textContent  = brl(restante);
-  if (elBarra) elBarra.style.width = pct + '%';
-  if (elPct)   elPct.textContent   = pct + '%';
-}
-
-function atualizarLinhaFornecedorAdm(row, pago, total) {
-  const rest = Math.max(0, total - pago);
-  const pct  = total > 0 ? Math.round(pago / total * 100) : 0;
-  const quit = rest <= 0;
-
-  const pagoAnterior = parseFloat(row.dataset.pago || 0);
-  totalPagoGeralAdm += (pago - pagoAnterior);
-  row.dataset.pago = pago;
-
-  const barra = row.querySelector('.forn-barra-fill-adm');
-  if (barra) {
-    barra.className          = 'forn-barra-fill-adm ' + (quit ? 'bg-success' : pct >= 50 ? 'bg-info' : 'bg-warning');
-    barra.style.width        = pct + '%';
-    barra.style.height       = '100%';
-    barra.style.borderRadius = '999px';
-    barra.style.transition   = 'width .4s';
-  }
-  const badge = row.querySelector('.forn-badge-adm');
-  if (badge) {
-    badge.textContent = quit ? '✓ Quitado' : (pct > 0 ? pct + '%' : '—');
-    badge.className   = 'forn-pago-badge forn-badge-adm ' + (quit ? 'bg-success text-white' : 'bg-warning text-dark');
-  }
-  const restEl = row.querySelector('.forn-rest-adm');
-  if (restEl) {
-    restEl.textContent = quit ? '✓ Quitado' : 'Resta ' + brl(rest);
-    restEl.className   = 'forn-val-rest forn-rest-adm ' + (quit ? 'ok' : 'nok');
-  }
-  const pagoTxt = row.querySelector('.forn-pago-valor-txt');
-  if (pagoTxt) pagoTxt.textContent = pago.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-
-  atualizarChipsGeraisAdm();
-}
-
-/* Somar novo pagamento ao valor já pago */
-document.querySelectorAll('.forn-btn-add-adm').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    const fid   = btn.dataset.id;
-    const row   = document.getElementById('forn-adm-' + fid);
-    const input = row.querySelector('.forn-input-add');
-    const total = parseFloat(input.dataset.total || 0);
-    const valor = parseBrl(input.value);
-    if (!valor || valor <= 0) { toast('Informe um valor maior que zero.', 'verm'); return; }
-    const origBtn = btn.innerHTML;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    btn.disabled  = true;
-    try {
-      const r = await ajax({ adicionar_pagamento: '1', fornecedor_id: fid, valor_pago: valor.toString() });
-      if (r.ok) {
-        const pago = parseFloat(r.valor_pago);
-        const quit = parseFloat(r.valor_rest) <= 0;
-        atualizarLinhaFornecedorAdm(row, pago, total);
-        input.value = '';
-        toast(quit ? 'Pagamento quitado! 🎉' : 'Pagamento adicionado!', quit ? 'verde' : 'info');
-      } else {
-        toast(r.msg || 'Erro ao salvar pagamento.', 'verm');
-      }
-    } catch { toast('Erro de conexão. Tente novamente.', 'verm'); }
-    btn.innerHTML = origBtn;
-    btn.disabled  = false;
-  });
-});
-
-/* Alternar para o modo de corrigir o valor pago */
-document.querySelectorAll('.forn-btn-editar-pago').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const fid       = btn.dataset.id;
-    const row       = document.getElementById('forn-adm-' + fid);
-    const addWrap   = row.querySelector('.forn-add-wrap');
-    const editWrap  = row.querySelector('.forn-edit-wrap');
-    const editInput = editWrap.querySelector('.forn-input-edit');
-    editInput.value = parseFloat(row.dataset.pago || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-    addWrap.style.display  = 'none';
-    editWrap.style.display = 'flex';
-    editInput.focus();
-    editInput.select();
-  });
-});
-
-/* Cancelar a correção */
-document.querySelectorAll('.forn-btn-cancelar-edit').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const row = btn.closest('.forn-pago-row');
-    row.querySelector('.forn-edit-wrap').style.display = 'none';
-    row.querySelector('.forn-add-wrap').style.display  = 'flex';
-  });
-});
-
-/* Salvar a correção (sobrescreve o valor pago) */
-document.querySelectorAll('.forn-btn-salvar-edit-adm').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    const fid   = btn.dataset.id;
-    const row   = document.getElementById('forn-adm-' + fid);
-    const input = row.querySelector('.forn-input-edit');
-    const total = parseFloat(input.dataset.total || 0);
-    let   valor = parseBrl(input.value);
-    if (valor < 0) { toast('O valor não pode ser negativo.', 'verm'); return; }
-    if (valor > total) {
-      toast('Valor maior que o contrato! Ajustado para o total.', 'info');
-      valor = total;
-    }
-    const origBtn = btn.innerHTML;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    btn.disabled  = true;
-    try {
-      const r = await ajax({ atualizar_valor_pago: '1', fornecedor_id: fid, valor_pago: valor.toString() });
-      if (r.ok) {
-        const pago = parseFloat(r.valor_pago);
-        atualizarLinhaFornecedorAdm(row, pago, total);
-        row.querySelector('.forn-edit-wrap').style.display = 'none';
-        row.querySelector('.forn-add-wrap').style.display  = 'flex';
-        toast('Valor corrigido!', 'info');
-      } else {
-        toast(r.msg || 'Erro ao salvar pagamento.', 'verm');
-      }
-    } catch { toast('Erro de conexão. Tente novamente.', 'verm'); }
-    btn.innerHTML = origBtn;
-    btn.disabled  = false;
-  });
-});
-
-document.querySelectorAll('.forn-input-pago-adm').forEach(input => {
-  input.addEventListener('blur',  () => {
-    if (input.value.trim() === '') return;
-    const n = parseBrl(input.value);
-    if (!isNaN(n)) input.value = n.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-  });
-  input.addEventListener('focus', () => input.select());
 });
 
 /* ---- CONVIDADOS ---- */

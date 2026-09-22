@@ -19,6 +19,7 @@ if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['
 garantir_coluna_tipo_evento($pdo);
 garantir_tabela_modulos_config($pdo);
 garantir_tabela_modulos_liberados($pdo);
+garantir_coluna_nome_secundario_cliente($pdo);
 
 // ============================================================
 // MÓDULO ATIVO: qual tipo de evento a equipe escolheu no hub
@@ -339,7 +340,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $nome_noiva       = trim($_POST['nome_noiva'] ?? '');
         $nome_noivo       = trim($_POST['nome_noivo'] ?? '');
-        $nome_cliente     = $nome_noiva . (!empty($nome_noivo) ? ' & ' . $nome_noivo : '');
+        // Só em Casamentos os dois nomes são um par e ficam concatenados com
+        // "&" — nos outros módulos o 2º campo é o responsável pelo evento (um
+        // papel diferente, não uma "dupla"), então fica guardado à parte em vez
+        // de virar "Instituição & Responsável" em todo canto que mostra o nome.
+        $eh_casamento     = ($modulo_ativo === 'casamento');
+        $nome_cliente     = $eh_casamento ? ($nome_noiva . (!empty($nome_noivo) ? ' & ' . $nome_noivo : '')) : $nome_noiva;
+        $nome_secundario  = $eh_casamento ? null : ($nome_noivo !== '' ? $nome_noivo : null);
         $email_cliente    = trim($_POST['email_cliente'] ?? '');
         $cpf_cliente      = preg_replace('/[^0-9]/', '', trim($_POST['cpf_cliente'] ?? ''));
         $cpf_cliente      = $cpf_cliente !== '' ? $cpf_cliente : null; // NULL em vez de '' — a coluna é UNIQUE e '' duplicada quebra o 2º cadastro sem CPF
@@ -398,11 +405,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     if ($cliente_existente) {
                         $cliente_id = $cliente_existente['id'];
-                        $stmt_cli_up = $pdo->prepare("UPDATE clientes SET nome = ?, cpf = ?, telefone = ? WHERE id = ?");
-                        $stmt_cli_up->execute([$nome_cliente, $cpf_cliente, $telefone_cliente, $cliente_id]);
+                        $stmt_cli_up = $pdo->prepare("UPDATE clientes SET nome = ?, nome_secundario = ?, cpf = ?, telefone = ? WHERE id = ?");
+                        $stmt_cli_up->execute([$nome_cliente, $nome_secundario, $cpf_cliente, $telefone_cliente, $cliente_id]);
                     } else {
-                        $stmt_cli = $pdo->prepare("INSERT INTO clientes (nome, email, cpf, telefone, senha) VALUES (?, ?, ?, ?, ?)");
-                        $stmt_cli->execute([$nome_cliente, $email_cliente, $cpf_cliente, $telefone_cliente, $senha_hash]);
+                        $stmt_cli = $pdo->prepare("INSERT INTO clientes (nome, nome_secundario, email, cpf, telefone, senha) VALUES (?, ?, ?, ?, ?, ?)");
+                        $stmt_cli->execute([$nome_cliente, $nome_secundario, $email_cliente, $cpf_cliente, $telefone_cliente, $senha_hash]);
                         $cliente_id = $pdo->lastInsertId();
                     }
 

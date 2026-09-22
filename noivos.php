@@ -13,6 +13,7 @@ require_once 'modulos_evento.inc.php';
 require_once 'notificacoes.inc.php';
 
 garantir_coluna_tipo_evento($pdo);
+garantir_coluna_nome_secundario_cliente($pdo);
 
 if (empty($_SESSION['evento_id'])) {
     header("Location: hub_eventos_cliente.php");
@@ -227,7 +228,7 @@ function badge_prazo(?string $data_prazo, bool $done): array {
    Carrega dados do evento
    ============================================================ */
 $s = $pdo->prepare("
-    SELECT e.*, c.nome, c.email, c.telefone
+    SELECT e.*, c.nome, c.nome_secundario, c.email, c.telefone
     FROM eventos e
     INNER JOIN clientes c ON e.cliente_id = c.id
     WHERE e.id = ?
@@ -1116,7 +1117,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       display: none;
     }
     .hero-hearts {
-      position: absolute; top: 10%; right: 3%; width: 150px; height: auto; display: none;
+      position: absolute; top: 6%; right: 2%; width: 260px; height: auto; display: none;
     }
     .hero-hearts path {
       stroke-dasharray: 1000;
@@ -1125,6 +1126,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     }
     .hero-hearts path:nth-of-type(2) { animation-delay: 1.2s; }
     .hero-hearts path:nth-of-type(3) { animation-delay: 2.4s; }
+    .hero-hearts path:nth-of-type(4) { animation-delay: 3.6s; }
     @keyframes heroHeartsDraw {
       0%   { stroke-dashoffset: 1000; }
       42%  { stroke-dashoffset: 0; }
@@ -1535,7 +1537,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
         <i class="bi bi-arrow-left-right"></i> <span class="d-none d-sm-inline">Trocar evento</span>
       </a>
       <?php endif; ?>
-      <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#modalConfirmarSaida">
+      <button type="button" class="btn btn-sm fw-bold" style="background: rgba(255,255,255,.92); color: #dc3545; border: none;" data-bs-toggle="modal" data-bs-target="#modalConfirmarSaida">
         <i class="bi bi-box-arrow-right"></i> <span class="d-none d-sm-inline">Sair</span>
       </button>
     </div>
@@ -1942,10 +1944,11 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
             <span class="dias-pill-mobile dias-pill-passado d-md-none">Casados há <?= abs($dias) ?> dia<?= abs($dias) > 1 ? 's' : '' ?></span>
           <?php endif; ?>
         </div>
+        <?php [$titulo_evento_hero, $subtitulo_evento_hero] = titulo_subtitulo_evento($evento['tipo_evento'] ?? 'casamento', $evento['nome'], $evento['nome_secundario'] ?? null, 'Bem-vindos! Acompanhe aqui os preparativos do seu grande dia.'); ?>
         <h2 class="mb-1 text-white nome-noivos-titulo">
-          <?= htmlspecialchars($evento['nome'], ENT_QUOTES, 'UTF-8') ?>
+          <?= htmlspecialchars($titulo_evento_hero, ENT_QUOTES, 'UTF-8') ?>
         </h2>
-        <p class="header-hero-subtitle mb-0">Bem-vindos! Acompanhe aqui os preparativos do seu grande dia.</p>
+        <p class="header-hero-subtitle mb-0"><?= htmlspecialchars($subtitulo_evento_hero, ENT_QUOTES, 'UTF-8') ?></p>
 
         <div class="d-flex flex-wrap gap-2 info-tiles">
           <div class="info-tile">
@@ -2226,7 +2229,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                 <i class="bi bi-music-note-list fs-4" style="color:var(--color-primary-dark);"></i>
               </div>
               <div class="text-start">
-                <h6 class="mb-0 fw-bold text-dark">Nossa Trilha Sonora</h6>
+                <h6 class="mb-0 fw-bold text-dark">Trilha Sonora</h6>
                 <small class="text-dark" style="font-size:.78rem;opacity:.6;">
                   <span id="musicas-count-badge"><?= $total_musicas ?> música<?= $total_musicas !== 1 ? 's' : '' ?></span>
                   · sugestões
@@ -2412,61 +2415,10 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                   <div class="mb-2 d-flex align-items-center gap-1" style="font-size:.72rem;">
                     <span class="text-muted">Pago:</span>
                     <span class="fw-bold text-primary forn-pago-valor-txt">R$ <?= number_format($fPago, 2, ',', '.') ?></span>
-                    <button type="button" class="btn-editar-pago-noivos" data-id="<?= $fid ?>" title="Corrigir valor pago">
-                      <i class="bi bi-pencil-fill"></i>
-                    </button>
                   </div>
 
                   <div class="barra-pago-wrap mb-2">
                     <div class="barra-pago-fill <?= $barColor ?> forn-barra-fill" style="width:<?= $fPct ?>%;"></div>
-                  </div>
-
-                  <div class="d-flex align-items-center gap-2 mt-2 forn-add-wrap-noivos">
-                    <div class="flex-grow-1">
-                      <label style="font-size:.62rem;color:#64748b;text-transform:uppercase;font-weight:700;letter-spacing:.05em;">
-                        Adicionar pagamento (R$)
-                      </label>
-                      <input
-                        type="text"
-                        class="valor-pago-input forn-input-add-noivos"
-                        data-id="<?= $fid ?>"
-                        data-total="<?= $fValor ?>"
-                        placeholder="0,00"
-                        inputmode="decimal"
-                      >
-                    </div>
-                    <div class="mt-3">
-                      <button type="button"
-                              class="btn-salvar-pag btn-add-pagamento-noivos"
-                              data-id="<?= $fid ?>">
-                        <i class="bi bi-plus-lg me-1"></i>Somar
-                      </button>
-                    </div>
-                  </div>
-
-                  <div class="d-flex align-items-center gap-2 mt-2 forn-edit-wrap-noivos" style="display:none;">
-                    <div class="flex-grow-1">
-                      <label style="font-size:.62rem;color:#64748b;text-transform:uppercase;font-weight:700;letter-spacing:.05em;">
-                        Corrigir valor pago (R$)
-                      </label>
-                      <input
-                        type="text"
-                        class="valor-pago-input forn-input-edit-noivos"
-                        data-id="<?= $fid ?>"
-                        data-total="<?= $fValor ?>"
-                        value="<?= number_format($fPago, 2, ',', '.') ?>"
-                        placeholder="0,00"
-                        inputmode="decimal"
-                      >
-                    </div>
-                    <div class="mt-3 d-flex gap-1">
-                      <button type="button" class="btn-salvar-pag btn-salvar-edit-noivos" data-id="<?= $fid ?>" title="Salvar correção">
-                        <i class="bi bi-check-lg"></i>
-                      </button>
-                      <button type="button" class="btn-cancelar-edit-noivos" title="Cancelar">
-                        <i class="bi bi-x-lg"></i>
-                      </button>
-                    </div>
                   </div>
 
                 </div>
@@ -2641,7 +2593,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
             <i class="bi bi-music-note-beamed text-primary fs-5"></i>
           </div>
           <div>
-            <h5 class="modal-title fw-bold mb-0 text-dark">Nossa Trilha Sonora</h5>
+            <h5 class="modal-title fw-bold mb-0 text-dark">Trilha Sonora</h5>
             <span class="text-muted" style="font-size:.73rem;">Sugira as músicas para cada momento especial</span>
           </div>
         </div>

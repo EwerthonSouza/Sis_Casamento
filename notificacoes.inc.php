@@ -192,10 +192,10 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?strin
             INNER JOIN eventos e ON e.id = n.evento_id
             INNER JOIN clientes cl ON cl.id = e.cliente_id
             WHERE n.origem = 'Noivos'
-        " . ($evento_id ? " AND n.evento_id = ?" : "") . "
+        " . ($evento_id ? " AND n.evento_id = ?" : $filtro_modulo) . "
             ORDER BY n.criado_em DESC LIMIT " . (int)$limite;
         $stmt6 = $pdo->prepare($sql6);
-        $stmt6->execute($evento_id ? [$evento_id] : []);
+        $stmt6->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
         foreach ($stmt6->fetchAll() as $r) {
             $itens[] = [
                 'tipo'        => 'nota',
@@ -220,10 +220,10 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?strin
             INNER JOIN eventos e ON e.id = n.evento_id
             INNER JOIN clientes cl ON cl.id = e.cliente_id
             WHERE nc.autor = 'Noivos'
-        " . ($evento_id ? " AND n.evento_id = ?" : "") . "
+        " . ($evento_id ? " AND n.evento_id = ?" : $filtro_modulo) . "
             ORDER BY nc.criado_em DESC LIMIT " . (int)$limite;
         $stmt7 = $pdo->prepare($sql7);
-        $stmt7->execute($evento_id ? [$evento_id] : []);
+        $stmt7->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
         foreach ($stmt7->fetchAll() as $r) {
             // Comentário do casal: mostra "Noivos" (papel), não o nome real
             // registrado do casal — é sempre o mesmo texto pra qualquer um
