@@ -677,7 +677,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         json_out(['ok' => true]);
     }
 
-    // 17. Salvar / editar nota do casal (Noivos só edita as próprias notas — origem='Noivos')
+    // 17. Salvar / editar nota (Noivos podem editar qualquer nota do evento,
+    // inclusive as criadas pela assessoria — mesma liberdade que a assessoria
+    // já tem pras notas do casal em gerenciar.php).
     if (isset($_POST['salvar_nota'])) {
         $nota_id  = (int)($_POST['nota_id']     ?? 0);
         $titulo   = trim($_POST['titulo_nota']   ?? '');
@@ -686,14 +688,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $cor      = in_array($_POST['cor_nota'] ?? '', $cores_ok, true) ? $_POST['cor_nota'] : 'amarelo';
         if ($titulo !== '') {
             if ($nota_id > 0) {
-                $pdo->prepare("UPDATE notas_evento SET titulo=?, conteudo=?, cor=?, atualizado_em=NOW() WHERE id=? AND evento_id=? AND origem='Noivos'")
+                $pdo->prepare("UPDATE notas_evento SET titulo=?, conteudo=?, cor=?, atualizado_em=NOW() WHERE id=? AND evento_id=?")
                     ->execute([$titulo, $conteudo, $cor, $nota_id, $evento_id]);
                 $ret_id = $nota_id;
+                // A nota editada pode ser da assessoria — busca de volta quem
+                // criou pra manter o selo certo no card (não força "Casal").
+                $stOrig = $pdo->prepare("SELECT origem, autor FROM notas_evento WHERE id=? AND evento_id=?");
+                $stOrig->execute([$nota_id, $evento_id]);
+                $origRow    = $stOrig->fetch();
+                $ret_origem = $origRow['origem'] ?? 'Noivos';
+                $ret_autor  = $origRow['autor']  ?? ($_SESSION['usuario_nome'] ?? 'Casal');
             } else {
                 $autor_nome = $_SESSION['usuario_nome'] ?? 'Casal';
                 $pdo->prepare("INSERT INTO notas_evento (evento_id, titulo, conteudo, cor, autor, origem) VALUES (?,?,?,?,?,'Noivos')")
                     ->execute([$evento_id, $titulo, $conteudo, $cor, $autor_nome]);
-                $ret_id = (int)$pdo->lastInsertId();
+                $ret_id     = (int)$pdo->lastInsertId();
+                $ret_origem = 'Noivos';
+                $ret_autor  = $autor_nome;
             }
             if ($ajax) json_out([
                 'ok'         => true,
@@ -702,6 +713,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'titulo'     => htmlspecialchars($titulo,   ENT_QUOTES, 'UTF-8'),
                 'conteudo'   => htmlspecialchars($conteudo, ENT_QUOTES, 'UTF-8'),
                 'cor'        => $cor,
+                'origem'     => $ret_origem,
+                'autor'      => htmlspecialchars($ret_autor, ENT_QUOTES, 'UTF-8'),
                 'atualizado' => date('d/m/Y \à\s H:i'),
             ]);
         } else {
@@ -710,11 +723,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: noivos.php"); exit;
     }
 
-    // 18. Excluir nota do casal (só as próprias — origem='Noivos')
+    // 18. Excluir nota (Noivos podem excluir qualquer nota do evento, mesma
+    // liberdade que a assessoria já tem em gerenciar.php)
     if (isset($_POST['excluir_nota'])) {
         $nota_id = (int)($_POST['nota_id'] ?? 0);
         if ($nota_id > 0) {
-            $pdo->prepare("DELETE FROM notas_evento WHERE id=? AND evento_id=? AND origem='Noivos'")->execute([$nota_id, $evento_id]);
+            $pdo->prepare("DELETE FROM notas_evento WHERE id=? AND evento_id=?")->execute([$nota_id, $evento_id]);
         }
         if ($ajax) json_out(['ok' => true]);
         header("Location: noivos.php"); exit;
@@ -2775,7 +2789,6 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                     <h6 class="fw-bold mb-0 text-truncate" style="color:<?= $txtC ?>;font-size:.88rem;line-height:1.3;">
                       <?= htmlspecialchars($nota['titulo'], ENT_QUOTES, 'UTF-8') ?>
                     </h6>
-                    <?php if ($eh_do_casal): ?>
                     <div class="d-flex gap-1 flex-shrink-0">
                       <button type="button" class="btn p-1 border-0 bg-transparent btn-editar-nota"
                               data-id="<?= $nota['id'] ?>"
@@ -2790,7 +2803,6 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                         <i class="bi bi-trash-fill" style="font-size:.78rem;color:#ef4444;opacity:.6;"></i>
                       </button>
                     </div>
-                    <?php endif; ?>
                   </div>
                   <?php if (!empty($nota['conteudo'])): ?>
                   <p class="mb-0" style="color:<?= $txtC ?>;opacity:.82;white-space:pre-wrap;line-height:1.6;font-size:.8rem;">
@@ -4267,8 +4279,12 @@ function notaHtmlCard(r, cor) {
   const conteudoHtml = r.conteudo
     ? `<p class="mb-0" style="color:${txt};opacity:.82;white-space:pre-wrap;line-height:1.6;font-size:.8rem;">${r.conteudo}</p>`
     : '';
+  // Editar uma nota da assessoria não muda quem a criou — o selo tem que
+  // continuar mostrando a origem real, não sempre "Casal".
+  const origem   = r.origem || 'Noivos';
+  const seloTexto = origem === 'Noivos' ? 'Casal' : 'Assessoria';
   return `
-    <div class="col-12 col-sm-6 nota-card-wrap" data-id="${r.id}" data-origem="Noivos">
+    <div class="col-12 col-sm-6 nota-card-wrap" data-id="${r.id}" data-origem="${origem}">
       <div class="card border-0 shadow-sm h-100 rounded-4 nota-card"
            style="background:${bg};border-left:4px solid ${brd}!important;">
         <div class="card-body p-3">
@@ -4294,7 +4310,7 @@ function notaHtmlCard(r, cor) {
             <span style="font-size:.6rem;color:${txt};opacity:.5;"><i class="bi bi-clock me-1"></i>${dt}</span>
             <span class="badge rounded-pill"
                   style="font-size:.55rem;background:${bg};border:1px solid ${brd};color:${txt};opacity:.7;">
-              Casal
+              ${seloTexto}
             </span>
           </div>
           <div class="mt-2 pt-2 border-top nota-comentarios-wrap" style="border-color:${brd}!important;">

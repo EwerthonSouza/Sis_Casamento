@@ -656,11 +656,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->prepare("UPDATE notas_evento SET titulo=?, conteudo=?, cor=?, atualizado_em=NOW() WHERE id=? AND evento_id=?")
                     ->execute([$titulo, $conteudo, $cor, $nota_id, $evento_id]);
                 $ret_id = $nota_id;
+                // A nota editada pode ser do casal — busca de volta quem criou
+                // pra manter o selo certo no card (não força "Assessoria").
+                $stOrig = $pdo->prepare("SELECT origem, autor FROM notas_evento WHERE id=? AND evento_id=?");
+                $stOrig->execute([$nota_id, $evento_id]);
+                $origRow    = $stOrig->fetch();
+                $ret_origem = $origRow['origem'] ?? 'Assessoria';
+                $ret_autor  = $origRow['autor']  ?? ($_SESSION['usuario_nome'] ?? 'Assessoria');
             } else {
                 $autor_nome = $_SESSION['usuario_nome'] ?? 'Assessoria';
                 $pdo->prepare("INSERT INTO notas_evento (evento_id, titulo, conteudo, cor, autor, origem) VALUES (?,?,?,?,?,'Assessoria')")
                     ->execute([$evento_id, $titulo, $conteudo, $cor, $autor_nome]);
-                $ret_id = (int)$pdo->lastInsertId();
+                $ret_id     = (int)$pdo->lastInsertId();
+                $ret_origem = 'Assessoria';
+                $ret_autor  = $autor_nome;
             }
             if ($ajax) json_out([
                 'ok'         => true,
@@ -669,6 +678,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'titulo'     => htmlspecialchars($titulo,   ENT_QUOTES, 'UTF-8'),
                 'conteudo'   => htmlspecialchars($conteudo, ENT_QUOTES, 'UTF-8'),
                 'cor'        => $cor,
+                'origem'     => $ret_origem,
+                'autor'      => htmlspecialchars($ret_autor, ENT_QUOTES, 'UTF-8'),
                 'atualizado' => date('d/m/Y \à\s H:i'),
             ]);
         } else {
@@ -3709,8 +3720,12 @@ function notaHtmlCard(r, cor) {
   const conteudoHtml = r.conteudo
     ? `<p class="mb-0" style="color:${txt};opacity:.82;white-space:pre-wrap;line-height:1.6;font-size:.8rem;">${r.conteudo}</p>`
     : '';
+  // Editar uma nota do casal não muda quem a criou — o selo tem que
+  // continuar mostrando a origem real, não sempre "Assessoria".
+  const origem    = r.origem || 'Assessoria';
+  const seloTexto = (r.autor || 'Assessoria') + (origem === 'Noivos' ? ' · Casal' : '');
   return `
-    <div class="col-12 col-sm-6 nota-card-wrap" data-id="${r.id}">
+    <div class="col-12 col-sm-6 nota-card-wrap" data-id="${r.id}" data-origem="${origem}">
       <div class="card border-0 shadow-sm h-100 rounded-4 nota-card"
            style="background:${bg};border-left:4px solid ${brd}!important;">
         <div class="card-body p-3">
@@ -3736,7 +3751,7 @@ function notaHtmlCard(r, cor) {
             <span style="font-size:.6rem;color:${txt};opacity:.5;"><i class="bi bi-clock me-1"></i>${dt}</span>
             <span class="badge rounded-pill"
                   style="font-size:.55rem;background:${bg};border:1px solid ${brd};color:${txt};opacity:.7;">
-              Assessoria
+              ${seloTexto}
             </span>
           </div>
           <div class="mt-2 pt-2 border-top nota-comentarios-wrap" style="border-color:${brd}!important;">
