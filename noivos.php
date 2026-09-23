@@ -936,25 +936,24 @@ foreach ($lista_checklist as $t) {
 }
 $pct_g = $total_g > 0 ? round($conc_g / $total_g * 100) : 0;
 
+// Etapas numéricas em ordem numérica (1, 2, ... 10 — ordem de texto poria o 10
+// logo depois do 1); as com nome livre vêm depois, na ordem original.
+$passos_num = array_filter($passos, fn($k) => is_numeric($k), ARRAY_FILTER_USE_KEY);
+$passos_txt = array_filter($passos, fn($k) => !is_numeric($k), ARRAY_FILTER_USE_KEY);
+ksort($passos_num, SORT_NUMERIC);
+$passos = $passos_num + $passos_txt;
+
 // Etapas começam todas fechadas; só abrem quando o usuário clicar.
 $etapa_auto_abrir = null;
 
-// Próximas tarefas (pendentes, ordenadas por prazo — sem prazo por último) e contagem de atrasadas
+// Contagem de tarefas pendentes atrasadas
 $hoje_str = date('Y-m-d');
-$proximas_tarefas = [];
 $total_atrasadas = 0;
 foreach ($lista_checklist as $t) {
     $done = ($t['status'] === 'concluido' || $t['checado'] == 1);
     if ($done) continue;
     if (!empty($t['data_prazo']) && $t['data_prazo'] < $hoje_str) { $total_atrasadas++; }
-    $proximas_tarefas[] = $t;
 }
-usort($proximas_tarefas, function ($a, $b) {
-    $da = $a['data_prazo'] ?: '9999-12-31';
-    $db = $b['data_prazo'] ?: '9999-12-31';
-    return $da <=> $db;
-});
-$proximas_tarefas = array_slice($proximas_tarefas, 0, 5);
 
 // Dias para o evento
 $hoje = (new DateTime())->setTime(0, 0, 0);
@@ -1395,13 +1394,11 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     .badge-prazo.futuro  { background: #dbeafe; color: #1d4ed8; }
     .badge-prazo.proximo { background: #fef3c7; color: #b45309; }
     .badge-prazo.atrasada{ background: #fee2e2; color: #dc2626; }
-    .checklist-toolbar { background: #fff; border-radius: 12px; padding: .75rem 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.06); margin-bottom: 1rem; }
-    .checklist-toolbar .sw { position: relative; flex: 1 1 220px; min-width: 180px; }
-    .checklist-toolbar .sw .bi-search { position: absolute; left: .7rem; top: 50%; transform: translateY(-50%); color: #94a3b8; font-size: .78rem; }
-    .checklist-toolbar .sw input { padding-left: 2rem; font-size: .82rem; }
-    .card-proximas { border-radius: var(--radius); border: 1.5px solid #fecaca !important; background: #fff5f5; margin-bottom: 1rem; }
-    .card-proximas .item-proxima { display: flex; align-items: center; gap: .6rem; padding: .4rem 0; border-bottom: 1px dashed #fecdd3; font-size: .82rem; }
-    .card-proximas .item-proxima:last-child { border-bottom: none; }
+    .cronograma-faixa { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .4rem .9rem; padding: .7rem 1.1rem; border-radius: var(--radius) var(--radius) 0 0; }
+    .cronograma-faixa-icone { width: 30px; height: 30px; border-radius: 9px; background: var(--color-primary-light, #f3e8dc); color: var(--color-primary-dark, #6f4a2f); display: inline-flex; align-items: center; justify-content: center; font-size: .95rem; flex-shrink: 0; }
+    .cronograma-faixa h5 { font-size: 1rem; }
+    .cronograma-body { padding-top: 1rem !important; }
+    .cronograma-faixa-cont { font-size: .74rem; white-space: nowrap; }
     .tarefa-row-hidden { display: none !important; }
     .etapa-hidden { display: none !important; }
 
@@ -1411,7 +1408,9 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       /* Aviso de "cronograma ainda vazio": vira uma linha compacta e
          horizontal em vez do bloco grande e centralizado do desktop, e fica
          mais colado no título "Nosso Cronograma" acima. */
-      .cronograma-header { padding-bottom: .5rem !important; }
+      .cronograma-faixa { padding: .6rem .85rem; }
+      .cronograma-faixa-prog { width: 100%; }
+      .cronograma-faixa-prog .barra { flex: 1 1 auto; width: auto !important; }
       .cronograma-body { padding-top: .5rem !important; }
       .cronograma-vazio {
         padding: 1rem 1.1rem !important;
@@ -1425,7 +1424,6 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       .fin-summary-label { font-size: .55rem; }
 
       .etapa-hdr { flex-wrap: wrap; row-gap: .35rem; }
-      .card-proximas .item-proxima .text-truncate { flex-grow: 1; min-width: 0; }
 
       .btn-musicas-sidebar .d-flex.justify-content-between {
         flex-wrap: nowrap; padding: .75rem .6rem !important; gap: .5rem;
@@ -1439,13 +1437,6 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
         flex-shrink: 0; white-space: nowrap;
         font-size: .68rem; padding: .3rem .5rem;
       }
-
-      .checklist-toolbar { padding: .65rem .75rem; }
-      .checklist-toolbar .sw { flex: 1 1 100%; min-width: 100%; }
-      .checklist-toolbar .filtros-check-wrap {
-        width: 100%; justify-content: center; flex-wrap: nowrap;
-      }
-      .checklist-toolbar .filtro-check { font-size: .68rem !important; padding: .35rem .6rem; }
 
       .anotacoes-etapa-box { padding: .6rem .7rem !important; margin-bottom: .6rem !important; }
       .anotacoes-etapa-box .fw-bold.text-muted { margin-bottom: .4rem !important; }
@@ -2015,17 +2006,18 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 
     <div class="col-lg-8">
       <div class="card shadow-sm border-0 mb-4" style="border-radius: var(--radius);">
-        <div class="card-header bg-white border-bottom pt-4 pb-3 text-center cronograma-header">
-          <h5 class="fw-bold mb-1">
-            <i class="bi bi-calendar-check text-primary me-2"></i> Nosso Cronograma
-          </h5>
+        <div class="card-header bg-white border-bottom cronograma-header cronograma-faixa">
+          <div class="d-flex align-items-center gap-2 cronograma-faixa-titulo">
+            <span class="cronograma-faixa-icone"><i class="bi bi-calendar-check"></i></span>
+            <h5 class="fw-bold mb-0">Nosso Cronograma</h5>
+          </div>
           <?php if ($total_g > 0): ?>
-          <div class="text-muted small mt-1">
-            <span id="label-conc-g"><?= $conc_g ?></span> de <?= $total_g ?> tarefas concluídas
+          <div class="d-flex align-items-center gap-2 cronograma-faixa-prog">
             <?php if ($total_atrasadas > 0): ?>
-              <span class="badge-prazo atrasada ms-1"><i class="bi bi-exclamation-triangle-fill"></i> <?= $total_atrasadas ?> atrasada<?= $total_atrasadas > 1 ? 's' : '' ?></span>
+              <span class="badge-prazo atrasada"><i class="bi bi-exclamation-triangle-fill"></i> <?= $total_atrasadas ?> atrasada<?= $total_atrasadas > 1 ? 's' : '' ?></span>
             <?php endif; ?>
-            <div class="barra mx-auto mt-2" style="max-width:200px;">
+            <span class="text-muted cronograma-faixa-cont"><b id="label-conc-g" class="text-dark"><?= $conc_g ?></b>/<?= $total_g ?> concluídas</span>
+            <div class="barra" style="width:110px;">
               <div class="barra-fill" id="barra-g" style="width:<?= $pct_g ?>%;"></div>
             </div>
           </div>
@@ -2038,33 +2030,6 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               <p class="mt-3 mb-0 cronograma-vazio-txt">A assessoria ainda está montando o cronograma.<br>Em breve aparecerá aqui!</p>
             </div>
           <?php else: ?>
-
-            <?php if (!empty($proximas_tarefas)): ?>
-            <div class="card border-0 shadow-sm card-proximas p-3">
-              <div class="fw-bold text-danger mb-2" style="font-size:.78rem;text-transform:uppercase;letter-spacing:.03em;">
-                <i class="bi bi-alarm-fill me-1"></i> Próximas Tarefas
-              </div>
-              <?php foreach ($proximas_tarefas as $pt): [$pcls, $ptxt] = badge_prazo($pt['data_prazo'] ?? null, false); ?>
-                <div class="item-proxima">
-                  <span class="badge-prazo <?= $pcls ?>"><?= htmlspecialchars($ptxt) ?></span>
-                  <span class="text-dark text-truncate"><?= htmlspecialchars($pt['tarefa']) ?></span>
-                  <span class="text-muted ms-auto" style="font-size:.7rem;"><?= htmlspecialchars($pt['etapa']) ?></span>
-                </div>
-              <?php endforeach; ?>
-            </div>
-            <?php endif; ?>
-
-            <div class="checklist-toolbar d-flex flex-wrap gap-2 align-items-center">
-              <div class="sw">
-                <i class="bi bi-search"></i>
-                <input type="text" id="buscaChecklist" class="form-control form-control-sm rounded-pill" placeholder="Buscar tarefa...">
-              </div>
-              <div class="d-flex gap-1 filtros-check-wrap">
-                <button class="btn btn-primary btn-sm rounded-pill filtro-check active" data-f="todos" style="font-size:.72rem;">Todas</button>
-                <button class="btn btn-outline-warning btn-sm rounded-pill filtro-check" data-f="pendente" style="font-size:.72rem;">Pendentes</button>
-                <button class="btn btn-outline-success btn-sm rounded-pill filtro-check" data-f="concluido" style="font-size:.72rem;">Concluídas</button>
-              </div>
-            </div>
 
             <div class="d-flex flex-column gap-3" id="lista-etapas-checklist">
               <?php $idx = 0; foreach ($passos as $etapa => $tarefas): $idx++;
@@ -3140,50 +3105,6 @@ document.getElementById('lista-links-especificos')?.addEventListener('click', as
     }
   }
 });
-
-/* ---- BUSCA + FILTRO DO CHECKLIST ---- */
-(function () {
-  const busca = document.getElementById('buscaChecklist');
-  if (!busca) return;
-  let filtroAtivo = 'todos';
-
-  function aplicarFiltroChecklist() {
-    const termo = busca.value.trim().toLowerCase();
-    document.querySelectorAll('#lista-etapas-checklist .etapa-wrap').forEach(etapaEl => {
-      let algumVisivel = false;
-      etapaEl.querySelectorAll('.tarefa-card').forEach(card => {
-        const nome   = card.dataset.tarefaNome || '';
-        const status = card.dataset.tarefaStatus || '';
-        const matchNome   = !termo || nome.includes(termo);
-        const matchStatus = filtroAtivo === 'todos' || status === filtroAtivo;
-        const visivel = matchNome && matchStatus;
-        card.classList.toggle('tarefa-row-hidden', !visivel);
-        if (visivel) algumVisivel = true;
-      });
-      etapaEl.classList.toggle('etapa-hidden', !algumVisivel);
-      if (algumVisivel && (termo || filtroAtivo !== 'todos')) {
-        const collapseEl = etapaEl.querySelector('.collapse');
-        if (collapseEl && !collapseEl.classList.contains('show')) {
-          new bootstrap.Collapse(collapseEl, { toggle: false }).show();
-        }
-      }
-    });
-  }
-
-  busca.addEventListener('input', aplicarFiltroChecklist);
-  document.querySelectorAll('.filtro-check').forEach(btn => {
-    btn.addEventListener('click', function () {
-      filtroAtivo = this.dataset.f;
-      document.querySelectorAll('.filtro-check').forEach(b => {
-        b.classList.remove('active', 'btn-primary', 'btn-warning', 'btn-success');
-        b.classList.add(b.dataset.f === 'pendente' ? 'btn-outline-warning' : b.dataset.f === 'concluido' ? 'btn-outline-success' : 'btn-outline-primary');
-      });
-      this.classList.remove('btn-outline-warning', 'btn-outline-success', 'btn-outline-primary');
-      this.classList.add('active', this.dataset.f === 'pendente' ? 'btn-warning' : this.dataset.f === 'concluido' ? 'btn-success' : 'btn-primary');
-      aplicarFiltroChecklist();
-    });
-  });
-})();
 
 function toast(msg, tipo = 'verde') {
   const wrap = document.getElementById('toast-wrap');
