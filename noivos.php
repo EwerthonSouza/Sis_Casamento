@@ -1371,22 +1371,33 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     .barra { height: 5px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
     .barra-fill { height: 100%; background: var(--verde); border-radius: 999px; transition: width .4s; }
 
-    /* BARRA PAGO */
-    .barra-pago-wrap { height: 5px; background: #e2e8f0; border-radius: 999px; overflow: hidden; position: relative; box-shadow: inset 0 1px 2px rgba(0,0,0,.08); }
-    .barra-pago-fill { height: 100%; border-radius: 999px; transition: width .5s ease; position: relative; overflow: hidden; }
-    #barra-pago-global { background: linear-gradient(90deg, #16a34a, #22c55e); box-shadow: 0 0 6px rgba(34,197,94,.5); }
-    .barra-pago-fill::after {
+    /* ---- RESUMO FINANCEIRO (mesmo visual do painel da assessoria) ---- */
+    .barra-pag-wrap { height: 5px; background: #dde3ea; border-radius: 999px; overflow: hidden; margin-top: .3rem; box-shadow: inset 0 1px 2px rgba(0,0,0,.08); }
+    .barra-pag-fill {
+      height: 100%; border-radius: 999px; transition: width .4s ease;
+      background: linear-gradient(90deg, #16a34a, #22c55e);
+      box-shadow: 0 0 6px rgba(34,197,94,.5);
+      position: relative;
+      overflow: hidden;
+    }
+    .barra-pag-fill::after {
       content: '';
       position: absolute; inset: 0;
       background: linear-gradient(90deg, transparent, rgba(255,255,255,.6), transparent);
       background-size: 60% 100%;
       background-repeat: no-repeat;
-      animation: barraPagoShimmer 1.8s ease-in-out infinite !important;
+      animation: barraPagShimmer 1.8s ease-in-out infinite !important;
     }
-    @keyframes barraPagoShimmer {
+    @keyframes barraPagShimmer {
       0%   { background-position: -60% 0; }
       100% { background-position: 160% 0; }
     }
+    .fin-chip {
+      display: flex; flex-direction: column; align-items: center;
+      padding: .55rem .7rem; border-radius: 10px; min-width: 70px;
+    }
+    .fin-chip-label { font-size: .55rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 700; opacity: .75; }
+    .fin-chip-val   { font-size: .85rem; font-weight: 800; line-height: 1.1; margin-top: .15rem; white-space: nowrap; }
 
     /* ACCORDION ETAPA (cores herdadas de css/estilo.css) */
     .etapa-hdr[aria-expanded="true"] { border-radius: 12px 12px 0 0; }
@@ -1398,13 +1409,6 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     @keyframes chevronBounce {
       0%, 100% { transform: translateY(0); }
       50%      { transform: translateY(4px); }
-    }
-
-    /* Dica sutil chamando atenção para o toque no status "Pendente" */
-    .dica-status-conv i.bi-hand-index-thumb-fill { display: inline-block; animation: dicaTap 1.8s ease-in-out infinite; }
-    @keyframes dicaTap {
-      0%, 100% { transform: translateY(0) rotate(0deg); }
-      50%      { transform: translateY(2px) rotate(-8deg); }
     }
 
     /* TAREFA CARD
@@ -1424,99 +1428,12 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     .btn-chk { font-size: 1.4rem; line-height: 1; transition: transform .2s; will-change: transform; }
     .btn-chk:hover { transform: scale(1.2); }
 
-    /* CONVIDADO ROW */
-    .conv-row {
-      border-left: 4px solid transparent; border-radius: 10px;
-      transition: opacity .3s, transform .3s;
-    }
-    .conv-row.conf { border-color: var(--verde); }
-    .conv-row.pend { border-color: var(--amarel); }
-
     /* SIDEBAR */
     @media (min-width: 992px) { .sidebar-sticky { position: sticky; top: 20px; } }
 
     /* BARRA MINI ETAPA */
     .barra-mini-wrap { width: 72px; height: 4px; background: rgba(255,255,255,.2); border-radius: 999px; overflow: hidden; }
     .barra-mini-fill { height: 100%; background: var(--verde); border-radius: 999px; transition: width .4s; }
-
-    /* ---- CARD DE PAGAMENTO DO FORNECEDOR ---- */
-    .forn-card {
-      background: #fff;
-      border-radius: 12px;
-      border: 1px solid #e2e8f0;
-      padding: .85rem 1rem;
-      margin-bottom: .75rem;
-      transition: box-shadow .2s;
-    }
-    .forn-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,.07); }
-    .forn-card:last-child { margin-bottom: 0; }
-
-    .forn-pago-badge {
-      font-size: .6rem;
-      font-weight: 700;
-      padding: .25em .6em;
-      border-radius: 999px;
-      text-transform: uppercase;
-      letter-spacing: .04em;
-    }
-
-    .valor-pago-input {
-      font-size: .8rem;
-      border: 1.5px solid #e2e8f0;
-      border-radius: 8px;
-      padding: .3rem .6rem;
-      width: 100%;
-      transition: border-color .2s;
-      background: #f8fafc;
-    }
-    .valor-pago-input:focus {
-      outline: none;
-      border-color: #22c55e;
-      background: #fff;
-    }
-
-    .btn-salvar-pag {
-      font-size: .72rem;
-      font-weight: 700;
-      padding: .3rem .8rem;
-      border-radius: 8px;
-      border: none;
-      background: #22c55e;
-      color: #fff;
-      cursor: pointer;
-      transition: background .2s, transform .1s;
-      white-space: nowrap;
-    }
-    .btn-salvar-pag:hover { background: #16a34a; }
-    .btn-salvar-pag:active { transform: scale(.96); }
-
-    .btn-editar-pago-noivos, .btn-cancelar-edit-noivos {
-      border: none; background: transparent; color: #94a3b8; padding: 0; font-size: .68rem;
-      cursor: pointer; transition: color .15s; line-height: 1;
-    }
-    .btn-editar-pago-noivos:hover  { color: #2563eb; }
-    .btn-cancelar-edit-noivos:hover { color: #dc2626; }
-    .btn-salvar-edit-noivos { padding: .3rem .6rem; }
-
-    /* Resumo financeiro global */
-    .fin-summary-card {
-      border-radius: 12px;
-      padding: .9rem 1rem;
-      text-align: center;
-    }
-    .fin-summary-label {
-      font-size: .6rem;
-      text-transform: uppercase;
-      letter-spacing: .07em;
-      font-weight: 700;
-      opacity: .75;
-      margin-bottom: .3rem;
-    }
-    .fin-summary-val {
-      font-size: .95rem;
-      font-weight: 800;
-      line-height: 1;
-    }
 
     /* ---- TRILHA SONORA ---- */
     .btn-musicas-sidebar {
@@ -1580,8 +1497,9 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       .cronograma-vazio-txt { font-size: .8rem; margin-top: 0 !important; }
       .cronograma-vazio-txt br { display: none; }
 
-      .fin-summary-val { font-size: .78rem; white-space: nowrap; }
-      .fin-summary-label { font-size: .55rem; }
+      .fin-chip { flex: 1 1 0; min-width: 0; padding: .5rem .4rem; }
+      .fin-chip-val { font-size: .72rem; }
+      .fin-chip-label { font-size: .5rem; }
 
       .etapa-hdr { flex-wrap: wrap; row-gap: .35rem; }
 
@@ -1697,133 +1615,6 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
           <i class="bi bi-box-arrow-right me-1"></i> Sair
         </a>
       </div>
-    </div>
-  </div>
-</div>
-
-<!-- Modal de confirmação de exclusão de convidado -->
-
-<div class="modal fade" id="modalExcluir" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered modal-sm">
-    <div class="modal-content border-0 shadow-lg rounded-4 p-3 text-center">
-      <div class="py-2">
-        <div class="mx-auto mb-3 rounded-circle bg-danger bg-opacity-10 d-flex align-items-center justify-content-center" style="width:52px;height:52px;">
-          <i class="bi bi-trash3-fill text-danger fs-4"></i>
-        </div>
-        <h6 class="fw-bold mb-1">Remover convidado?</h6>
-        <p class="text-muted small mb-0">Esta ação não pode ser desfeita.</p>
-      </div>
-      <div class="d-flex justify-content-center gap-2 mt-3">
-        <button class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
-        <button id="btnConfExcluir" class="btn btn-danger btn-sm px-4 rounded-pill fw-bold">Apagar</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Modal: Adicionar Convidado -->
-<div class="modal fade" id="modalAddConvidado" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content border-0 shadow-lg rounded-4">
-      <div class="modal-header border-0 pb-0">
-        <h6 class="modal-title fw-bold"><i class="bi bi-person-plus-fill text-primary me-2"></i>Criar Convite</h6>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-      </div>
-      <form id="form-convidado">
-        <div class="modal-body py-3">
-          <div class="row g-3 mb-3">
-            <div class="col-6">
-              <label class="form-label small fw-semibold text-secondary">Nome / Família</label>
-              <input type="text" id="conv-nome" class="form-control rounded-3" required>
-              <div class="invalid-feedback aviso-nome-duplicado-add"></div>
-            </div>
-            <div class="col-6">
-              <label class="form-label small fw-semibold text-secondary">Sobrenome</label>
-              <input type="text" id="conv-sobrenome" class="form-control rounded-3" placeholder="Opcional">
-            </div>
-          </div>
-          <div class="row g-3 mb-3">
-            <div class="col-md-6">
-              <label class="form-label small fw-semibold text-secondary">Categoria / Grupo</label>
-              <input type="text" id="conv-categoria" class="form-control rounded-3" list="lista-categorias-noivos" placeholder="Ex: Família, Amigos...">
-              <datalist id="lista-categorias-noivos">
-                <option value="Família"><option value="Amigos"><option value="Outros">
-                <?php foreach ($categorias_existentes as $catEx): if (in_array($catEx, ['Família', 'Amigos', 'Outros'])) continue; ?>
-                  <option value="<?= htmlspecialchars($catEx, ENT_QUOTES, 'UTF-8') ?>">
-                <?php endforeach; ?>
-              </datalist>
-            </div>
-            <div class="col-md-6">
-              <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" inputmode="numeric" id="conv-telefone" class="form-control rounded-3 input-telefone" placeholder="(00) 00000-0000" required>
-            </div>
-          </div>
-          <hr class="my-3 text-secondary opacity-25">
-          <div class="mb-2">
-            <label class="form-label small fw-semibold text-secondary d-block mb-1">Acompanhantes</label>
-            <div id="acomp-add-lista" class="d-flex flex-column gap-2 mb-2"></div>
-            <button type="button" id="btn-add-acomp-add" class="btn btn-outline-secondary btn-sm rounded-pill px-3">
-              <i class="bi bi-person-plus-fill me-1"></i> Adicionar acompanhante
-            </button>
-            <p class="text-muted mb-0 mt-1" style="font-size:.7rem;">Informe adulto, criança ou criança de colo para cada um — ajuda a assessoria a fechar a contagem do buffet.</p>
-          </div>
-          <p class="text-muted mb-0" style="font-size:.72rem;"><i class="bi bi-info-circle me-1"></i>O convite entra como "Pendente" — o titular e os acompanhantes confirmam presença por conta própria pelo link.</p>
-        </div>
-        <div class="modal-footer border-0 pt-0">
-          <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
-          <button type="submit" id="btn-salvar-convidado" class="btn btn-primary btn-sm px-4 rounded-pill fw-semibold">Criar Convite</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-
-<!-- Modal: Editar Convidado -->
-<div class="modal fade" id="modalEditConvidado" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content border-0 shadow-lg rounded-4">
-      <div class="modal-header border-0 pb-0">
-        <h6 class="modal-title fw-bold"><i class="bi bi-pencil-fill text-primary me-2"></i>Editar Convidado</h6>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-      </div>
-      <form id="form-edit-convidado">
-        <input type="hidden" id="econv-id">
-        <div class="modal-body py-3">
-          <div class="row g-3 mb-3">
-            <div class="col-6">
-              <label class="form-label small fw-semibold text-secondary">Nome / Família</label>
-              <input type="text" id="econv-nome" class="form-control rounded-3" required>
-              <div class="invalid-feedback aviso-nome-duplicado-edit"></div>
-            </div>
-            <div class="col-6">
-              <label class="form-label small fw-semibold text-secondary">Sobrenome</label>
-              <input type="text" id="econv-sobrenome" class="form-control rounded-3" placeholder="Opcional">
-            </div>
-          </div>
-          <div class="row g-3 mb-3">
-            <div class="col-md-6">
-              <label class="form-label small fw-semibold text-secondary">Categoria / Grupo</label>
-              <input type="text" id="econv-categoria" class="form-control rounded-3" list="lista-categorias-noivos" placeholder="Ex: Família, Amigos...">
-            </div>
-            <div class="col-md-6">
-              <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" inputmode="numeric" id="econv-telefone" class="form-control rounded-3 input-telefone" placeholder="(00) 00000-0000" required>
-            </div>
-          </div>
-          <hr class="my-3 text-secondary opacity-25">
-          <div class="mb-2">
-            <label class="form-label small fw-semibold text-secondary d-block mb-1">Acompanhantes</label>
-            <div id="acomp-edit-lista" class="d-flex flex-column gap-2 mb-2"></div>
-            <button type="button" id="btn-add-acomp-edit" class="btn btn-outline-secondary btn-sm rounded-pill px-3">
-              <i class="bi bi-person-plus-fill me-1"></i> Adicionar acompanhante
-            </button>
-          </div>
-        </div>
-        <div class="modal-footer border-0 pt-0">
-          <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
-          <button type="submit" id="btn-salvar-edit-convidado" class="btn btn-primary btn-sm px-4 rounded-pill fw-semibold">Salvar Alterações</button>
-        </div>
-      </form>
     </div>
   </div>
 </div>
@@ -2457,236 +2248,35 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
           </div>
         </button>
 
-        <div class="card shadow-sm border-0" style="border-radius: var(--radius);">
-          <div class="card-header bg-white border-0 pt-4 pb-0 text-center">
-            <h5 class="fw-bold mb-0"><i class="bi bi-wallet2 text-success me-2"></i> Financeiro & Equipe</h5>
-          </div>
-          <div class="card-body px-3 pb-4">
-
-            <div class="row g-2 mt-2 mb-3">
-              <div class="col-4">
-                <div class="fin-summary-card bg-primary bg-opacity-10 border border-primary border-opacity-20">
-                  <div class="fin-summary-label text-primary">Total</div>
-                  <div class="fin-summary-val text-primary">R$ <?= number_format($valor_cont, 2, ',', '.') ?></div>
-                </div>
+        <div class="card shadow-sm border-0 mb-3" style="border-radius: var(--radius);">
+          <div class="card-body p-3">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="fw-bold mb-0"><i class="bi bi-wallet2 text-success me-1"></i> Resumo Financeiro</h6>
+              <a href="fornecedores_evento.php" class="btn btn-sm btn-outline-dark shadow-sm">
+                <i class="bi bi-gear-fill me-1"></i> Completo
+              </a>
+            </div>
+            <div class="d-flex gap-2 mb-2">
+              <div class="fin-chip bg-primary bg-opacity-10 border border-primary border-opacity-20 flex-fill">
+                <span class="fin-chip-label text-primary">Total</span>
+                <span class="fin-chip-val text-primary">R$ <?= number_format($valor_cont, 2, ',', '.') ?></span>
               </div>
-              <div class="col-4">
-                <div class="fin-summary-card bg-success bg-opacity-10 border border-success border-opacity-20">
-                  <div class="fin-summary-label text-success">Pago</div>
-                  <div class="fin-summary-val text-success" id="total-pago-geral">R$ <?= number_format($valor_pago_total, 2, ',', '.') ?></div>
-                </div>
+              <div class="fin-chip bg-success bg-opacity-10 border border-success border-opacity-20 flex-fill">
+                <span class="fin-chip-label text-success">Pago</span>
+                <span class="fin-chip-val text-success">R$ <?= number_format($valor_pago_total, 2, ',', '.') ?></span>
               </div>
-              <div class="col-4">
-                <div class="fin-summary-card bg-danger bg-opacity-10 border border-danger border-opacity-20">
-                  <div class="fin-summary-label text-danger">A Pagar</div>
-                  <div class="fin-summary-val text-danger" id="total-rest-geral">R$ <?= number_format($valor_restante_total, 2, ',', '.') ?></div>
-                </div>
+              <div class="fin-chip bg-danger bg-opacity-10 border border-danger border-opacity-20 flex-fill">
+                <span class="fin-chip-label text-danger">A Pagar</span>
+                <span class="fin-chip-val text-danger">R$ <?= number_format(max(0, $valor_restante_total), 2, ',', '.') ?></span>
               </div>
             </div>
-
-            <div class="mb-1 d-flex justify-content-between align-items-center" style="font-size:.68rem;">
-              <span class="text-muted fw-bold" style="text-transform:uppercase;letter-spacing:.05em;">Progresso de Pagamentos</span>
-              <span class="fw-bold text-success" id="pct-pago-label"><?= $pct_pago ?>%</span>
+            <div class="d-flex justify-content-between mb-1" style="font-size:.66rem;color:#334155;font-weight:800;text-transform:uppercase;letter-spacing:.05em;">
+              <span>Progresso de Pagamentos</span>
+              <span style="color:#16a34a;"><?= $pct_pago ?>%</span>
             </div>
-            <div class="barra-pago-wrap mb-3">
-              <div class="barra-pago-fill" id="barra-pago-global" style="width:<?= $pct_pago ?>%;"></div>
+            <div class="barra-pag-wrap">
+              <div class="barra-pag-fill" style="width:<?= $pct_pago ?>%;"></div>
             </div>
-
-            <?php if ($valor_neg > 0): ?>
-            <div class="d-flex align-items-center justify-content-between bg-warning bg-opacity-10 border border-warning border-opacity-25 rounded-3 px-3 py-2 mb-3">
-              <div>
-                <div class="fw-bold" style="font-size:.72rem;text-transform:uppercase;color:#92400e;">Em Negociação</div>
-                <div class="fw-bold" style="color:#d97706;font-size:.9rem;">R$ <?= number_format($valor_neg, 2, ',', '.') ?></div>
-              </div>
-              <i class="bi bi-hourglass-split text-warning fs-4 opacity-50"></i>
-            </div>
-            <?php endif; ?>
-
-            <div class="fw-bold text-muted text-center mb-2" style="font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;">
-              <i class="bi bi-people-fill me-1"></i> Profissionais Contratados
-            </div>
-
-            <div style="max-height:420px;overflow-y:auto;" id="lista-fornecedores">
-              <?php if (empty($lista_cont)): ?>
-                <p class="text-center text-muted small py-3 mb-0">Nenhum profissional contratado ainda.</p>
-              <?php else: ?>
-                <?php foreach ($lista_cont as $f):
-                  $fid        = (int)$f['id'];
-                  $fValor     = (float)$f['valor'];
-                  $fPago      = (float)($f['valor_pago'] ?? 0);
-                  $fRest      = $fValor - $fPago;
-                  $fPct       = $fValor > 0 ? round($fPago / $fValor * 100) : 0;
-                  $fQuitado   = $fRest <= 0;
-                  $barColor   = $fQuitado ? 'bg-success' : ($fPct >= 50 ? 'bg-info' : 'bg-warning');
-                ?>
-                <div class="forn-card" id="forn-<?= $fid ?>" data-pago="<?= $fPago ?>">
-                  <div class="d-flex justify-content-between align-items-start mb-1">
-                    <div class="fw-bold text-dark" style="font-size:.83rem;line-height:1.3;">
-                      <?= htmlspecialchars($f['servico']) ?>
-                    </div>
-                    <span class="forn-pago-badge ms-2 flex-shrink-0 <?= $fQuitado ? 'bg-success text-white' : 'bg-warning text-dark' ?>">
-                      <?= $fQuitado ? '✓ Quitado' : ($fPct > 0 ? $fPct.'% pago' : 'Não iniciado') ?>
-                    </span>
-                  </div>
-
-                  <?php if (!empty($f['nome'])): ?>
-                  <div class="text-muted mb-2" style="font-size:.72rem;">
-                    <i class="bi bi-person me-1"></i><?= htmlspecialchars($f['nome']) ?>
-                  </div>
-                  <?php endif; ?>
-
-                  <div class="d-flex justify-content-between mb-2" style="font-size:.72rem;">
-                    <div>
-                      <span class="text-muted">Contrato: </span>
-                      <span class="fw-bold text-dark">R$ <?= number_format($fValor, 2, ',', '.') ?></span>
-                    </div>
-                    <div class="text-end">
-                      <span class="text-muted">Restante: </span>
-                      <span class="fw-bold <?= $fQuitado ? 'text-success' : 'text-danger' ?> forn-rest-val">
-                        R$ <?= number_format($fRest < 0 ? 0 : $fRest, 2, ',', '.') ?>
-                      </span>
-                    </div>
-                  </div>
-
-                  <div class="mb-2 d-flex align-items-center gap-1" style="font-size:.72rem;">
-                    <span class="text-muted">Pago:</span>
-                    <span class="fw-bold text-primary forn-pago-valor-txt">R$ <?= number_format($fPago, 2, ',', '.') ?></span>
-                  </div>
-
-                  <div class="barra-pago-wrap mb-2">
-                    <div class="barra-pago-fill <?= $barColor ?> forn-barra-fill" style="width:<?= $fPct ?>%;"></div>
-                  </div>
-
-                </div>
-                <?php endforeach; ?>
-              <?php endif; ?>
-            </div>
-
-          </div>
-        </div>
-
-        <div class="card shadow-sm border-0" style="border-radius: var(--radius);">
-          <div class="card-header bg-white border-0 pt-4 pb-0 text-center">
-            <h5 class="fw-bold mb-0"><i class="bi bi-people-fill text-primary me-2"></i> Convidados</h5>
-          </div>
-          <div class="card-body px-3 pb-4">
-            <div class="row g-2 mt-2 mb-3">
-              <div class="col-6">
-                <div class="bg-success rounded-3 p-3 text-white d-flex justify-content-between align-items-center shadow-sm">
-                  <div>
-                    <h4 class="mb-0 fw-bold" id="cnt-conf"><?= $total_conf ?></h4>
-                    <small class="opacity-75" style="font-size:.7rem;">Confirmados</small>
-                  </div>
-                  <i class="bi bi-check-circle fs-3 opacity-50"></i>
-                </div>
-              </div>
-              <div class="col-6">
-                <div class="bg-warning rounded-3 p-3 text-dark d-flex justify-content-between align-items-center shadow-sm">
-                  <div>
-                    <h4 class="mb-0 fw-bold" id="cnt-pend"><?= $total_pend ?></h4>
-                    <small class="opacity-75" style="font-size:.7rem;">Pendentes</small>
-                  </div>
-                  <i class="bi bi-hourglass-split fs-3 opacity-50"></i>
-                </div>
-              </div>
-            </div>
-
-            <button class="btn btn-primary btn-sm w-100 fw-bold rounded-pill shadow-sm mb-2"
-                    type="button" data-bs-toggle="modal" data-bs-target="#modalAddConvidado">
-              <i class="bi bi-person-plus-fill me-1"></i> Criar Convite
-            </button>
-
-            <span id="cnt-total" class="d-none"><?= count($lista_convidados) ?></span>
-
-            <div class="collapse mt-2" id="colapso-convidados">
-              <div class="d-flex align-items-center gap-1 justify-content-center text-muted mb-2 dica-status-conv" style="font-size:.68rem;">
-                <i class="bi bi-hand-index-thumb-fill text-warning"></i>
-                <span>Toque em
-                  <span class="badge bg-warning text-dark rounded-pill" style="font-size:.6rem;"><i class="bi bi-hourglass-split me-1"></i>Pendente</span>
-                  para confirmar a presença
-                </span>
-              </div>
-              <input type="search"
-                     id="busca-conv"
-                     class="form-control form-control-sm rounded-pill mb-2"
-                     placeholder="🔍 Filtrar convidados…">
-              <div id="lista-convidados" style="max-height:360px;overflow-y:auto;">
-                <?php if (empty($lista_convidados)): ?>
-                  <p class="text-center text-muted small py-4 mb-0">Nenhum convidado adicionado.</p>
-                <?php else: ?>
-                  <?php $grp_icons = ['Família' => 'bi-house-heart-fill', 'Amigos' => 'bi-emoji-sunglasses-fill', 'Outros' => 'bi-collection-fill'];
-                  foreach ($ordem_grupos as $grp):
-                    if (empty($conv_grupos[$grp])) continue; ?>
-                  <div class="grupo-sec" data-grupo="<?= htmlspecialchars($grp) ?>">
-                    <div class="badge bg-secondary text-white w-100 text-start px-3 py-2 rounded-2 mb-1 mt-2" style="font-size:.72rem;">
-                      <i class="bi <?= $grp_icons[$grp] ?? 'bi-tag-fill' ?> me-1"></i>
-                      <?= htmlspecialchars($grp) ?> (<span class="cnt-grp"><?= count($conv_grupos[$grp]) ?></span>)
-                    </div>
-                    <?php foreach ($conv_grupos[$grp] as $con):
-                      $cConf   = (bool)$con['confirmado'];
-                      $recusou = (!$cConf && ($con['resposta_rsvp'] ?? '') === 'recusado');
-                      $acompCon = $acompanhantes_por_principal[$con['id']] ?? []; ?>
-                    <div class="conv-row <?= $cConf ? 'conf' : 'pend' ?> p-2 mb-2 bg-light shadow-sm"
-                         data-id="<?= $con['id'] ?>"
-                         data-conf="<?= (int)$cConf ?>"
-                         data-nome="<?= strtolower(htmlspecialchars($con['nome'])) ?>">
-                      <div class="d-flex justify-content-between align-items-start mb-1">
-                        <h6 class="mb-0 small fw-bold text-dark text-truncate pe-2" title="<?= htmlspecialchars($con['nome']) ?>">
-                          <?= htmlspecialchars($con['nome']) ?>
-                        </h6>
-                        <div class="d-flex align-items-center gap-1 flex-shrink-0">
-                          <button type="button" class="btn p-0 border-0 bg-transparent btn-toggle-conv" data-id="<?= $con['id'] ?>">
-                            <span class="badge <?= $cConf ? 'bg-success' : ($recusou ? 'bg-danger' : 'bg-warning text-dark') ?> rounded-pill" style="font-size:.6rem;">
-                              <?= $cConf
-                                ? '<i class="bi bi-check-circle-fill me-1"></i> Confirmado'
-                                : ($recusou
-                                    ? '<i class="bi bi-x-circle-fill me-1"></i> Recusou'
-                                    : '<i class="bi bi-hourglass-split me-1"></i> Pendente') ?>
-                            </span>
-                          </button>
-                          <button type="button" class="btn p-0 border-0 bg-transparent text-primary btn-edit-conv"
-                                  data-id="<?= $con['id'] ?>"
-                                  data-nome="<?= htmlspecialchars(nome_convidado_sem_sobrenome($con['nome'], $con['sobrenome'] ?? null), ENT_QUOTES, 'UTF-8') ?>"
-                                  data-sobrenome="<?= htmlspecialchars($con['sobrenome'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                  data-categoria="<?= htmlspecialchars($con['categoria'], ENT_QUOTES, 'UTF-8') ?>"
-                                  data-telefone="<?= htmlspecialchars($con['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                                  data-acompanhantes-json="<?= htmlspecialchars(json_encode(array_map(fn($a) => ['id' => $a['id'], 'nome' => $a['nome'], 'faixa' => $a['faixa_etaria']], $acompCon)), ENT_QUOTES, 'UTF-8') ?>"
-                                  title="Editar">
-                            <i class="bi bi-pencil fs-6"></i>
-                          </button>
-                          <button type="button" class="btn p-0 border-0 bg-transparent text-danger btn-excluir-conv" data-id="<?= $con['id'] ?>" title="Remover">
-                            <i class="bi bi-trash fs-6"></i>
-                          </button>
-                        </div>
-                      </div>
-                      <?php if (!empty($con['telefone'])): ?>
-                      <div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.5;">
-                        <div><i class="bi bi-whatsapp me-1 text-success"></i><?= htmlspecialchars($con['telefone']) ?></div>
-                      </div>
-                      <?php endif; ?>
-                      <?php if (!empty($acompCon)): ?>
-                      <div class="d-flex flex-wrap align-items-center gap-1 mt-1">
-                        <?php foreach ($acompCon as $a):
-                            $statusA = $a['resposta_rsvp'] === 'recusado' ? 'recusado' : ($a['confirmado'] ? 'confirmado' : 'pendente');
-                            $rotuloA = str_starts_with($a['faixa_etaria'] ?? '', 'Criança de Colo') ? 'colo'
-                                     : (str_starts_with($a['faixa_etaria'] ?? '', 'Criança') ? 'criança' : 'adulto');
-                            $corA = $statusA === 'confirmado' ? 'bg-success-subtle text-success' : ($statusA === 'recusado' ? 'bg-secondary-subtle text-secondary' : 'bg-warning-subtle text-warning-emphasis');
-                            $iconeA = $statusA === 'confirmado' ? 'bi-check-circle-fill' : ($statusA === 'recusado' ? 'bi-x-circle-fill' : 'bi-hourglass-split');
-                        ?>
-                        <span class="badge rounded-pill <?= $corA ?> border" style="font-size:.62rem;font-weight:500;">
-                          <i class="bi <?= $iconeA ?> me-1"></i><?= htmlspecialchars($a['nome'], ENT_QUOTES, 'UTF-8') ?> <span class="opacity-75">(<?= $rotuloA ?>)</span>
-                        </span>
-                        <?php endforeach; ?>
-                      </div>
-                      <?php endif; ?>
-                    </div>
-                    <?php endforeach; ?>
-                  </div>
-                  <?php endforeach; ?>
-                <?php endif; ?>
-              </div>
-            </div>
-
           </div>
         </div>
 
@@ -3768,555 +3358,6 @@ document.querySelectorAll('.form-ajax-tarefa').forEach(form => {
     } catch { toast('Erro ao comentar.', 'verm'); }
     btn.innerHTML = orig;
   });
-});
-
-/* ============================================================
-   CONTROLE DE PAGAMENTO DOS FORNECEDORES
-   ============================================================ */
-let totalPagoGeralNoivos = <?= json_encode($valor_pago_total) ?>;
-const totalContratoGeralNoivos = <?= json_encode($valor_cont) ?>;
-
-function atualizarChipsGeraisNoivos() {
-  const restante = Math.max(0, totalContratoGeralNoivos - totalPagoGeralNoivos);
-  const pct      = totalContratoGeralNoivos > 0 ? Math.round(totalPagoGeralNoivos / totalContratoGeralNoivos * 100) : 0;
-
-  const elPago  = document.getElementById('total-pago-geral');
-  const elRest  = document.getElementById('total-rest-geral');
-  const elBarra = document.getElementById('barra-pago-global');
-  const elPct   = document.getElementById('pct-pago-label');
-
-  if (elPago)  elPago.textContent  = brl(totalPagoGeralNoivos);
-  if (elRest)  elRest.textContent  = brl(restante);
-  if (elBarra) elBarra.style.width = pct + '%';
-  if (elPct)   elPct.textContent   = pct + '%';
-}
-
-function atualizarCardFornecedorNoivos(card, pago, total) {
-  const rest = Math.max(0, total - pago);
-  const pct  = total > 0 ? Math.round(pago / total * 100) : 0;
-  const quit = rest <= 0;
-
-  const pagoAnterior = parseFloat(card.dataset.pago || 0);
-  totalPagoGeralNoivos += (pago - pagoAnterior);
-  card.dataset.pago = pago;
-
-  const barra  = card.querySelector('.forn-barra-fill');
-  const restEl = card.querySelector('.forn-rest-val');
-  const badge  = card.querySelector('.forn-pago-badge');
-  const pagoTxt = card.querySelector('.forn-pago-valor-txt');
-
-  if (barra) {
-    barra.style.width = pct + '%';
-    barra.className   = 'barra-pago-fill forn-barra-fill ' + (quit ? 'bg-success' : pct >= 50 ? 'bg-info' : 'bg-warning');
-  }
-  if (restEl) {
-    restEl.textContent = brl(rest);
-    restEl.className   = 'fw-bold forn-rest-val ' + (quit ? 'text-success' : 'text-danger');
-  }
-  if (badge) {
-    badge.textContent = quit ? '✓ Quitado' : (pct > 0 ? pct + '% pago' : 'Não iniciado');
-    badge.className   = 'forn-pago-badge ms-2 flex-shrink-0 ' + (quit ? 'bg-success text-white' : 'bg-warning text-dark');
-  }
-  if (pagoTxt) pagoTxt.textContent = 'R$ ' + pago.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-
-  atualizarChipsGeraisNoivos();
-}
-
-/* Somar novo pagamento ao valor já pago */
-document.querySelectorAll('.btn-add-pagamento-noivos').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    const fid   = btn.dataset.id;
-    const card  = document.getElementById('forn-' + fid);
-    const input = card.querySelector('.forn-input-add-noivos');
-    const total = parseFloat(input.dataset.total || 0);
-    const valor = parseBrl(input.value);
-
-    if (!valor || valor <= 0) { toast('Informe um valor maior que zero.', 'verm'); return; }
-
-    const orig = btn.innerHTML;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    btn.disabled  = true;
-
-    try {
-      const r = await ajax({
-        adicionar_pagamento: '1',
-        fornecedor_id:       fid,
-        valor_pago:          valor.toString(),
-      });
-
-      if (r.ok) {
-        const pago = parseFloat(r.valor_pago);
-        const quit = parseFloat(r.valor_rest) <= 0;
-        atualizarCardFornecedorNoivos(card, pago, total);
-        input.value = '';
-        toast(quit ? 'Pagamento quitado! 🎉' : 'Pagamento adicionado!', quit ? 'verde' : 'info');
-      } else {
-        toast(r.msg || 'Erro ao salvar pagamento.', 'verm');
-      }
-    } catch {
-      toast('Erro de conexão. Tente novamente.', 'verm');
-    }
-
-    btn.innerHTML = orig;
-    btn.disabled  = false;
-  });
-});
-
-/* Alternar para o modo de corrigir o valor pago */
-document.querySelectorAll('.btn-editar-pago-noivos').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const fid       = btn.dataset.id;
-    const card      = document.getElementById('forn-' + fid);
-    const addWrap   = card.querySelector('.forn-add-wrap-noivos');
-    const editWrap  = card.querySelector('.forn-edit-wrap-noivos');
-    const editInput = editWrap.querySelector('.forn-input-edit-noivos');
-    editInput.value = parseFloat(card.dataset.pago || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-    addWrap.style.display  = 'none';
-    editWrap.style.display = 'flex';
-    editInput.focus();
-    editInput.select();
-  });
-});
-
-/* Cancelar a correção */
-document.querySelectorAll('.btn-cancelar-edit-noivos').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const card = btn.closest('.forn-card');
-    card.querySelector('.forn-edit-wrap-noivos').style.display = 'none';
-    card.querySelector('.forn-add-wrap-noivos').style.display  = 'flex';
-  });
-});
-
-/* Salvar a correção (sobrescreve o valor pago) */
-document.querySelectorAll('.btn-salvar-edit-noivos').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    const fid   = btn.dataset.id;
-    const card  = document.getElementById('forn-' + fid);
-    const input = card.querySelector('.forn-input-edit-noivos');
-    const total = parseFloat(input.dataset.total || 0);
-    let   valor = parseBrl(input.value);
-
-    if (valor < 0) { toast('O valor não pode ser negativo.', 'verm'); return; }
-
-    if (valor > total) {
-      toast('Valor maior que o contrato! Ajustado para o total.', 'info');
-      valor = total;
-    }
-
-    const orig = btn.innerHTML;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    btn.disabled  = true;
-
-    try {
-      const r = await ajax({
-        atualizar_valor_pago: '1',
-        fornecedor_id:        fid,
-        valor_pago:           valor.toString(),
-      });
-
-      if (r.ok) {
-        const pago = parseFloat(r.valor_pago);
-        atualizarCardFornecedorNoivos(card, pago, total);
-        card.querySelector('.forn-edit-wrap-noivos').style.display = 'none';
-        card.querySelector('.forn-add-wrap-noivos').style.display  = 'flex';
-        toast('Valor corrigido!', 'info');
-      } else {
-        toast(r.msg || 'Erro ao salvar pagamento.', 'verm');
-      }
-    } catch {
-      toast('Erro de conexão. Tente novamente.', 'verm');
-    }
-
-    btn.innerHTML = orig;
-    btn.disabled  = false;
-  });
-});
-
-document.querySelectorAll('.forn-input-add-noivos, .forn-input-edit-noivos').forEach(input => {
-  input.addEventListener('blur', () => {
-    if (input.value.trim() === '') return;
-    const n = parseBrl(input.value);
-    if (!isNaN(n)) {
-      input.value = n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    }
-  });
-  input.addEventListener('focus', () => { input.select(); });
-});
-
-/* ============================================================
-   CONVIDADOS
-   ============================================================ */
-function deltaCntTotal(n) {
-  const e = document.getElementById('cnt-total');
-  if (e) e.textContent = +e.textContent + n;
-}
-function deltaCntStatus(conf, n) {
-  const e = document.getElementById(conf ? 'cnt-conf' : 'cnt-pend');
-  if (e) e.textContent = +e.textContent + n;
-}
-
-function bindToggleConv(btn) {
-  btn.addEventListener('click', async () => {
-    const row   = btn.closest('.conv-row');
-    const id    = btn.dataset.id;
-    const atual = +row.dataset.conf;
-    const badge = btn.querySelector('.badge');
-    const orig  = badge.innerHTML;
-    badge.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    try {
-      const r = await ajax({ toggle_convidado: '1', convidado_id: id, status_atual: atual });
-      if (r.ok) {
-        const novo = r.novo === 1;
-        row.dataset.conf = novo ? '1' : '0';
-        row.classList.toggle('conf', novo);
-        row.classList.toggle('pend', !novo);
-        badge.className = `badge ${novo ? 'bg-success' : 'bg-warning text-dark'} rounded-pill`;
-        badge.innerHTML = novo
-          ? '<i class="bi bi-check-circle-fill me-1"></i> Confirmado'
-          : '<i class="bi bi-hourglass-split me-1"></i> Pendente';
-        deltaCntStatus(novo, 1);
-        deltaCntStatus(!novo, -1);
-        toast(novo ? 'Presença confirmada!' : 'Marcado como pendente.', novo ? 'verde' : 'info');
-      }
-    } catch {
-      badge.innerHTML = orig;
-      toast('Erro ao atualizar convidado.', 'verm');
-    }
-  });
-}
-
-let pendingRow  = null;
-const modalExcl = new bootstrap.Modal(document.getElementById('modalExcluir'));
-
-function bindExcluirConv(btn) {
-  btn.addEventListener('click', () => {
-    pendingRow = btn.closest('.conv-row');
-    modalExcl.show();
-  });
-}
-
-document.getElementById('btnConfExcluir').addEventListener('click', async () => {
-  if (!pendingRow) return;
-  const row  = pendingRow;
-  const id   = row.dataset.id;
-  const conf = +row.dataset.conf;
-  pendingRow = null;
-  modalExcl.hide();
-  try {
-    const r = await ajax({ excluir_convidado_noivos: '1', convidado_id: id });
-    if (r.ok) {
-      row.style.opacity   = '0';
-      row.style.transform = 'scale(.95)';
-      setTimeout(() => {
-        const grupoEl = row.closest('.grupo-sec');
-        row.remove();
-        if (grupoEl) {
-          const cntG = grupoEl.querySelector('.cnt-grp');
-          const rows = grupoEl.querySelectorAll('.conv-row');
-          if (cntG) cntG.textContent = rows.length;
-          if (rows.length === 0) grupoEl.remove();
-        }
-        deltaCntTotal(-1);
-        deltaCntStatus(conf === 1, -1);
-      }, 310);
-      toast('Convidado removido.', 'verm');
-    }
-  } catch { toast('Erro ao remover convidado.', 'verm'); }
-});
-
-/* ---- Repetidor de acompanhantes (nome + faixa etária) ---- */
-function escapeHtmlAcomp(str) {
-  const d = document.createElement('div');
-  d.textContent = str || '';
-  return d.innerHTML;
-}
-
-function linhaAcompanhanteHtml(prefixo, dados) {
-  dados = dados || {};
-  const comId = prefixo === 'edit';
-  return '' +
-    '<div class="row g-2 align-items-center acomp-' + prefixo + '-linha">' +
-      (comId ? '<input type="hidden" name="id_acompanhante_edit[]" value="' + (dados.id || '') + '">' : '') +
-      '<div class="col-7">' +
-        '<input type="text" name="nome_acompanhante_' + (comId ? 'edit' : 'novo') + '[]" class="form-control form-control-sm campo-nome-acomp" placeholder="Nome do acompanhante" value="' + escapeHtmlAcomp(dados.nome || '') + '">' +
-      '</div>' +
-      '<div class="col-4">' +
-        '<select name="faixa_acompanhante_' + (comId ? 'edit' : 'novo') + '[]" class="form-select form-select-sm campo-faixa-acomp">' +
-          '<option value="Adulto (11+ anos)">Adulto</option>' +
-          '<option value="Criança (6-10 anos)">Criança (6-10)</option>' +
-          '<option value="Criança de Colo (0-5 anos)">Criança de colo</option>' +
-        '</select>' +
-      '</div>' +
-      '<div class="col-1 text-end">' +
-        '<button type="button" class="btn btn-outline-danger btn-sm w-100 btn-remover-acomp" title="Remover"><i class="bi bi-x-lg"></i></button>' +
-      '</div>' +
-    '</div>';
-}
-
-function adicionarLinhaAcompanhante(containerId, prefixo, dados) {
-  const container = document.getElementById(containerId);
-  container.insertAdjacentHTML('beforeend', linhaAcompanhanteHtml(prefixo, dados));
-  if (dados && dados.faixa) {
-    const linhas = container.querySelectorAll('.campo-faixa-acomp');
-    linhas[linhas.length - 1].value = dados.faixa;
-  }
-}
-
-document.getElementById('btn-add-acomp-add')?.addEventListener('click', () => {
-  adicionarLinhaAcompanhante('acomp-add-lista', 'add');
-});
-document.getElementById('btn-add-acomp-edit')?.addEventListener('click', () => {
-  adicionarLinhaAcompanhante('acomp-edit-lista', 'edit');
-});
-document.getElementById('acomp-add-lista')?.addEventListener('click', e => {
-  const btn = e.target.closest('.btn-remover-acomp');
-  if (btn) btn.closest('.acomp-add-linha').remove();
-});
-document.getElementById('acomp-edit-lista')?.addEventListener('click', e => {
-  const btn = e.target.closest('.btn-remover-acomp');
-  if (btn) btn.closest('.acomp-edit-linha').remove();
-});
-
-const modalEditConv = new bootstrap.Modal(document.getElementById('modalEditConvidado'));
-
-function bindEditConv(btn) {
-  btn.addEventListener('click', () => {
-    document.getElementById('econv-id').value        = btn.dataset.id;
-    document.getElementById('econv-nome').value       = btn.dataset.nome;
-    document.getElementById('econv-sobrenome').value  = btn.dataset.sobrenome || '';
-    document.getElementById('econv-nome').classList.remove('is-invalid');
-    document.getElementById('econv-categoria').value  = btn.dataset.categoria;
-    document.getElementById('econv-telefone').value   = formatarTelefoneBr(btn.dataset.telefone || '');
-
-    const listaEdit = document.getElementById('acomp-edit-lista');
-    listaEdit.innerHTML = '';
-    let acompanhantes = [];
-    try { acompanhantes = JSON.parse(btn.dataset.acompanhantesJson || '[]'); } catch (err) {}
-    acompanhantes.forEach(a => adicionarLinhaAcompanhante('acomp-edit-lista', 'edit', a));
-
-    modalEditConv.show();
-  });
-}
-
-function bindConvRow(row) {
-  const t = row.querySelector('.btn-toggle-conv');
-  const x = row.querySelector('.btn-excluir-conv');
-  const ed = row.querySelector('.btn-edit-conv');
-  if (ed) bindEditConv(ed);
-  if (t) bindToggleConv(t);
-  if (x) bindExcluirConv(x);
-}
-
-document.querySelectorAll('.conv-row').forEach(bindConvRow);
-
-document.getElementById('busca-conv').addEventListener('input', function () {
-  const q = this.value.toLowerCase().trim();
-  document.querySelectorAll('#lista-convidados .conv-row').forEach(row => {
-    row.style.display = (row.dataset.nome || '').includes(q) ? '' : 'none';
-  });
-  document.querySelectorAll('#lista-convidados .grupo-sec').forEach(sec => {
-    const temVisivel = [...sec.querySelectorAll('.conv-row')].some(r => r.style.display !== 'none');
-    sec.style.display = temVisivel ? '' : 'none';
-  });
-});
-
-const GRUPO_ICONS = { 'Família': 'bi-house-heart-fill', 'Amigos': 'bi-emoji-sunglasses-fill', 'Outros': 'bi-collection-fill' };
-
-function montarLinhaConvidado(r) {
-  const extrasParts = [];
-  if (r.telefone) extrasParts.push(`<div><i class="bi bi-whatsapp me-1 text-success"></i>${r.telefone}</div>`);
-  if (r.acompanhantes && r.acompanhantes.length) {
-    extrasParts.push(`<div><i class="bi bi-people me-1"></i>${r.acompanhantes.map(a => escapeHtmlAcomp(a.nome)).join(', ')}</div>`);
-  }
-  const extrasHtml = extrasParts.length
-    ? `<div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.5;">${extrasParts.join('')}</div>`
-    : '';
-
-  const conf = r.confirmado === 1;
-  return `
-    <div class="conv-row ${conf ? 'conf' : 'pend'} p-2 mb-2 bg-light shadow-sm" data-id="${r.id}" data-conf="${conf ? '1' : '0'}" data-nome="${r.nome.toLowerCase()}">
-      <div class="d-flex justify-content-between align-items-start mb-1">
-        <h6 class="mb-0 small fw-bold text-dark text-truncate pe-2" title="${r.nome}">${r.nome}</h6>
-        <div class="d-flex align-items-center gap-1 flex-shrink-0">
-          <button type="button" class="btn p-0 border-0 bg-transparent btn-toggle-conv" data-id="${r.id}">
-            <span class="badge ${conf ? 'bg-success' : 'bg-warning text-dark'} rounded-pill" style="font-size:.6rem;">${conf ? '<i class="bi bi-check-circle-fill me-1"></i> Confirmado' : '<i class="bi bi-hourglass-split me-1"></i> Pendente'}</span>
-          </button>
-          <button type="button" class="btn p-0 border-0 bg-transparent text-primary btn-edit-conv"
-                  data-id="${r.id}" data-nome="${r.nome_sem_sobrenome || r.nome}" data-sobrenome="${r.sobrenome || ''}" data-categoria="${r.categoria}" data-telefone="${r.telefone}"
-                  data-acompanhantes-json='${JSON.stringify(r.acompanhantes || [])}' title="Editar">
-            <i class="bi bi-pencil fs-6"></i>
-          </button>
-          <button type="button" class="btn p-0 border-0 bg-transparent text-danger btn-excluir-conv" data-id="${r.id}" title="Remover">
-            <i class="bi bi-trash fs-6"></i>
-          </button>
-        </div>
-      </div>
-      ${extrasHtml}
-    </div>`;
-}
-
-document.getElementById('form-convidado').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const nome = document.getElementById('conv-nome').value.trim();
-  if (!nome) return;
-
-  const btn  = document.getElementById('btn-salvar-convidado');
-  const orig = btn.innerHTML;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>...';
-  btn.disabled = true;
-
-  const nomesAcompAdd  = Array.from(document.querySelectorAll('#acomp-add-lista .campo-nome-acomp')).map(el => el.value.trim());
-  const faixasAcompAdd = Array.from(document.querySelectorAll('#acomp-add-lista .campo-faixa-acomp')).map(el => el.value);
-
-  try {
-    const r = await ajax({
-      adicionar_convidado_noivos: '1',
-      nome_convidado: nome,
-      sobrenome_convidado: document.getElementById('conv-sobrenome').value.trim(),
-      categoria_convidado: document.getElementById('conv-categoria').value.trim(),
-      telefone_convidado: document.getElementById('conv-telefone').value.trim(),
-      nome_acompanhante_novo: nomesAcompAdd,
-      faixa_acompanhante_novo: faixasAcompAdd,
-    });
-
-    if (r.ok) {
-      document.querySelector('#lista-convidados > p.text-center.text-muted')?.remove();
-
-      const cat = r.categoria || 'Outros';
-      let grupoEl = [...document.querySelectorAll('#lista-convidados .grupo-sec')].find(el => el.dataset.grupo === cat);
-      if (!grupoEl) {
-        const icone = GRUPO_ICONS[cat] || 'bi-tag-fill';
-        document.getElementById('lista-convidados').insertAdjacentHTML('beforeend', `
-          <div class="grupo-sec" data-grupo="${cat}">
-            <div class="badge bg-secondary text-white w-100 text-start px-3 py-2 rounded-2 mb-1 mt-2" style="font-size:.72rem;">
-              <i class="bi ${icone} me-1"></i> ${cat} (<span class="cnt-grp">0</span>)
-            </div>
-          </div>`);
-        grupoEl = [...document.querySelectorAll('#lista-convidados .grupo-sec')].find(el => el.dataset.grupo === cat);
-      }
-
-      grupoEl.insertAdjacentHTML('beforeend', montarLinhaConvidado(r));
-      const cntG = grupoEl.querySelector('.cnt-grp');
-      if (cntG) cntG.textContent = grupoEl.querySelectorAll('.conv-row').length;
-
-      const novaRow = grupoEl.querySelector(`.conv-row[data-id="${r.id}"]`);
-      if (novaRow) bindConvRow(novaRow);
-
-      deltaCntTotal(1);
-      deltaCntStatus(r.confirmado === 1, 1);
-
-      // Mantém o aviso de nome duplicado atualizado nesta mesma sessão, sem
-      // precisar recarregar a página (o servidor sempre valida de novo, isso
-      // é só pro aviso do navegador não ficar desatualizado).
-      CONVIDADOS_NOMES.push({ id: r.id, nome: r.nome.toLowerCase() });
-
-      document.getElementById('form-convidado').reset();
-      document.getElementById('acomp-add-lista').innerHTML = '';
-      bootstrap.Modal.getInstance(document.getElementById('modalAddConvidado'))?.hide();
-      toast('Convidado adicionado!', 'verde');
-    } else {
-      toast(r.msg || 'Erro ao salvar.', 'verm');
-    }
-  } catch {
-    toast('Erro de conexão.', 'verm');
-  }
-  btn.innerHTML = orig;
-  btn.disabled = false;
-});
-
-document.getElementById('form-edit-convidado').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const id   = document.getElementById('econv-id').value;
-  const nome = document.getElementById('econv-nome').value.trim();
-  if (!nome) return;
-
-  const btn  = document.getElementById('btn-salvar-edit-convidado');
-  const orig = btn.innerHTML;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>...';
-  btn.disabled = true;
-
-  const idsAcompEdit    = Array.from(document.querySelectorAll('#acomp-edit-lista .acomp-edit-linha input[name="id_acompanhante_edit[]"]')).map(el => el.value);
-  const nomesAcompEdit  = Array.from(document.querySelectorAll('#acomp-edit-lista .campo-nome-acomp')).map(el => el.value.trim());
-  const faixasAcompEdit = Array.from(document.querySelectorAll('#acomp-edit-lista .campo-faixa-acomp')).map(el => el.value);
-
-  try {
-    const r = await ajax({
-      editar_convidado_noivos: '1',
-      convidado_id: id,
-      nome_convidado: nome,
-      sobrenome_convidado: document.getElementById('econv-sobrenome').value.trim(),
-      categoria_convidado: document.getElementById('econv-categoria').value.trim(),
-      telefone_convidado: document.getElementById('econv-telefone').value.trim(),
-      id_acompanhante_edit: idsAcompEdit,
-      nome_acompanhante_edit: nomesAcompEdit,
-      faixa_acompanhante_edit: faixasAcompEdit,
-    });
-
-    if (r.ok) {
-      const row = document.querySelector(`.conv-row[data-id="${r.id}"]`);
-      if (row) {
-        const oldGrupoEl = row.closest('.grupo-sec');
-        const cat = r.categoria || 'Outros';
-
-        row.dataset.nome = r.nome.toLowerCase();
-        const h6 = row.querySelector('h6');
-        if (h6) { h6.textContent = r.nome; h6.title = r.nome; }
-
-        row.querySelector('.text-muted.border-top')?.remove();
-        const extrasParts = [];
-        if (r.telefone) extrasParts.push(`<div><i class="bi bi-whatsapp me-1 text-success"></i>${r.telefone}</div>`);
-        if (r.acompanhantes && r.acompanhantes.length) {
-          extrasParts.push(`<div><i class="bi bi-people me-1"></i>${r.acompanhantes.map(a => escapeHtmlAcomp(a.nome)).join(', ')}</div>`);
-        }
-        if (extrasParts.length) {
-          row.insertAdjacentHTML('beforeend', `<div class="text-muted border-top pt-1 mt-1" style="font-size:.67rem;line-height:1.5;">${extrasParts.join('')}</div>`);
-        }
-
-        const btnEdit = row.querySelector('.btn-edit-conv');
-        if (btnEdit) {
-          btnEdit.dataset.nome              = r.nome_sem_sobrenome || r.nome;
-          btnEdit.dataset.sobrenome         = r.sobrenome || '';
-          btnEdit.dataset.categoria         = cat;
-          btnEdit.dataset.telefone          = r.telefone;
-          btnEdit.dataset.acompanhantesJson = JSON.stringify(r.acompanhantes || []);
-        }
-
-        // Move para o grupo certo, se a categoria mudou
-        if (!oldGrupoEl || oldGrupoEl.dataset.grupo !== cat) {
-          let novoGrupoEl = [...document.querySelectorAll('#lista-convidados .grupo-sec')].find(el => el.dataset.grupo === cat);
-          if (!novoGrupoEl) {
-            const icone = GRUPO_ICONS[cat] || 'bi-tag-fill';
-            document.getElementById('lista-convidados').insertAdjacentHTML('beforeend', `
-              <div class="grupo-sec" data-grupo="${cat}">
-                <div class="badge bg-secondary text-white w-100 text-start px-3 py-2 rounded-2 mb-1 mt-2" style="font-size:.72rem;">
-                  <i class="bi ${icone} me-1"></i> ${cat} (<span class="cnt-grp">0</span>)
-                </div>
-              </div>`);
-            novoGrupoEl = [...document.querySelectorAll('#lista-convidados .grupo-sec')].find(el => el.dataset.grupo === cat);
-          }
-          novoGrupoEl.appendChild(row);
-          const novoCnt = novoGrupoEl.querySelector('.cnt-grp');
-          if (novoCnt) novoCnt.textContent = novoGrupoEl.querySelectorAll('.conv-row').length;
-
-          if (oldGrupoEl) {
-            const restantes = oldGrupoEl.querySelectorAll('.conv-row');
-            const oldCnt = oldGrupoEl.querySelector('.cnt-grp');
-            if (oldCnt) oldCnt.textContent = restantes.length;
-            if (restantes.length === 0) oldGrupoEl.remove();
-          }
-        }
-      }
-
-      modalEditConv.hide();
-      toast('Convidado atualizado!', 'verde');
-    } else {
-      toast(r.msg || 'Erro ao salvar.', 'verm');
-    }
-  } catch {
-    toast('Erro de conexão.', 'verm');
-  }
-  btn.innerHTML = orig;
-  btn.disabled = false;
 });
 
 /* ============================================================
