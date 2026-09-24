@@ -75,6 +75,11 @@ if (isset($mostrar['checklist'])) {
         $done = ($t['status'] === 'concluido' || $t['checado'] == 1);
         if ($done) { $prog[$e]['conc']++; $conc_g++; }
     }
+    // Etapas numéricas em ordem numérica (1, 2, ... 10); as com nome livre depois.
+    $passos_num = array_filter($passos, fn($k) => is_numeric($k), ARRAY_FILTER_USE_KEY);
+    $passos_txt = array_filter($passos, fn($k) => !is_numeric($k), ARRAY_FILTER_USE_KEY);
+    ksort($passos_num, SORT_NUMERIC);
+    $passos = $passos_num + $passos_txt;
 }
 $pct_g = $total_g > 0 ? round($conc_g / $total_g * 100) : 0;
 
