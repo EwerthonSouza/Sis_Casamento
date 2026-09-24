@@ -132,9 +132,9 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <?php include __DIR__ . '/pwa_head.inc.php'; ?>
     <title>Referências de Fornecedores - Meu Evento PRO</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=15">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="css/estilo.css?v=16">
     <style>
         .card-ref { transition: box-shadow .2s, transform .2s; }
         .card-ref:hover { box-shadow: 0 8px 20px rgba(0,0,0,.08); transform: translateY(-2px); }
@@ -378,7 +378,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 const campoBusca = document.getElementById('campoBusca');
 campoBusca.addEventListener('input', function () {

@@ -1,0 +1,34 @@
+# ============================================================
+# Cache e compressão de arquivos estáticos
+# Tudo protegido por <IfModule>: se o servidor não tiver o módulo,
+# a regra é simplesmente ignorada (nunca gera erro 500).
+# Páginas .php NÃO entram aqui — continuam sempre vindo do servidor.
+# ============================================================
+
+<IfModule mod_expires.c>
+    ExpiresActive On
+    # Imagens, ícones e fontes: mudam raramente
+    ExpiresByType image/png                "access plus 30 days"
+    ExpiresByType image/jpeg               "access plus 30 days"
+    ExpiresByType image/webp               "access plus 30 days"
+    ExpiresByType image/svg+xml            "access plus 30 days"
+    ExpiresByType image/x-icon             "access plus 30 days"
+    ExpiresByType font/woff2               "access plus 30 days"
+    ExpiresByType font/woff                "access plus 30 days"
+    # CSS/JS: 1 dia (o estilo.css já leva ?v=N — suba o N ao alterar)
+    ExpiresByType text/css                 "access plus 1 day"
+    ExpiresByType application/javascript   "access plus 1 day"
+    ExpiresByType text/javascript          "access plus 1 day"
+</IfModule>
+
+<IfModule mod_headers.c>
+    # Service worker e manifest precisam ser sempre conferidos, senão
+    # uma atualização do PWA demora a chegar em quem já instalou.
+    <FilesMatch "^(sw\.js|manifest\.json)$">
+        Header set Cache-Control "no-cache"
+    </FilesMatch>
+</IfModule>
+
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/css text/plain text/xml application/javascript text/javascript application/json image/svg+xml
+</IfModule>

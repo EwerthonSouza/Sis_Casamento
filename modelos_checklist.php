@@ -186,9 +186,9 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <?php include __DIR__ . '/pwa_head.inc.php'; ?>
     <title>Modelos de Checklist - Meu Evento PRO</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=15">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="css/estilo.css?v=16">
     <style>
         .tarefa-row { transition: background-color .15s; }
         .tarefa-row:hover { background-color: #f8f9fa; }
@@ -590,7 +590,7 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
 <?= $modais_com_html ?? '' ?>
 <?= $modais_sem_html ?? '' ?>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 // Auto-dismiss do alerta após 5 segundos
 const alerta = document.getElementById('alertaMensagem');

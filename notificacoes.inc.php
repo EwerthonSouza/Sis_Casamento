@@ -241,6 +241,61 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?strin
         }
     } catch (Exception $e) {}
 
+    // 8. Arquivos que o casal enviou nos fornecedores (prints de orçamento,
+    // comprovantes, contrato) + comprovantes que anexou a pagamentos. Tabela/
+    // colunas podem não existir ainda num deploy que nunca abriu
+    // fornecedores_evento.php — ignora silenciosamente, igual às notas acima.
+    $tipos_arquivo_forn = ['orcamento' => 'um orçamento', 'comprovante' => 'um comprovante', 'contrato' => 'um contrato', 'outro' => 'um arquivo'];
+    try {
+        $sql8 = "
+            SELECT a.id, a.fornecedor_id, a.tipo, a.criado_em AS quando, f.servico, f.evento_id, cl.nome AS evento_nome
+            FROM fornecedores_anexos a
+            INNER JOIN fornecedores_evento f ON f.id = a.fornecedor_id
+            INNER JOIN eventos e ON e.id = f.evento_id
+            INNER JOIN clientes cl ON cl.id = e.cliente_id
+            WHERE a.enviado_por = 'Noivos'
+        " . ($evento_id ? " AND f.evento_id = ?" : $filtro_modulo) . "
+            ORDER BY a.criado_em DESC LIMIT " . (int)$limite;
+        $stmt8 = $pdo->prepare($sql8);
+        $stmt8->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
+        foreach ($stmt8->fetchAll() as $r) {
+            $itens[] = [
+                'tipo'        => 'arquivo_fornecedor',
+                'chave'       => 'forn_anexo:' . $r['id'],
+                'icone'       => 'bi-paperclip text-info',
+                'evento_id'   => (int)$r['evento_id'],
+                'evento_nome' => $r['evento_nome'],
+                'texto'       => 'Noivos enviaram ' . ($tipos_arquivo_forn[$r['tipo']] ?? 'um arquivo') . ' de "' . $r['servico'] . '"',
+                'quando'      => $r['quando'],
+                'link'        => 'fornecedores_evento.php?id=' . (int)$r['evento_id'] . '&arquivos=' . (int)$r['fornecedor_id'],
+            ];
+        }
+
+        $sql9 = "
+            SELECT p.id, p.fornecedor_id, p.valor, p.comprovante_enviado_em AS quando, f.servico, f.evento_id, cl.nome AS evento_nome
+            FROM fornecedores_pagamentos p
+            INNER JOIN fornecedores_evento f ON f.id = p.fornecedor_id
+            INNER JOIN eventos e ON e.id = f.evento_id
+            INNER JOIN clientes cl ON cl.id = e.cliente_id
+            WHERE p.comprovante_enviado_por = 'Noivos' AND p.comprovante_enviado_em IS NOT NULL
+        " . ($evento_id ? " AND f.evento_id = ?" : $filtro_modulo) . "
+            ORDER BY p.comprovante_enviado_em DESC LIMIT " . (int)$limite;
+        $stmt9 = $pdo->prepare($sql9);
+        $stmt9->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
+        foreach ($stmt9->fetchAll() as $r) {
+            $itens[] = [
+                'tipo'        => 'arquivo_fornecedor',
+                'chave'       => 'forn_pgto:' . $r['id'],
+                'icone'       => 'bi-receipt text-success',
+                'evento_id'   => (int)$r['evento_id'],
+                'evento_nome' => $r['evento_nome'],
+                'texto'       => 'Noivos enviaram o comprovante de R$ ' . number_format((float)$r['valor'], 2, ',', '.') . ' de "' . $r['servico'] . '"',
+                'quando'      => $r['quando'],
+                'link'        => 'fornecedores_evento.php?id=' . (int)$r['evento_id'] . '&arquivos=' . (int)$r['fornecedor_id'],
+            ];
+        }
+    } catch (Exception $e) {}
+
     // 5. Avisos da Central (modo sino), só quando o chamador informa o admin
     // logado (painel_admin.php) — nunca em gerenciar.php/noivos.php.
     if ($avisos_central_admin_id !== null) {

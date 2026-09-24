@@ -1146,9 +1146,9 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <?php include __DIR__ . '/pwa_head.inc.php'; ?>
   <title>Gerenciar Evento - Meu Evento PRO</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css?v=15">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+  <link rel="stylesheet" href="css/estilo.css?v=16">
   <?= estilo_tema_evento($cor_modulo) ?>
   <style>
     /* ---- VARIÁVEL DE RAIO USADA EM VÁRIOS CARDS (estilo.css não a define) ---- */
@@ -1714,7 +1714,8 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
             <?php else: foreach ($notificacoes as $n): ?>
               <div class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom" style="cursor:pointer;"
                    data-chave="<?= htmlspecialchars($n['chave'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                   <?= !empty($n['nota_id']) ? 'data-nota-id="' . (int)$n['nota_id'] . '"' : '' ?>>
+                   <?= !empty($n['nota_id']) ? 'data-nota-id="' . (int)$n['nota_id'] . '"' : '' ?>
+                   <?= !empty($n['link']) ? 'data-link="' . htmlspecialchars($n['link'], ENT_QUOTES, 'UTF-8') . '"' : '' ?>>
                 <i class="bi <?= htmlspecialchars($n['icone'], ENT_QUOTES, 'UTF-8') ?> mt-1"></i>
                 <div class="flex-fill" style="min-width:0;">
                   <div class="small text-dark"><?= htmlspecialchars($n['texto'], ENT_QUOTES, 'UTF-8') ?></div>
@@ -3047,7 +3048,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 const SELF       = window.location.href;
 const CSRF_TOKEN  = <?= json_encode($csrf_token) ?>;
@@ -3081,6 +3082,11 @@ document.getElementById('lista-notificacoes')?.addEventListener('click', functio
   if (item.dataset.notaId) {
     bootstrap.Dropdown.getInstance(document.querySelector('#dropdown-notificacoes [data-bs-toggle="dropdown"]'))?.hide();
     abrirNotaNoModal(item.dataset.notaId);
+  }
+  // Notificação com destino próprio (ex: arquivo enviado num fornecedor)
+  if (item.dataset.link) {
+    window.location.href = item.dataset.link;
+    return;
   }
   item.remove();
   const badge = document.querySelector('#dropdown-notificacoes .badge');

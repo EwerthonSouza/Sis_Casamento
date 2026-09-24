@@ -126,7 +126,7 @@ não é derivável do código, só olhando o servidor de fato:
   como "sem senha" numa consulta a `mysql.user`). Tem uma cópia antiga
   (07/05/2026) de `sistema_demandas` — **irrelevante pra recuperação de
   dados**, é resquício velho, não ajuda com a perda de 25/08-10/09.
-- **Acesso SSH direto para o Claude Code**: existe uma chave dedicada
+- **Acesso SSH direto para manutenção**: existe uma chave dedicada
   (`~/.ssh/meueventopro_audit` na máquina local do usuário) adicionada em
   `~/.ssh/authorized_keys` do servidor, usada pra auditorias/manutenção
   direta sem precisar de copy-paste no console web. Revogável a qualquer

@@ -7,3 +7,6 @@ scripts/*.log
 # de cache de schema gerados por conexao.php), não código-fonte.
 /uploads/*
 !/uploads/.gitkeep
+
+# Configuração local do Docker (cada máquina tem a sua)
+.env

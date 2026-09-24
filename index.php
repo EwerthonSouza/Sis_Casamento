@@ -135,7 +135,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-<link rel="stylesheet" href="css/estilo.css?v=15">
+<link rel="stylesheet" href="css/estilo.css?v=16">
 
 <style>
 
@@ -146,7 +146,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
    se sobrar aquela faixa, ela mostra a foto em vez de um retângulo liso. */
 html{
     background-color:#6f4a2f;
-    background-image: url('img/fundo_login.webp');
+    background-image: url('img/fundo_login.jpg');
     background-repeat:no-repeat;
     background-position:center bottom;
     background-size:cover;
@@ -162,7 +162,7 @@ body{
     position:relative;
     overflow-x:hidden;
     background-color:#6f4a2f;
-    background-image: url('img/fundo_login.webp');
+    background-image: url('img/fundo_login.jpg');
     background-repeat:no-repeat;
     background-attachment:fixed;
     background-position:center;

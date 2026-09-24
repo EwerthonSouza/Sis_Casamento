@@ -963,6 +963,47 @@ try {
     }
 } catch (Exception $e) {}
 
+// Arquivos que a assessoria enviou nos fornecedores (prints de orçamento,
+// comprovantes, contrato) + comprovantes anexados a pagamentos — tabela/colunas
+// podem não existir ainda se ninguém abriu fornecedores_evento.php neste deploy.
+try {
+    $tipos_arquivo_forn = ['orcamento' => 'um orçamento', 'comprovante' => 'um comprovante', 'contrato' => 'um contrato', 'outro' => 'um arquivo'];
+    $rsArq = $pdo->prepare("
+        SELECT a.id, a.fornecedor_id, a.tipo, a.criado_em, f.servico
+        FROM fornecedores_anexos a
+        INNER JOIN fornecedores_evento f ON f.id = a.fornecedor_id
+        WHERE f.evento_id = ? AND a.enviado_por = 'Assessoria'
+        ORDER BY a.criado_em DESC LIMIT 15
+    ");
+    $rsArq->execute([$evento_id]);
+    foreach ($rsArq->fetchAll() as $a) {
+        $notificacoes[] = [
+            'tipo'          => 'arquivo_fornecedor',
+            'texto'         => 'A assessoria enviou ' . ($tipos_arquivo_forn[$a['tipo']] ?? 'um arquivo') . ' de "' . $a['servico'] . '"',
+            'link'          => 'fornecedores_evento.php?arquivos=' . (int)$a['fornecedor_id'],
+            'chave'         => 'forn_anexo:' . $a['id'],
+            'data_cadastro' => $a['criado_em'],
+        ];
+    }
+    $rsPg = $pdo->prepare("
+        SELECT p.id, p.fornecedor_id, p.valor, p.comprovante_enviado_em, f.servico
+        FROM fornecedores_pagamentos p
+        INNER JOIN fornecedores_evento f ON f.id = p.fornecedor_id
+        WHERE f.evento_id = ? AND p.comprovante_enviado_por = 'Assessoria' AND p.comprovante_enviado_em IS NOT NULL
+        ORDER BY p.comprovante_enviado_em DESC LIMIT 15
+    ");
+    $rsPg->execute([$evento_id]);
+    foreach ($rsPg->fetchAll() as $p) {
+        $notificacoes[] = [
+            'tipo'          => 'arquivo_fornecedor',
+            'texto'         => 'A assessoria enviou o comprovante de R$ ' . number_format((float)$p['valor'], 2, ',', '.') . ' de "' . $p['servico'] . '"',
+            'link'          => 'fornecedores_evento.php?arquivos=' . (int)$p['fornecedor_id'],
+            'chave'         => 'forn_pgto:' . $p['id'],
+            'data_cadastro' => $p['comprovante_enviado_em'],
+        ];
+    }
+} catch (Exception $e) {}
+
 usort($notificacoes, fn($a, $b) => strcmp($b['data_cadastro'], $a['data_cadastro']));
 $notificacoes = array_slice($notificacoes, 0, 15);
 
@@ -1084,9 +1125,9 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <?php include __DIR__ . '/pwa_head.inc.php'; ?>
   <title><?= htmlspecialchars($labels['titulo_pagina_cliente']) ?> - Meu Evento PRO</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css?v=15">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+  <link rel="stylesheet" href="css/estilo.css?v=16">
   <?= estilo_tema_evento($cor_modulo) ?>
   <style>
     :root {
@@ -2017,8 +2058,15 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               <?php else: foreach ($notificacoes as $n): $tipo = $n['tipo'] ?? 'comentario'; ?>
                 <div class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom" style="cursor:pointer;"
                      data-chave="<?= htmlspecialchars($n['chave'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                     <?= !empty($n['nota_id']) ? 'data-nota-id="' . (int)$n['nota_id'] . '"' : '' ?>>
-                  <?php if ($tipo === 'nota'): ?>
+                     <?= !empty($n['nota_id']) ? 'data-nota-id="' . (int)$n['nota_id'] . '"' : '' ?>
+                     <?= !empty($n['link']) ? 'data-link="' . htmlspecialchars($n['link'], ENT_QUOTES, 'UTF-8') . '"' : '' ?>>
+                  <?php if ($tipo === 'arquivo_fornecedor'): ?>
+                    <i class="bi bi-paperclip text-info mt-1"></i>
+                    <div class="flex-fill" style="min-width:0;">
+                      <div class="small fw-bold text-dark"><?= htmlspecialchars($n['texto'], ENT_QUOTES, 'UTF-8') ?></div>
+                      <div class="text-muted" style="font-size:.7rem;"><?= tempo_relativo($n['data_cadastro']) ?></div>
+                    </div>
+                  <?php elseif ($tipo === 'nota'): ?>
                     <i class="bi bi-journal-plus text-warning mt-1"></i>
                     <div class="flex-fill" style="min-width:0;">
                       <div class="small fw-bold text-dark">Nova nota: <?= htmlspecialchars($n['titulo_nota'], ENT_QUOTES, 'UTF-8') ?></div>
@@ -3050,7 +3098,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 /* ============================================================
    HELPERS
@@ -3519,6 +3567,11 @@ document.getElementById('lista-notificacoes')?.addEventListener('click', functio
   if (item.dataset.notaId) {
     bootstrap.Dropdown.getInstance(document.querySelector('#dropdown-notificacoes [data-bs-toggle="dropdown"]'))?.hide();
     abrirNotaNoModal(item.dataset.notaId);
+  }
+  // Notificação com destino próprio (ex: arquivo enviado num fornecedor)
+  if (item.dataset.link) {
+    window.location.href = item.dataset.link;
+    return;
   }
   item.remove();
   const lista = document.getElementById('lista-notificacoes');

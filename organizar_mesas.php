@@ -709,9 +709,9 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <?php include __DIR__ . '/pwa_head.inc.php'; ?>
   <title>Organizar Mesas — <?= htmlspecialchars($evento['nome']) ?> - Meu Evento PRO</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css?v=15">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+  <link rel="stylesheet" href="css/estilo.css?v=16">
   <?= estilo_tema_evento($cor_modulo) ?>
 
   <style>
@@ -1824,7 +1824,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 <!-- =========================================================
      SCRIPTS
      ========================================================= -->
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 
 <script>
@@ -1952,7 +1952,22 @@ window.addEventListener('afterprint', () => document.body.classList.remove('impr
     return { x, y };
   }
 
+  // O mouse/dedo dispara mais eventos do que a tela desenha (e cada um lê o
+  // layout com getBoundingClientRect logo após escrever posição, forçando
+  // recálculo). Guarda só a última posição e aplica uma vez por quadro.
+  let moverPendente = null;
   function mover(clientX, clientY) {
+    const jaAgendado = moverPendente !== null;
+    moverPendente = { clientX, clientY };
+    if (jaAgendado) return;
+    requestAnimationFrame(() => {
+      const p = moverPendente;
+      moverPendente = null;
+      if (p) moverAgora(p.clientX, p.clientY);
+    });
+  }
+
+  function moverAgora(clientX, clientY) {
     if (chipAtivo) {
       const { x, y } = posPercent(clientX, clientY);
       chipAtivo.style.left = x + '%';
@@ -2008,6 +2023,12 @@ window.addEventListener('afterprint', () => document.body.classList.remove('impr
   }
 
   async function soltar() {
+    // Aplica a última posição ainda não desenhada antes de salvar.
+    if (moverPendente) {
+      const p = moverPendente;
+      moverPendente = null;
+      moverAgora(p.clientX, p.clientY);
+    }
     if (chipAtivo) {
       const chip = chipAtivo;
       chip.classList.remove('arrastando');

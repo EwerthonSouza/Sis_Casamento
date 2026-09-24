@@ -746,9 +746,9 @@ if ($is_admin) {
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <?php include __DIR__ . '/pwa_head.inc.php'; ?>
     <title>Painel da Assessoria - Meu Evento PRO</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=15">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="css/estilo.css?v=16">
     <?= estilo_tema_evento($cor_modulo) ?>
     <style>
         .btn-abrir-modal-data { transition: filter .15s, box-shadow .15s; }
@@ -1089,6 +1089,10 @@ if ($is_admin) {
                         // Notificação de nota: leva direto pro Bloco de Notas daquele evento, já na nota certa.
                         if (!empty($n['nota_id']) && $n['evento_id']) {
                             $href .= '&abrir_nota=' . (int)$n['nota_id'];
+                        }
+                        // Notificação com destino próprio (ex: arquivo enviado num fornecedor).
+                        if (!empty($n['link'])) {
+                            $href = $n['link'];
                         }
                     ?>
                         <a href="<?= $href ?>" class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom text-decoration-none"
@@ -1981,7 +1985,7 @@ if ($is_admin) {
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/imask@7.6.1/dist/imask.min.js"></script>
 
 <script>

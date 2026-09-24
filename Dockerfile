@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install -j"$(nproc)" pdo_mysql mysqli gd zip calendar \
-    && a2enmod rewrite \
+    && a2enmod rewrite expires headers \
     && echo "date.timezone = ${TZ}" > /usr/local/etc/php/conf.d/timezone.ini \
     && { \
         echo "upload_max_filesize = 25M"; \

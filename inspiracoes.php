@@ -283,9 +283,9 @@ $fotos = $stmt_fotos->fetchAll();
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <?php include __DIR__ . '/pwa_head.inc.php'; ?>
     <title>Mural de Inspirações - <?= htmlspecialchars($evento['nome']) ?> - Meu Evento PRO</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=15">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="css/estilo.css?v=16">
     <?= estilo_tema_evento($cor_modulo) ?>
     <style>
         /* Estilização Premium para os Cards de Foto */
@@ -558,7 +558,7 @@ $fotos = $stmt_fotos->fetchAll();
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
 <script>
 /* ---- Upload de uma ou várias fotos: converte HEIC/HEIF (padrão da câmera

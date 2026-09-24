@@ -139,9 +139,12 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Selecionar Módulo - Meu Evento PRO</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=13">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/estilo.css?v=16">
     <style>
         body {
             font-family: 'Poppins', 'Inter', system-ui, sans-serif;
@@ -167,19 +170,30 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
             position: relative;
             overflow: hidden;
             text-align: center;
-            background: linear-gradient(120deg, #ffffff, #f3ecff, #e6f0ff, #fdecf7, #eef0fd, #ffffff);
-            background-size: 300% 300%;
-            animation: gradienteFluidoHub 18s ease infinite;
+            isolation: isolate;
+            background: #ffffff;
             border: 1px solid #ece9fb;
             border-radius: 24px;
             padding: 1.5rem 2rem;
             margin-bottom: 1.5rem;
             box-shadow: 0 12px 34px rgba(99,102,241,.09);
         }
+        /* Degradê "fluindo" numa camada 3x mais larga que só desliza (transform
+           roda na GPU) — animar background-position repintava o painel
+           inteiro a cada quadro, sem parar, enquanto a página estava aberta. */
+        .painel-boas-vindas::before {
+            content: '';
+            position: absolute;
+            top: 0; bottom: 0; left: 0;
+            width: 300%;
+            z-index: -1;
+            background: linear-gradient(120deg, #ffffff, #f3ecff, #e6f0ff, #fdecf7, #eef0fd, #ffffff);
+            animation: gradienteFluidoHub 18s ease-in-out infinite alternate;
+            pointer-events: none;
+        }
         @keyframes gradienteFluidoHub {
-            0%   { background-position: 0% 50%; }
-            50%  { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
+            from { transform: translate3d(0, 0, 0); }
+            to   { transform: translate3d(-66.666%, 0, 0); }
         }
         .decor-blob {
             position: absolute;
@@ -366,45 +380,68 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
         .overlay-transicao-modulo.ativa {
             pointer-events: all;
         }
+        /* Só transform/opacity são animados aqui (rodam na GPU, sem repintar a
+           tela a cada quadro). O degradê "fluindo" é uma camada 2x maior que
+           desliza com translate, em vez de animar background-position. */
         .overlay-transicao-fundo {
             position: absolute; inset: 0; z-index: 0;
-            background-image: linear-gradient(135deg, var(--cor-transicao, #6366f1), var(--cor-transicao-escura, #3730a3));
-            background-size: 220% 220%;
-            background-position: 0% 50%;
+            overflow: hidden;
             opacity: 0;
         }
+        .overlay-transicao-fundo::before {
+            content: '';
+            position: absolute;
+            top: -50%; left: -50%;
+            width: 200%; height: 200%;
+            background-image: linear-gradient(135deg, var(--cor-transicao, #6366f1), var(--cor-transicao-escura, #3730a3), var(--cor-transicao, #6366f1));
+        }
         .overlay-transicao-modulo.ativa .overlay-transicao-fundo {
-            animation: fluirGradienteTransicao 2.2s ease infinite, aparecerFundoTransicao .7s ease forwards;
-            animation-delay: 0s, 1.1s;
+            animation: aparecerFundoTransicao .8s cubic-bezier(.4, 0, .2, 1) 1s forwards;
+        }
+        .overlay-transicao-modulo.ativa .overlay-transicao-fundo::before {
+            animation: fluirGradienteTransicao 3s ease-in-out infinite alternate;
         }
         @keyframes fluirGradienteTransicao {
-            0%   { background-position: 0% 50%; }
-            50%  { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
+            from { transform: translate3d(0, 0, 0); }
+            to   { transform: translate3d(25%, 25%, 0); }
         }
         @keyframes aparecerFundoTransicao {
             from { opacity: 0; }
             to   { opacity: 1; }
         }
+        /* O ícone já nasce no tamanho FINAL (21rem = 3.5rem x 6) e é reduzido
+           pela escala; ao crescer ele só volta pro tamanho natural (scale 1).
+           Assim nunca é ampliado além do que foi desenhado — fica nítido do
+           começo ao fim, sem serrilhar. O centro dele fica sempre no ponto
+           (--origem-x/--origem-y) → (--destino-x/--destino-y). */
         .overlay-transicao-conteudo {
             position: fixed;
-            left: var(--origem-x, 50%);
-            top: var(--origem-y, 50%);
+            left: 0; top: 0;
             z-index: 2;
             color: rgba(255,255,255,.95);
-            text-shadow: 0 2px 18px rgba(0,0,0,.35);
-            font-size: 3.5rem;
+            text-shadow: 0 12px 90px rgba(0,0,0,.3);
+            font-size: 21rem;
             line-height: 1;
             opacity: 0;
-            transform: translate(0, 0) scale(.4);
+            transform: translate3d(var(--origem-x, 50vw), var(--origem-y, 50vh), 0) translate(-50%, -50%) scale(.067);
+            backface-visibility: hidden;
         }
+        .overlay-transicao-conteudo i { display: block; }
         .overlay-transicao-modulo.ativa .overlay-transicao-conteudo {
-            animation: crescerIconeTransicao 1.7s cubic-bezier(.22, .61, .36, 1) forwards;
+            animation: crescerIconeTransicao 1.8s cubic-bezier(.16, 1, .3, 1) forwards;
         }
         @keyframes crescerIconeTransicao {
-            0%   { opacity: 0; transform: translate(0, 0) scale(.4); }
-            18%  { opacity: 1; }
-            100% { opacity: 1; transform: translate(var(--desloca-x, 0px), var(--desloca-y, 0px)) scale(6); }
+            0%   { opacity: 0; transform: translate3d(var(--origem-x, 50vw), var(--origem-y, 50vh), 0) translate(-50%, -50%) scale(.067); }
+            15%  { opacity: 1; }
+            100% { opacity: 1; transform: translate3d(var(--destino-x, 50vw), var(--destino-y, 50vh), 0) translate(-50%, -50%) scale(1); }
+        }
+        /* Durante a transição, pausa as animações contínuas da página de trás
+           (degradê do painel, blobs com blur, ícones pulsando) — elas repintam
+           a cada quadro e roubam fluidez do efeito. */
+        body.transicao-modulo-ativa .painel-boas-vindas::before,
+        body.transicao-modulo-ativa .decor-blob,
+        body.transicao-modulo-ativa [class*="icone-anim-"] {
+            animation-play-state: paused;
         }
         /* Vários ícones menores subindo pela tela atrás do ícone principal,
            tipo "vários balões soltos", pra dar mais vida ao efeito, surgindo
@@ -421,21 +458,22 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
             bottom: -15%;
             color: rgba(255,255,255,.55);
             opacity: 0;
+            will-change: transform, opacity;
             animation-name: flutuarIconeExtra;
             animation-timing-function: ease-in;
             animation-iteration-count: 1;
             animation-fill-mode: forwards;
         }
         @keyframes flutuarIconeExtra {
-            0%   { opacity: 0; transform: translateY(0) rotate(0deg); }
+            0%   { opacity: 0; transform: translate3d(0, 0, 0) rotate(0deg); }
             12%  { opacity: .8; }
             80%  { opacity: .6; }
-            100% { opacity: 0; transform: translateY(-115vh) rotate(var(--giro-extra, 15deg)); }
+            100% { opacity: 0; transform: translate3d(0, -115vh, 0) rotate(var(--giro-extra, 15deg)); }
         }
         @media (prefers-reduced-motion: reduce) {
-            .overlay-transicao-fundo { transition: opacity .2s ease; animation: none !important; }
+            .overlay-transicao-fundo, .overlay-transicao-fundo::before { animation: none !important; }
             .overlay-transicao-modulo.ativa .overlay-transicao-fundo { opacity: 1; }
-            .overlay-transicao-modulo.ativa .overlay-transicao-conteudo { animation: none !important; opacity: 1; transform: scale(1); }
+            .overlay-transicao-modulo.ativa .overlay-transicao-conteudo { animation: none !important; opacity: 1; transform: translate3d(var(--destino-x, 50vw), var(--destino-y, 50vh), 0) translate(-50%, -50%) scale(.2); }
             .overlay-transicao-extra { display: none !important; }
         }
 
@@ -851,7 +889,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
     </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 // Efeito ao entrar num módulo: nasce exatamente do ponto onde o card foi
 // clicado, cobre a tela com um degradê animado na cor daquele módulo, e o
@@ -873,7 +911,6 @@ document.querySelectorAll('.card-modulo:not(.bloqueado) > a[href*="modulo="]').f
         const destino = this.getAttribute('href');
         const card = this.closest('.card-modulo');
         const overlay = document.getElementById('overlay-transicao-modulo');
-        const overlayConteudo = document.getElementById('overlay-transicao-conteudo');
         const overlayIcone = document.getElementById('overlay-transicao-icone');
         const overlayExtra = document.getElementById('overlay-transicao-extra');
         if (!overlay || !card) { window.location.href = destino; return; }
@@ -888,15 +925,13 @@ document.querySelectorAll('.card-modulo:not(.bloqueado) > a[href*="modulo="]').f
 
         overlayIcone.className = 'bi ' + classesIcone.join(' ');
 
-        // Mede o próprio ícone da transição (já com o glifo certo) e calcula
-        // o canto certo pra que o CENTRO dele nasça exatamente em cima do
-        // ícone do card clicado — daí ele sai desse ponto e viaja (translate)
-        // até o centro da tela enquanto cresce (scale), no mesmo movimento.
-        const rectIcone = overlayConteudo.getBoundingClientRect();
-        overlay.style.setProperty('--origem-x', (centroOrigemX - rectIcone.width / 2) + 'px');
-        overlay.style.setProperty('--origem-y', (centroOrigemY - rectIcone.height / 2) + 'px');
-        overlay.style.setProperty('--desloca-x', (window.innerWidth / 2 - centroOrigemX) + 'px');
-        overlay.style.setProperty('--desloca-y', (window.innerHeight / 2 - centroOrigemY) + 'px');
+        // O CSS centraliza o ícone no ponto informado (translate -50%), então
+        // basta passar o centro do ícone do card (origem) e o centro da tela
+        // (destino) — ele sai de cima do card e viaja até o meio enquanto cresce.
+        overlay.style.setProperty('--origem-x', centroOrigemX + 'px');
+        overlay.style.setProperty('--origem-y', centroOrigemY + 'px');
+        overlay.style.setProperty('--destino-x', (window.innerWidth / 2) + 'px');
+        overlay.style.setProperty('--destino-y', (window.innerHeight / 2) + 'px');
         overlay.style.setProperty('--cor-transicao', cor);
         overlay.style.setProperty('--cor-transicao-escura', escurecerCorHex(cor, -0.4));
 
@@ -925,6 +960,7 @@ document.querySelectorAll('.card-modulo:not(.bloqueado) > a[href*="modulo="]').f
             }
         }
 
+        document.body.classList.add('transicao-modulo-ativa');
         requestAnimationFrame(() => overlay.classList.add('ativa'));
         setTimeout(() => { window.location.href = destino; }, 2500);
     });
