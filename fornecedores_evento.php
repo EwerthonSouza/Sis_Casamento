@@ -273,14 +273,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $chk->execute([$id_forn, $evento_id]);
             $forn = $chk->fetch();
             if ($forn) {
-                $valor_add_real = min($valor_add, max(0.0, (float)$forn['valor'] - (float)$forn['valor_pago']));
+                $restante = max(0.0, (float)$forn['valor'] - (float)$forn['valor_pago']);
+                $valor_add_real = min($valor_add, $restante);
                 $novo_pago = (float)$forn['valor_pago'] + $valor_add_real;
                 $pdo->prepare("UPDATE fornecedores_evento SET valor_pago = ? WHERE id = ? AND evento_id = ?")->execute([$novo_pago, $id_forn, $evento_id]);
                 if ($valor_add_real > 0) {
                     $pdo->prepare("INSERT INTO fornecedores_pagamentos (fornecedor_id, valor, criado_em, comprovante_arquivo, comprovante_nome_original, comprovante_extensao) VALUES (?, ?, ?, ?, ?, ?)")
                         ->execute([$id_forn, $valor_add_real, $data_pgto, $comprovante['arquivo'] ?? null, $comprovante['nome_original'] ?? null, $comprovante['extensao'] ?? null]);
                 }
-                $_SESSION['msg_sucesso'] = "Pagamento registrado com sucesso!";
+                if ($valor_add > $restante) {
+                    $_SESSION['msg_erro'] = "O valor informado (R$ " . number_format($valor_add, 2, ',', '.')
+                        . ") ultrapassava o quanto faltava (R$ " . number_format($restante, 2, ',', '.')
+                        . "). Foi registrado apenas R$ " . number_format($valor_add_real, 2, ',', '.') . ".";
+                } else {
+                    $_SESSION['msg_sucesso'] = "Pagamento registrado com sucesso!";
+                }
             } else {
                 $_SESSION['msg_erro'] = "Fornecedor não encontrado.";
             }
@@ -360,6 +367,12 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
     <link rel="stylesheet" href="css/estilo.css?v=15">
     <?= estilo_tema_evento($cor_modulo) ?>
     <style>
+        .stat-card-forn .card-body { padding: .75rem 1rem; }
+        .stat-card-forn .rounded-circle { width: 42px; height: 42px; padding: 0 !important; display: flex; align-items: center; justify-content: center; }
+        .stat-card-forn .fs-4 { font-size: 1.1rem !important; }
+        .stat-card-forn h4 { font-size: 1.05rem; }
+        .stat-card-forn .text-uppercase { font-size: .62rem; }
+
         @media (max-width: 767.98px) {
             .stat-card-forn .card-body {
                 flex-direction: column !important;
@@ -408,7 +421,7 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
     </div>
 
     <div class="row g-2 g-md-3 mb-4">
-        <div class="col-4">
+        <div class="col-6 col-lg">
             <div class="card bg-white shadow-sm border-0 h-100 stat-card-forn">
                 <div class="card-body d-flex align-items-center">
                     <div class="bg-light rounded-circle p-3 me-3 flex-shrink-0"><i class="bi bi-cash-stack fs-4"></i></div>
@@ -419,7 +432,7 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
                 </div>
             </div>
         </div>
-        <div class="col-4">
+        <div class="col-6 col-lg">
             <div class="card bg-white shadow-sm border-0 h-100 stat-card-forn">
                 <div class="card-body d-flex align-items-center">
                     <div class="bg-light rounded-circle p-3 me-3 flex-shrink-0"><i class="bi bi-check-circle fs-4" style="color: #28a745;"></i></div>
@@ -430,7 +443,7 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
                 </div>
             </div>
         </div>
-        <div class="col-4">
+        <div class="col-6 col-lg">
             <div class="card bg-white shadow-sm border-0 h-100 stat-card-forn">
                 <div class="card-body d-flex align-items-center">
                     <div class="bg-light rounded-circle p-3 me-3 flex-shrink-0"><i class="bi bi-hourglass-split fs-4" style="color: #ffc107;"></i></div>
@@ -441,10 +454,7 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
                 </div>
             </div>
         </div>
-    </div>
-
-    <div class="row g-2 g-md-3 mb-4">
-        <div class="col-6">
+        <div class="col-6 col-lg">
             <div class="card bg-white shadow-sm border-0 h-100 stat-card-forn">
                 <div class="card-body d-flex align-items-center">
                     <div class="bg-light rounded-circle p-3 me-3 flex-shrink-0"><i class="bi bi-cash-coin fs-4" style="color: #16a34a;"></i></div>
@@ -456,7 +466,7 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
                 </div>
             </div>
         </div>
-        <div class="col-6">
+        <div class="col-6 col-lg">
             <div class="card bg-white shadow-sm border-0 h-100 stat-card-forn">
                 <div class="card-body d-flex align-items-center">
                     <div class="bg-light rounded-circle p-3 me-3 flex-shrink-0"><i class="bi bi-exclamation-circle fs-4" style="color: #dc3545;"></i></div>
@@ -726,11 +736,11 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
               <div class="row">
                   <div class="col-md-6 mb-3">
                       <label class="form-label fw-bold small">Valor Previsto (R$)</label>
-                      <input type="number" step="0.01" min="0" name="valor_fornecedor" class="form-control" placeholder="Ex: 1500.50">
+                      <input type="text" inputmode="decimal" name="valor_fornecedor" class="form-control input-moeda" placeholder="Ex: 1.500,50">
                   </div>
                   <div class="col-md-6 mb-3">
                       <label class="form-label fw-bold small">Entrada / Sinal (R$)</label>
-                      <input type="number" step="0.01" min="0" name="valor_entrada_fornecedor" class="form-control" placeholder="Opcional">
+                      <input type="text" inputmode="decimal" name="valor_entrada_fornecedor" class="form-control input-moeda" placeholder="Opcional">
                       <small class="text-muted">Valor já pago no ato do fechamento, se houver.</small>
                   </div>
               </div>
@@ -805,7 +815,7 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
               <div class="row">
                   <div class="col-md-6 mb-3">
                       <label class="form-label fw-bold small">Valor Previsto (R$)</label>
-                      <input type="number" step="0.01" min="0" name="valor_fornecedor_edit" class="form-control" value="<?= $forn['valor'] ?>">
+                      <input type="text" inputmode="decimal" name="valor_fornecedor_edit" class="form-control input-moeda" value="<?= number_format((float)$forn['valor'], 2, ',', '.') ?>">
                   </div>
                   <div class="col-md-6 mb-3">
                       <label class="form-label fw-bold small">Prazo limite de pagamento</label>
@@ -814,7 +824,7 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
               </div>
               <div class="mb-3">
                   <label class="form-label fw-bold small">Valor Pago (correção manual, R$)</label>
-                  <input type="number" step="0.01" min="0" name="valor_pago_fornecedor_edit" class="form-control" value="<?= (float)($forn['valor_pago'] ?? 0) ?>">
+                  <input type="text" inputmode="decimal" name="valor_pago_fornecedor_edit" class="form-control input-moeda" value="<?= number_format((float)($forn['valor_pago'] ?? 0), 2, ',', '.') ?>">
                   <small class="text-muted">Pra somar um novo pagamento sem apagar o que já foi registrado, use o botão "Pagamento" na lista.</small>
               </div>
           </div>
@@ -872,7 +882,8 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
         <h5 class="modal-title"><i class="bi bi-cash-coin"></i> Registrar Pagamento</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
-      <form method="POST" enctype="multipart/form-data">
+      <?php $forn_restante = max(0.0, (float)$forn['valor'] - (float)($forn['valor_pago'] ?? 0)); ?>
+      <form method="POST" enctype="multipart/form-data" class="form-registrar-pagamento" data-restante="<?= $forn_restante ?>">
           <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
           <input type="hidden" name="registrar_pagamento" value="1">
           <input type="hidden" name="id_fornecedor" value="<?= $forn['id'] ?>">
@@ -881,11 +892,13 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
                   <?= htmlspecialchars($forn['servico']) ?> — <?= htmlspecialchars($forn['nome']) ?><br>
                   Já pago: <strong>R$ <?= number_format((float)($forn['valor_pago'] ?? 0), 2, ',', '.') ?></strong>
                   de R$ <?= number_format((float)$forn['valor'], 2, ',', '.') ?>
+                  · Falta: <strong class="text-danger">R$ <?= number_format($forn_restante, 2, ',', '.') ?></strong>
               </p>
               <div class="row">
                   <div class="col-6 mb-1">
                       <label class="form-label fw-bold small">Valor deste pagamento (R$) *</label>
-                      <input type="number" step="0.01" min="0.01" name="valor_pagamento" class="form-control" placeholder="Ex: 200.00" required autofocus>
+                      <input type="text" inputmode="decimal" name="valor_pagamento" class="form-control input-moeda input-valor-pagamento" placeholder="Ex: 200,00" required autofocus>
+                      <div class="invalid-feedback aviso-valor-excede"></div>
                   </div>
                   <div class="col-6 mb-1">
                       <label class="form-label fw-bold small">Data do pagamento</label>
@@ -1004,6 +1017,84 @@ if (modalComprovanteEl) {
         document.getElementById('comprovante-preview-pdf').src = '';
     });
 }
+
+// Máscara de moeda BR (1.234,56) — formata sozinho enquanto digita, sem
+// precisar digitar o ponto/vírgula na mão.
+function moedaParaFloat(v) {
+    if (!v) return 0;
+    return parseFloat(String(v).replace(/\./g, '').replace(',', '.')) || 0;
+}
+function moedaFormatar(digitosBrutos) {
+    let digitos = digitosBrutos.replace(/\D/g, '').replace(/^0+(?=\d)/, '');
+    if (digitos === '') return '';
+    while (digitos.length < 3) digitos = '0' + digitos;
+    const centavos = digitos.slice(-2);
+    const inteiro  = digitos.slice(0, -2).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    return inteiro + ',' + centavos;
+}
+document.querySelectorAll('.input-moeda').forEach(function (input) {
+    input.addEventListener('input', function () {
+        input.value = moedaFormatar(input.value);
+    });
+});
+// Ao enviar cada form (exceto o de pagamento, que já cuida disso abaixo por
+// causa da confirmação de excesso), troca o valor mascarado (1.234,56) pelo
+// decimal puro (1234.56) que o PHP espera — sem isso, (float) do PHP lia só
+// até a primeira vírgula.
+document.querySelectorAll('form').forEach(function (form) {
+    if (form.classList.contains('form-registrar-pagamento')) return;
+    const camposMoeda = form.querySelectorAll('.input-moeda');
+    if (!camposMoeda.length) return;
+    form.addEventListener('submit', function () {
+        camposMoeda.forEach(function (input) {
+            if (input.value) input.value = moedaParaFloat(input.value).toFixed(2);
+        });
+    });
+});
+
+// Avisa quando o valor do pagamento ultrapassa o quanto ainda falta pagar —
+// o backend já limita ao valor restante (nunca deixa "valor_pago" passar de
+// "valor"), mas fazer isso silenciosamente confundia: a pessoa digitava um
+// valor e o sistema salvava outro, menor, sem avisar por quê.
+function brlPt(n) {
+    return 'R$ ' + n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+document.querySelectorAll('.form-registrar-pagamento').forEach(function (form) {
+    const restante = parseFloat(form.dataset.restante) || 0;
+    const input    = form.querySelector('.input-valor-pagamento');
+    const aviso    = form.querySelector('.aviso-valor-excede');
+    if (!input || !aviso) return;
+
+    function checarExcesso() {
+        const valor = moedaParaFloat(input.value);
+        const excede = valor > restante && restante >= 0;
+        input.classList.toggle('is-invalid', excede);
+        if (excede) {
+            aviso.textContent = 'Esse valor ultrapassa em ' + brlPt(valor - restante) + ' o quanto ainda falta (' + brlPt(restante) + ').';
+        }
+        return excede;
+    }
+
+    input.addEventListener('input', checarExcesso);
+
+    form.addEventListener('submit', function (e) {
+        if (!checarExcesso()) {
+            if (input.value) input.value = moedaParaFloat(input.value).toFixed(2);
+            return;
+        }
+        e.preventDefault();
+        const valor = moedaParaFloat(input.value);
+        const confirmado = confirm(
+            'O valor informado (' + brlPt(valor) + ') é maior que o quanto ainda falta pagar (' + brlPt(restante) + ').\n\n' +
+            'Se continuar, o pagamento será registrado apenas até completar o valor total (' + brlPt(restante) + ').\n\n' +
+            'Deseja continuar mesmo assim?'
+        );
+        if (confirmado) {
+            input.value = valor.toFixed(2);
+            form.submit();
+        }
+    });
+});
 </script>
 </body>
 </html>

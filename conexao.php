@@ -98,6 +98,33 @@ function garantir_coluna_nome_secundario_cliente(PDO $pdo): void {
     marcar_schema_verificado('coluna_nome_secundario_cliente');
 }
 
+// Modelos de checklist (checklist_modelos) eram 100% globais — um evento de
+// Aniversário importava o mesmo "Cronograma Padrão" cadastrado para
+// Casamentos. Agora cada módulo tem sua própria lista de modelos; os que já
+// existiam ficam em 'casamento' (default), os demais módulos começam vazios.
+function garantir_coluna_tipo_evento_checklist_modelos(PDO $pdo): void {
+    if (schema_ja_verificado('coluna_tipo_evento_checklist_modelos')) return;
+    try {
+        $pdo->query("SELECT tipo_evento FROM checklist_modelos LIMIT 1");
+    } catch (Exception $e) {
+        $pdo->exec("ALTER TABLE checklist_modelos ADD COLUMN tipo_evento VARCHAR(20) NOT NULL DEFAULT 'casamento'");
+    }
+    marcar_schema_verificado('coluna_tipo_evento_checklist_modelos');
+}
+
+// Sobrenome do convidado — opcional, separado do nome (primeiro nome/família)
+// pra poder diferenciar dois convidados com o mesmo primeiro nome no mesmo
+// evento (ver aviso de nome duplicado em convidados.php e páginas irmãs).
+function garantir_coluna_sobrenome_convidado(PDO $pdo): void {
+    if (schema_ja_verificado('coluna_sobrenome_convidado')) return;
+    try {
+        $pdo->query("SELECT sobrenome FROM convidados LIMIT 1");
+    } catch (Exception $e) {
+        $pdo->exec("ALTER TABLE convidados ADD COLUMN sobrenome VARCHAR(100) NULL");
+    }
+    marcar_schema_verificado('coluna_sobrenome_convidado');
+}
+
 // Pedidos de upgrade de plano: o admin/assistente clica em "Solicitar upgrade" num
 // módulo bloqueado no hub, e o pedido fica pendente até o desenvolvedor liberar
 // (ou dispensar) manualmente em dev_painel.php. Sem cobrança automática nenhuma —

@@ -112,6 +112,44 @@ if (!schema_ja_verificado('calendario_anotacoes')) {
     }
 }
 
+// Bloco de notas GERAL do painel — sem evento_id (não é do casal, é um
+// bloquinho de anotações da equipe), mas COM tipo_evento: cada módulo
+// (Casamentos/Aniversários/Corporativo/Acadêmico) tem o seu próprio bloco,
+// sem compartilhar notas entre módulos diferentes.
+if (!schema_ja_verificado('notas_gerais_painel')) {
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS notas_gerais_painel (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            titulo VARCHAR(150) NOT NULL,
+            conteudo TEXT NULL,
+            cor VARCHAR(20) NOT NULL DEFAULT 'amarelo',
+            autor VARCHAR(100) NULL,
+            tipo_evento VARCHAR(20) NOT NULL DEFAULT 'casamento',
+            criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        marcar_schema_verificado('notas_gerais_painel');
+    } catch (Exception $e) {
+        error_log("[MIGRAÇÃO notas_gerais_painel] " . $e->getMessage());
+    }
+}
+
+// Coluna tipo_evento adicionada depois de o bloco já estar em uso — instalações
+// que já passaram pelo CREATE TABLE acima (marcador já gravado) não ganham a
+// coluna nova sem este marcador próprio.
+if (!schema_ja_verificado('notas_gerais_painel_coluna_tipo_evento')) {
+    try {
+        $pdo->query("SELECT tipo_evento FROM notas_gerais_painel LIMIT 1");
+    } catch (Exception $e) {
+        try {
+            $pdo->exec("ALTER TABLE notas_gerais_painel ADD COLUMN tipo_evento VARCHAR(20) NOT NULL DEFAULT 'casamento'");
+        } catch (Exception $e2) {
+            error_log("[MIGRAÇÃO notas_gerais_painel_coluna_tipo_evento] " . $e2->getMessage());
+        }
+    }
+    marcar_schema_verificado('notas_gerais_painel_coluna_tipo_evento');
+}
+
 // ============================================================
 // 1. NAVEGAÇÃO DO CALENDÁRIO
 // ============================================================
@@ -266,6 +304,74 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $pdo->prepare("UPDATE calendario_anotacoes SET notificar = ? WHERE id = ?")->execute([$ativar ? 1 : 0, $nota_id]);
         echo json_encode(['sucesso' => true, 'notificar' => $ativar ? 1 : 0]);
+        exit;
+    }
+
+    // 2d. SALVAR / EDITAR NOTA GERAL DO PAINEL (sem evento — não é do casal —
+    // mas escopada por módulo: cada módulo tem seu próprio bloco, sem
+    // compartilhar notas com os outros módulos)
+    if (isset($_POST['salvar_nota_geral'])) {
+        validar_csrf();
+        $nota_id  = (int)($_POST['nota_id'] ?? 0);
+        $titulo   = trim($_POST['titulo_nota_geral'] ?? '');
+        $conteudo = trim($_POST['conteudo_nota_geral'] ?? '');
+        $cores_ok = ['amarelo', 'verde', 'azul', 'rosa', 'cinza'];
+        $cor      = in_array($_POST['cor_nota_geral'] ?? '', $cores_ok, true) ? $_POST['cor_nota_geral'] : 'amarelo';
+        $autor    = $_SESSION['usuario_nome'] ?? 'Equipe';
+
+        if ($titulo !== '') {
+            $novo = $nota_id === 0;
+            if ($nota_id > 0) {
+                $pdo->prepare("UPDATE notas_gerais_painel SET titulo=?, conteudo=?, cor=? WHERE id=? AND tipo_evento=?")
+                    ->execute([$titulo, $conteudo, $cor, $nota_id, $modulo_ativo]);
+            } else {
+                $pdo->prepare("INSERT INTO notas_gerais_painel (titulo, conteudo, cor, autor, tipo_evento) VALUES (?,?,?,?,?)")
+                    ->execute([$titulo, $conteudo, $cor, $autor, $modulo_ativo]);
+                $nota_id = (int)$pdo->lastInsertId();
+            }
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'ok'         => true,
+                    'id'         => $nota_id,
+                    'novo'       => $novo,
+                    'titulo'     => htmlspecialchars($titulo, ENT_QUOTES, 'UTF-8'),
+                    'conteudo'   => htmlspecialchars($conteudo, ENT_QUOTES, 'UTF-8'),
+                    'cor'        => $cor,
+                    'autor'      => htmlspecialchars($autor, ENT_QUOTES, 'UTF-8'),
+                    'atualizado' => date('d/m/Y H:i'),
+                ]);
+                exit;
+            }
+            $_SESSION['msg_sucesso'] = "Nota salva!";
+        } else {
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode(['ok' => false, 'msg' => 'Informe um título para a nota.']);
+                exit;
+            }
+            $_SESSION['msg_erro'] = "Informe um título para a nota.";
+        }
+        if (!$is_ajax) {
+            header("Location: painel_admin.php");
+            exit;
+        }
+    }
+
+    // 2e. EXCLUIR NOTA GERAL DO PAINEL
+    if (isset($_POST['excluir_nota_geral'])) {
+        validar_csrf();
+        $nota_id = (int)($_POST['nota_id'] ?? 0);
+        if ($nota_id > 0) {
+            $pdo->prepare("DELETE FROM notas_gerais_painel WHERE id = ? AND tipo_evento = ?")->execute([$nota_id, $modulo_ativo]);
+        }
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => true]);
+            exit;
+        }
+        $_SESSION['msg_sucesso'] = "Nota removida.";
+        header("Location: painel_admin.php");
         exit;
     }
 
@@ -570,6 +676,14 @@ foreach ($notas_do_mes_raw as $nota) {
     $anotacoes_do_mes[$nota['data_nota']][] = $nota;
 }
 
+// Bloco de notas geral do painel — só as notas do módulo ativo (cada módulo tem o seu).
+$lista_notas_gerais = [];
+try {
+    $stmt_notas_gerais = $pdo->prepare("SELECT * FROM notas_gerais_painel WHERE tipo_evento = ? ORDER BY atualizado_em DESC, id DESC");
+    $stmt_notas_gerais->execute([$modulo_ativo]);
+    $lista_notas_gerais = $stmt_notas_gerais->fetchAll();
+} catch (Exception $e) {}
+
 $numero_dias_mes     = (int)date('t', strtotime("$ano_atual-$mes_atual_str-01"));
 $primeiro_dia_semana = (int)date('w', strtotime("$ano_atual-$mes_atual_str-01"));
 
@@ -854,6 +968,16 @@ if ($is_admin) {
             .table-calendario td { height: 36px !important; width: 36px !important; }
             .table-calendario td span { width: 24px !important; height: 24px !important; font-size: 0.75rem; }
         }
+
+        .cor-nota-geral-radio:checked + span { transform: scale(1.3); box-shadow: 0 0 0 3px rgba(0,0,0,.18); }
+        .nota-geral-card { transition: box-shadow .15s; }
+        .nota-geral-card:hover { box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+
+        /* ---- AJUSTE DE SOBREPOSIÇÃO DOS MODAIS E FUNDOS CINZAS ---- */
+        .modal { z-index: 1055 !important; }
+        .modal-backdrop { z-index: 1050 !important; }
+        #modalConfirmar { z-index: 1075 !important; }
+        .modal-backdrop:nth-of-type(2) { z-index: 1070 !important; }
     </style>
 </head>
 <body class="bg-light">
@@ -1029,6 +1153,10 @@ if ($is_admin) {
                             <span class="bg-white bg-opacity-10 px-3 py-1 rounded-pill shadow-sm text-nowrap">
                                 <i class="bi bi-check2-circle me-1" style="color: rgba(255,255,255,.85);"></i> <strong><?= count($casamentos_realizados) ?></strong> Realizados
                             </span>
+                            <button type="button" class="btn bg-white bg-opacity-10 px-3 py-1 rounded-pill shadow-sm text-nowrap text-white border-0"
+                                    data-bs-toggle="modal" data-bs-target="#modalNotasGerais">
+                                <i class="bi bi-sticky-fill me-1" style="color: rgba(255,255,255,.85);"></i> <strong id="notas-gerais-count-badge"><?= count($lista_notas_gerais) ?></strong> Notas
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -1461,9 +1589,128 @@ if ($is_admin) {
                     </div>
                 </div>
             </div>
+
         </div>
 
     </div>
+</div>
+
+<div class="modal fade" id="modalNotasGerais" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+    <div class="modal-content border-0 shadow-lg rounded-4" style="background:#fffbf0;">
+      <div class="modal-header border-0 px-4 pt-4 pb-2" style="background:transparent;">
+        <div class="d-flex align-items-center gap-3">
+          <div class="rounded-3 d-flex align-items-center justify-content-center shadow-sm"
+               style="width:42px;height:42px;background:#fef3c7;border:1.5px solid #fcd34d;">
+            <i class="bi bi-journal-text text-warning fs-5"></i>
+          </div>
+          <div>
+            <h5 class="modal-title fw-bold mb-0 text-dark">Bloco de Notas</h5>
+            <span class="text-muted" style="font-size:.73rem;">Anotações gerais da equipe — não vinculadas a nenhum evento ou módulo</span>
+          </div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+
+      <div class="modal-body px-4 pb-4 pt-2">
+        <div class="card border-0 shadow-sm rounded-4 mb-4" id="card-form-nota-geral" style="border: 1.5px solid #fde68a !important; background:#fff;">
+          <div class="card-body p-3 p-sm-4">
+            <button type="button" class="btn d-flex align-items-center gap-2 w-100 p-0 border-0 bg-transparent text-start"
+                    data-bs-toggle="collapse" data-bs-target="#form-nota-geral-collapse" aria-expanded="false">
+              <i class="bi bi-plus-circle-fill text-warning fs-6"></i>
+              <span class="fw-bold text-dark small text-uppercase" id="form-nota-geral-label" style="letter-spacing:.06em;">Nova Nota</span>
+              <i class="bi bi-chevron-down ms-auto" id="form-nota-geral-chevron" style="color:#a16207;font-size:.75rem;"></i>
+            </button>
+            <div class="collapse" id="form-nota-geral-collapse">
+              <div class="d-flex align-items-center gap-3 mb-3 mt-3">
+                <span class="text-muted" style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;">Cor:</span>
+                <?php $cores_lbl_ng = ['amarelo'=>'#facc15','verde'=>'#86efac','azul'=>'#93c5fd','rosa'=>'#f9a8d4','cinza'=>'#cbd5e1']; ?>
+                <?php foreach ($cores_lbl_ng as $corK => $corHex): ?>
+                <label class="d-inline-flex" title="<?= ucfirst($corK) ?>">
+                  <input type="radio" name="cor_nota_geral_ui" class="d-none cor-nota-geral-radio" value="<?= $corK ?>" <?= $corK === 'amarelo' ? 'checked' : '' ?>>
+                  <span class="d-inline-block" style="width:22px;height:22px;border-radius:50%;background:<?= $corHex ?>;border:2px solid #fff;box-shadow:0 0 0 1.5px <?= $corHex ?>;cursor:pointer;"></span>
+                </label>
+                <?php endforeach; ?>
+              </div>
+              <input type="hidden" id="input-nota-geral-id" value="0">
+              <input type="text" id="input-nota-geral-titulo"
+                     class="form-control form-control-sm bg-light fw-bold mb-2"
+                     placeholder="📌  Título da nota…" maxlength="255"
+                     style="font-size:.95rem;padding:.65rem .85rem;">
+              <textarea id="input-nota-geral-conteudo" class="form-control" rows="4" placeholder="Escreva aqui a sua anotação…" style="font-size:.88rem;resize:vertical;padding:.65rem .85rem;line-height:1.7;"></textarea>
+              <div class="d-flex justify-content-between align-items-center mt-3">
+                <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-3 d-none" id="btn-cancelar-nota-geral">
+                  <i class="bi bi-x me-1"></i> Cancelar
+                </button>
+                <button type="button" class="btn btn-sm fw-bold rounded-pill px-4 shadow-sm ms-auto" id="btn-salvar-nota-geral" style="background:#facc15;color:#78350f;">
+                  <i class="bi bi-floppy me-1"></i> Salvar Nota
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="notas-gerais-lista-wrap">
+          <?php if (empty($lista_notas_gerais)): ?>
+          <div class="text-center py-5 text-muted" id="notas-gerais-vazia">
+            <i class="bi bi-journal-x fs-1 d-block mb-2" style="opacity:.25;"></i>
+            <small>Nenhuma nota ainda. Crie a primeira acima!</small>
+          </div>
+          <?php else: $total_notas_gerais = count($lista_notas_gerais); ?>
+          <div class="mb-2 d-flex align-items-center gap-2">
+            <span class="badge bg-warning text-dark rounded-pill px-3 badge-notas-gerais-cont" style="font-size:.68rem;">
+              <i class="bi bi-journals me-1"></i>
+              <span id="notas-gerais-badge-count"><?= $total_notas_gerais ?></span> nota<?= $total_notas_gerais !== 1 ? 's' : '' ?>
+            </span>
+            <span class="text-muted" style="font-size:.68rem;">· mais recentes primeiro</span>
+          </div>
+          <div class="row g-3" id="grid-notas-gerais">
+            <?php
+              $cores_bg_ng  = ['amarelo'=>'#fef08a','verde'=>'#dcfce7','azul'=>'#dbeafe','rosa'=>'#fce7f3','cinza'=>'#f1f5f9'];
+              $cores_brd_ng = ['amarelo'=>'#facc15','verde'=>'#86efac','azul'=>'#93c5fd','rosa'=>'#f9a8d4','cinza'=>'#cbd5e1'];
+              $cores_txt_ng = ['amarelo'=>'#78350f','verde'=>'#14532d','azul'=>'#1e3a8a','rosa'=>'#831843','cinza'=>'#1e293b'];
+              foreach ($lista_notas_gerais as $nota):
+                  $corN = $nota['cor'] ?? 'amarelo';
+                  $bgC  = $cores_bg_ng[$corN]  ?? '#fef08a';
+                  $brdC = $cores_brd_ng[$corN] ?? '#facc15';
+                  $txtC = $cores_txt_ng[$corN] ?? '#78350f';
+          ?>
+            <div class="col-12 col-sm-6 nota-geral-card-wrap" data-id="<?= $nota['id'] ?>">
+              <div class="card border-0 shadow-sm h-100 rounded-4 nota-geral-card" style="background:<?= $bgC ?>; border-left:4px solid <?= $brdC ?> !important;">
+                <div class="card-body p-3">
+                  <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
+                    <h6 class="fw-bold mb-0 text-truncate" style="color:<?= $txtC ?>; font-size:.85rem;"><?= htmlspecialchars($nota['titulo'], ENT_QUOTES, 'UTF-8') ?></h6>
+                    <div class="d-flex gap-1 flex-shrink-0">
+                      <button type="button" class="btn p-1 border-0 bg-transparent btn-editar-nota-geral"
+                              data-id="<?= $nota['id'] ?>"
+                              data-titulo="<?= htmlspecialchars($nota['titulo'], ENT_QUOTES, 'UTF-8') ?>"
+                              data-conteudo="<?= htmlspecialchars($nota['conteudo'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                              data-cor="<?= htmlspecialchars($corN, ENT_QUOTES, 'UTF-8') ?>" title="Editar nota">
+                        <i class="bi bi-pencil-fill" style="font-size:.72rem; color:<?= $txtC ?>; opacity:.55;"></i>
+                      </button>
+                      <button type="button" class="btn p-1 border-0 bg-transparent btn-excluir-nota-geral"
+                              data-id="<?= $nota['id'] ?>" title="Excluir nota">
+                        <i class="bi bi-trash-fill" style="font-size:.72rem; color:#ef4444; opacity:.6;"></i>
+                      </button>
+                    </div>
+                  </div>
+                  <?php if (!empty($nota['conteudo'])): ?>
+                  <p class="mb-1" style="color:<?= $txtC ?>; opacity:.85; white-space:pre-wrap; font-size:.78rem; line-height:1.5;"><?= htmlspecialchars($nota['conteudo'], ENT_QUOTES, 'UTF-8') ?></p>
+                  <?php endif; ?>
+                  <div class="d-flex justify-content-between align-items-center mt-2 pt-2 border-top" style="border-color:<?= $brdC ?> !important;">
+                    <span style="font-size:.62rem; color:<?= $txtC ?>; opacity:.55;"><?= htmlspecialchars($nota['autor'] ?? 'Equipe', ENT_QUOTES, 'UTF-8') ?></span>
+                    <span style="font-size:.6rem; color:<?= $txtC ?>; opacity:.5;"><i class="bi bi-clock me-1"></i><?= date('d/m/Y H:i', strtotime($nota['atualizado_em'])) ?></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          <?php endforeach; ?>
+          </div>
+          <?php endif; ?>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="modal fade" id="modalNovoCasamento" tabindex="-1" aria-labelledby="modalNovoCasamentoLabel" aria-hidden="true">
@@ -1712,6 +1959,26 @@ if ($is_admin) {
             </div>
         </div>
     </div>
+</div>
+
+<div id="toast-wrap"></div>
+
+<div class="modal fade" id="modalConfirmar" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content border-0 shadow-lg rounded-4 p-3 text-center">
+      <div class="py-2">
+        <div id="confirm-icon-box" class="mx-auto mb-3 rounded-circle bg-danger bg-opacity-10 d-flex align-items-center justify-content-center" style="width:52px;height:52px;">
+          <i id="confirm-icon" class="bi bi-exclamation-triangle-fill text-danger fs-4"></i>
+        </div>
+        <h6 id="confirm-title" class="fw-bold mb-1">Tem certeza?</h6>
+        <p id="confirm-msg" class="text-muted small mb-0">Esta ação não pode ser desfeita.</p>
+      </div>
+      <div class="d-flex justify-content-center gap-2 mt-3">
+        <button class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
+        <button id="btn-confirmar" class="btn btn-danger btn-sm px-4 rounded-pill fw-bold">Confirmar</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
@@ -2322,6 +2589,232 @@ document.addEventListener('DOMContentLoaded', function () {
     modal.show();
 });
 <?php endif; ?>
+
+/* ---- INFRAESTRUTURA AJAX/TOAST/CONFIRMAÇÃO (mesmo padrão do Bloco de Notas do cliente em gerenciar.php) ---- */
+const SELF       = window.location.href;
+const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;
+
+function toast(msg, tipo = 'verde') {
+    const wrap = document.getElementById('toast-wrap');
+    const el   = document.createElement('div');
+    el.className = `toast-item ${tipo}`;
+    const icons = { verde:'check-circle-fill', verm:'exclamation-circle-fill', info:'info-circle-fill', warn:'exclamation-triangle-fill' };
+    el.innerHTML = `<i class="bi bi-${icons[tipo] || 'check-circle-fill'}"></i> ${msg}`;
+    wrap.appendChild(el);
+    setTimeout(() => {
+        el.style.transition = 'opacity .3s, transform .3s';
+        el.style.opacity    = '0';
+        el.style.transform  = 'translateX(24px)';
+        setTimeout(() => el.remove(), 320);
+    }, 2800);
+}
+
+async function ajax(obj) {
+    obj.csrf_token = CSRF_TOKEN;
+    const fd = new FormData();
+    Object.entries(obj).forEach(([k, v]) => {
+        if (Array.isArray(v)) { v.forEach(item => fd.append(k + '[]', item)); }
+        else { fd.append(k, v); }
+    });
+    const r = await fetch(SELF, { method: 'POST', body: fd, headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    return r.json();
+}
+
+const confirmModal = new bootstrap.Modal(document.getElementById('modalConfirmar'));
+let _confirmAction = null;
+function showConfirm(titulo, msg, onConfirm, opts = {}) {
+    document.getElementById('confirm-title').textContent = titulo;
+    document.getElementById('confirm-msg').textContent   = msg;
+    const box = document.getElementById('confirm-icon-box');
+    box.className = `mx-auto mb-3 rounded-circle d-flex align-items-center justify-content-center ${opts.iconBg || 'bg-danger bg-opacity-10'}`;
+    box.style.cssText = 'width:52px;height:52px;';
+    document.getElementById('confirm-icon').className = opts.icon || 'bi bi-exclamation-triangle-fill text-danger fs-4';
+    const btn = document.getElementById('btn-confirmar');
+    btn.className   = `btn btn-sm px-4 rounded-pill fw-bold ${opts.btnClass || 'btn-danger'}`;
+    btn.textContent = opts.btnText || 'Confirmar';
+    _confirmAction  = onConfirm;
+    confirmModal.show();
+}
+document.getElementById('btn-confirmar').addEventListener('click', () => {
+    if (_confirmAction) { _confirmAction(); _confirmAction = null; }
+    confirmModal.hide();
+});
+
+/* ---- BLOCO DE NOTAS GERAL DO PAINEL (mesmo padrão do Bloco de Notas dentro de cada cliente) ---- */
+const NOTAS_GERAIS_CORES_BG  = { amarelo:'#fef08a', verde:'#dcfce7', azul:'#dbeafe', rosa:'#fce7f3', cinza:'#f1f5f9' };
+const NOTAS_GERAIS_CORES_BRD = { amarelo:'#facc15', verde:'#86efac', azul:'#93c5fd', rosa:'#f9a8d4', cinza:'#cbd5e1' };
+const NOTAS_GERAIS_CORES_TXT = { amarelo:'#78350f', verde:'#14532d', azul:'#1e3a8a', rosa:'#831843', cinza:'#1e293b' };
+
+function notaGeralCorSelecionada() {
+    return document.querySelector('.cor-nota-geral-radio:checked')?.value || 'amarelo';
+}
+
+function resetarFormNotaGeral() {
+    document.getElementById('input-nota-geral-id').value = '0';
+    document.getElementById('input-nota-geral-titulo').value = '';
+    document.getElementById('input-nota-geral-conteudo').value = '';
+    const rd = document.querySelector('.cor-nota-geral-radio[value="amarelo"]');
+    if (rd) rd.checked = true;
+    document.getElementById('form-nota-geral-label').textContent = 'Nova Nota';
+    document.getElementById('btn-cancelar-nota-geral')?.classList.add('d-none');
+    bootstrap.Collapse.getOrCreateInstance(document.getElementById('form-nota-geral-collapse'), { toggle: false }).hide();
+}
+
+function atualizarContadoresNotasGerais() {
+    const total   = document.querySelectorAll('.nota-geral-card-wrap').length;
+    const sufixo  = total !== 1 ? 's' : '';
+    const txt     = total + ' nota' + sufixo;
+
+    const badgeTopo = document.getElementById('notas-gerais-count-badge');
+    if (badgeTopo) badgeTopo.textContent = total;
+
+    const contBadge = document.querySelector('.badge-notas-gerais-cont');
+    if (contBadge) contBadge.innerHTML = `<i class="bi bi-journals me-1"></i>${txt}`;
+}
+
+function notaGeralHtmlCard(r, cor) {
+    const bg  = NOTAS_GERAIS_CORES_BG[cor]  || '#fef08a';
+    const brd = NOTAS_GERAIS_CORES_BRD[cor] || '#facc15';
+    const txt = NOTAS_GERAIS_CORES_TXT[cor] || '#78350f';
+    const conteudoHtml = r.conteudo
+        ? `<p class="mb-1" style="color:${txt};opacity:.85;white-space:pre-wrap;font-size:.78rem;line-height:1.5;">${r.conteudo}</p>`
+        : '';
+    return `
+    <div class="col-12 col-sm-6 nota-geral-card-wrap" data-id="${r.id}">
+      <div class="card border-0 shadow-sm h-100 rounded-4 nota-geral-card" style="background:${bg};border-left:4px solid ${brd}!important;">
+        <div class="card-body p-3">
+          <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
+            <h6 class="fw-bold mb-0 text-truncate" style="color:${txt};font-size:.85rem;">${r.titulo}</h6>
+            <div class="d-flex gap-1 flex-shrink-0">
+              <button type="button" class="btn p-1 border-0 bg-transparent btn-editar-nota-geral"
+                      data-id="${r.id}" data-titulo="${r.titulo}" data-conteudo="${r.conteudo}" data-cor="${cor}" title="Editar nota">
+                <i class="bi bi-pencil-fill" style="font-size:.72rem;color:${txt};opacity:.55;"></i>
+              </button>
+              <button type="button" class="btn p-1 border-0 bg-transparent btn-excluir-nota-geral"
+                      data-id="${r.id}" title="Excluir nota">
+                <i class="bi bi-trash-fill" style="font-size:.72rem;color:#ef4444;opacity:.6;"></i>
+              </button>
+            </div>
+          </div>
+          ${conteudoHtml}
+          <div class="d-flex justify-content-between align-items-center mt-2 pt-2 border-top" style="border-color:${brd}!important;">
+            <span style="font-size:.62rem;color:${txt};opacity:.55;">${r.autor}</span>
+            <span style="font-size:.6rem;color:${txt};opacity:.5;"><i class="bi bi-clock me-1"></i>${r.atualizado}</span>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+document.getElementById('form-nota-geral-collapse')?.addEventListener('show.bs.collapse', () => {
+    document.getElementById('form-nota-geral-chevron')?.classList.replace('bi-chevron-down', 'bi-chevron-up');
+});
+document.getElementById('form-nota-geral-collapse')?.addEventListener('hide.bs.collapse', () => {
+    document.getElementById('form-nota-geral-chevron')?.classList.replace('bi-chevron-up', 'bi-chevron-down');
+});
+
+document.getElementById('btn-salvar-nota-geral')?.addEventListener('click', async () => {
+    const id       = +(document.getElementById('input-nota-geral-id').value || 0);
+    const titulo   = document.getElementById('input-nota-geral-titulo').value.trim();
+    const conteudo = document.getElementById('input-nota-geral-conteudo').value.trim();
+    const cor      = notaGeralCorSelecionada();
+    if (!titulo) { toast('Informe o título da nota.', 'warn'); return; }
+    const btn  = document.getElementById('btn-salvar-nota-geral');
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Salvando…';
+    btn.disabled  = true;
+    try {
+        const r = await ajax({ salvar_nota_geral: '1', nota_id: id, titulo_nota_geral: titulo, conteudo_nota_geral: conteudo, cor_nota_geral: cor });
+        if (r.ok) {
+            document.getElementById('notas-gerais-vazia')?.remove();
+            let grid = document.getElementById('grid-notas-gerais');
+            if (!grid) {
+                const wrap = document.getElementById('notas-gerais-lista-wrap');
+                wrap.innerHTML = `
+                  <div class="mb-2 d-flex align-items-center gap-2">
+                    <span class="badge bg-warning text-dark rounded-pill px-3 badge-notas-gerais-cont" style="font-size:.68rem;">
+                      <i class="bi bi-journals me-1"></i>0 notas
+                    </span>
+                    <span class="text-muted" style="font-size:.68rem;">· mais recentes primeiro</span>
+                  </div>
+                  <div class="row g-3" id="grid-notas-gerais"></div>`;
+                grid = document.getElementById('grid-notas-gerais');
+            }
+            const html = notaGeralHtmlCard(r, cor);
+            if (r.novo) { grid.insertAdjacentHTML('afterbegin', html); }
+            else {
+                const antigo = grid.querySelector(`.nota-geral-card-wrap[data-id="${r.id}"]`);
+                if (antigo) {
+                    const temp = document.createElement('div');
+                    temp.innerHTML = html;
+                    antigo.replaceWith(temp.firstElementChild);
+                }
+            }
+            bindBotoesNotaGeral();
+            resetarFormNotaGeral();
+            atualizarContadoresNotasGerais();
+            toast(r.novo ? 'Nota criada! 📝' : 'Nota atualizada! ✏️', 'verde');
+        } else { toast(r.msg || 'Erro ao salvar nota.', 'verm'); }
+    } catch { toast('Erro de conexão. Tente novamente.', 'verm'); }
+    btn.innerHTML = orig;
+    btn.disabled  = false;
+});
+
+document.getElementById('btn-cancelar-nota-geral')?.addEventListener('click', resetarFormNotaGeral);
+
+function bindBotoesNotaGeral() {
+    document.querySelectorAll('.btn-editar-nota-geral').forEach(btn => {
+        btn.onclick = () => {
+            document.getElementById('input-nota-geral-id').value = btn.dataset.id;
+            document.getElementById('input-nota-geral-titulo').value = btn.dataset.titulo;
+            document.getElementById('input-nota-geral-conteudo').value = btn.dataset.conteudo;
+            const rd = document.querySelector(`.cor-nota-geral-radio[value="${btn.dataset.cor}"]`);
+            if (rd) rd.checked = true;
+            document.getElementById('form-nota-geral-label').textContent = '✏️ Editando Nota';
+            document.getElementById('btn-cancelar-nota-geral')?.classList.remove('d-none');
+            bootstrap.Collapse.getOrCreateInstance(document.getElementById('form-nota-geral-collapse'), { toggle: false }).show();
+            document.getElementById('card-form-nota-geral').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            setTimeout(() => document.getElementById('input-nota-geral-titulo').focus(), 350);
+        };
+    });
+    document.querySelectorAll('.btn-excluir-nota-geral').forEach(btn => {
+        btn.onclick = () => {
+            const id   = btn.dataset.id;
+            const wrap = btn.closest('.nota-geral-card-wrap');
+            showConfirm(
+                'Excluir esta nota?',
+                'Esta ação não pode ser desfeita.',
+                async () => {
+                    try {
+                        const r = await ajax({ excluir_nota_geral: '1', nota_id: id });
+                        if (r.ok) {
+                            wrap.style.transition = 'opacity .25s, transform .25s';
+                            wrap.style.opacity    = '0';
+                            wrap.style.transform  = 'scale(.92)';
+                            setTimeout(() => {
+                                wrap.remove();
+                                const grid = document.getElementById('grid-notas-gerais');
+                                if (grid && !grid.querySelector('.nota-geral-card-wrap')) {
+                                    document.getElementById('notas-gerais-lista-wrap').innerHTML =
+                                        `<div class="text-center py-5 text-muted" id="notas-gerais-vazia">
+                                          <i class="bi bi-journal-x fs-1 d-block mb-2" style="opacity:.25;"></i>
+                                          <small>Nenhuma nota ainda. Crie a primeira acima!</small>
+                                        </div>`;
+                                }
+                                atualizarContadoresNotasGerais();
+                            }, 280);
+                            toast('Nota excluída.', 'verm');
+                        }
+                    } catch { toast('Erro ao excluir nota.', 'verm'); }
+                },
+                { icon: 'bi bi-journal-x text-danger fs-4', btnText: 'Excluir Nota' }
+            );
+        };
+    });
+}
+
+bindBotoesNotaGeral();
+document.getElementById('modalNotasGerais')?.addEventListener('hidden.bs.modal', resetarFormNotaGeral);
 </script>
 
 <?php if ($avisoPopupCentral): ?>

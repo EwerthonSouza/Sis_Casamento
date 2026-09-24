@@ -13,7 +13,22 @@ require_once 'conexao.php';
 require_once 'modulos_evento.inc.php';
 garantir_coluna_tipo_evento($pdo);
 garantir_tabela_modulos_config($pdo);
-$cor_modulo = cor_modulo_evento($pdo, $_SESSION['modulo_ativo'] ?? null);
+garantir_tabela_modulos_liberados($pdo);
+garantir_coluna_tipo_evento_checklist_modelos($pdo);
+
+// Módulo ativo: cada módulo tem sua própria lista de modelos de checklist,
+// sem compartilhar com os outros (mesma trava usada em painel_admin.php).
+if (!modulo_evento_valido($_SESSION['modulo_ativo'] ?? null)) {
+    header("Location: hub_modulos.php");
+    exit;
+}
+if (!in_array($_SESSION['modulo_ativo'], modulos_liberados_sessao($pdo), true)) {
+    header("Location: hub_modulos.php");
+    exit;
+}
+$modulo_ativo = $_SESSION['modulo_ativo'];
+$labels       = labels_modulo_evento($modulo_ativo);
+$cor_modulo   = cor_modulo_evento($pdo, $modulo_ativo);
 
 /* ============================================================
    CSRF TOKEN
@@ -47,8 +62,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $descricao   = trim($_POST['descricao']);
 
         if (!empty($tipo_padrao) && $etapa > 0 && !empty($tarefa)) {
-            $stmt = $pdo->prepare("INSERT INTO checklist_modelos (tipo_padrao, etapa, tarefa, descricao) VALUES (?, ?, ?, ?)");
-            if ($stmt->execute([$tipo_padrao, $etapa, $tarefa, $descricao])) {
+            $stmt = $pdo->prepare("INSERT INTO checklist_modelos (tipo_padrao, etapa, tarefa, descricao, tipo_evento) VALUES (?, ?, ?, ?, ?)");
+            if ($stmt->execute([$tipo_padrao, $etapa, $tarefa, $descricao, $modulo_ativo])) {
                 $_SESSION['mensagem'] = "Tarefa <strong>" . htmlspecialchars($tarefa) . "</strong> adicionada com sucesso!";
                 $_SESSION['tipo_msg'] = "success";
                 $_SESSION['aba_ativa'] = $tipo_padrao;
@@ -74,8 +89,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $descricao   = trim($_POST['descricao_edit']);
 
         if (!empty($tipo_padrao) && $etapa > 0 && !empty($tarefa)) {
-            $stmt = $pdo->prepare("UPDATE checklist_modelos SET tipo_padrao = ?, etapa = ?, tarefa = ?, descricao = ? WHERE id = ?");
-            if ($stmt->execute([$tipo_padrao, $etapa, $tarefa, $descricao, $id_editar])) {
+            $stmt = $pdo->prepare("UPDATE checklist_modelos SET tipo_padrao = ?, etapa = ?, tarefa = ?, descricao = ? WHERE id = ? AND tipo_evento = ?");
+            if ($stmt->execute([$tipo_padrao, $etapa, $tarefa, $descricao, $id_editar, $modulo_ativo])) {
                 $_SESSION['mensagem'] = "Tarefa atualizada com sucesso!";
                 $_SESSION['tipo_msg'] = "success";
                 $_SESSION['aba_ativa'] = $tipo_padrao;
@@ -96,8 +111,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['excluir_modelo'])) {
         $id_excluir = (int) $_POST['id_excluir'];
         $aba_retorno = trim($_POST['aba_retorno'] ?? '');
-        $stmt = $pdo->prepare("DELETE FROM checklist_modelos WHERE id = ?");
-        if ($stmt->execute([$id_excluir])) {
+        $stmt = $pdo->prepare("DELETE FROM checklist_modelos WHERE id = ? AND tipo_evento = ?");
+        if ($stmt->execute([$id_excluir, $modulo_ativo])) {
             $_SESSION['mensagem'] = "Tarefa excluída com sucesso!";
             $_SESSION['tipo_msg'] = "success";
             $_SESSION['aba_ativa'] = $aba_retorno;
@@ -112,13 +127,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // 4. DUPLICAR MODELO
     if (isset($_POST['duplicar_modelo'])) {
         $id_duplicar = (int) $_POST['id_duplicar'];
-        $stmt = $pdo->prepare("SELECT * FROM checklist_modelos WHERE id = ?");
-        $stmt->execute([$id_duplicar]);
+        $stmt = $pdo->prepare("SELECT * FROM checklist_modelos WHERE id = ? AND tipo_evento = ?");
+        $stmt->execute([$id_duplicar, $modulo_ativo]);
         $original = $stmt->fetch();
 
         if ($original) {
-            $stmt2 = $pdo->prepare("INSERT INTO checklist_modelos (tipo_padrao, etapa, tarefa, descricao) VALUES (?, ?, ?, ?)");
-            if ($stmt2->execute([$original['tipo_padrao'], $original['etapa'], $original['tarefa'] . ' (cópia)', $original['descricao']])) {
+            $stmt2 = $pdo->prepare("INSERT INTO checklist_modelos (tipo_padrao, etapa, tarefa, descricao, tipo_evento) VALUES (?, ?, ?, ?, ?)");
+            if ($stmt2->execute([$original['tipo_padrao'], $original['etapa'], $original['tarefa'] . ' (cópia)', $original['descricao'], $modulo_ativo])) {
                 $_SESSION['mensagem'] = "Tarefa duplicada! Edite a cópia conforme necessário.";
                 $_SESSION['tipo_msg'] = "info";
                 $_SESSION['aba_ativa'] = $original['tipo_padrao'];
@@ -140,8 +155,10 @@ $aba_ativa   = $_SESSION['aba_ativa']   ?? 'com_recepcao';
 $etapa_aberta = $_SESSION['etapa_aberta'] ?? null;
 unset($_SESSION['mensagem'], $_SESSION['tipo_msg'], $_SESSION['aba_ativa'], $_SESSION['etapa_aberta']);
 
-// Buscar e ordenar todos os modelos
-$modelos_cadastrados = $pdo->query("SELECT * FROM checklist_modelos ORDER BY etapa ASC, id ASC")->fetchAll();
+// Buscar e ordenar todos os modelos do módulo ativo (cada módulo tem os seus)
+$stmt_modelos = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_evento = ? ORDER BY etapa ASC, id ASC");
+$stmt_modelos->execute([$modulo_ativo]);
+$modelos_cadastrados = $stmt_modelos->fetchAll();
 
 // Agrupar
 $modelos_com_recepcao = [];

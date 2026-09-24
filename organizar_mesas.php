@@ -12,6 +12,7 @@ $eh_noivos = ($_SESSION['usuario_tipo'] === 'noivos');
 require_once 'conexao.php';
 require_once 'modulos_evento.inc.php';
 garantir_coluna_tipo_evento($pdo);
+garantir_coluna_sobrenome_convidado($pdo);
 
 /* ============================================================
    CSRF TOKEN
@@ -125,6 +126,16 @@ if (!schema_ja_verificado('organizar_mesas_elementos_v2')) {
     }
 }
 
+// Tamanho da mesa (chip circular) e escala da entrada no Mapa de Mesas — antes
+// eram sempre do mesmo tamanho fixo, sem como aumentar/diminuir.
+if (!schema_ja_verificado('organizar_mesas_tamanho_v1')) {
+    try { $pdo->query("SELECT tamanho_mapa FROM mesas LIMIT 1"); }
+    catch (Exception $e) { try { $pdo->exec("ALTER TABLE mesas ADD COLUMN tamanho_mapa DECIMAL(3,2) NOT NULL DEFAULT 1.00"); } catch (Exception $x) {} }
+    try { $pdo->query("SELECT escala FROM mapa_elementos LIMIT 1"); }
+    catch (Exception $e) { try { $pdo->exec("ALTER TABLE mapa_elementos ADD COLUMN escala DECIMAL(3,2) NOT NULL DEFAULT 1.00"); } catch (Exception $x) {} }
+    marcar_schema_verificado('organizar_mesas_tamanho_v1');
+}
+
 const FAIXAS_ETARIAS_CONVIDADOS = ['Adulto (11+ anos)', 'Criança (6-10 anos)', 'Criança de Colo (0-5 anos)'];
 
 /** Sincroniza os acompanhantes (nome + faixa etária) de um convidado titular:
@@ -160,6 +171,56 @@ function sincronizar_acompanhantes(PDO $pdo, int $evento_id, int $principal_id, 
         $ph = implode(',', array_fill(0, count($idsRemover), '?'));
         $pdo->prepare("DELETE FROM convidados WHERE id IN ($ph)")->execute(array_values($idsRemover));
     }
+}
+
+/** Verifica se já existe outro convidado titular deste evento com o mesmo
+ *  telefone (comparando só os dígitos, já que a formatação pode variar).
+ *  Cada convidado precisa de um número próprio, pois é o que identifica o
+ *  link de convite individual. Retorna o nome do convidado conflitante, ou
+ *  null se não houver. */
+function convidado_telefone_duplicado(PDO $pdo, int $evento_id, string $fone, int $ignorar_id = 0): ?string {
+    $digitosNovo = preg_replace('/\D+/', '', $fone);
+    if ($digitosNovo === '') return null;
+    $stmt = $pdo->prepare("SELECT id, nome, telefone FROM convidados WHERE evento_id = ? AND convidado_principal_id IS NULL AND telefone IS NOT NULL AND telefone <> ''");
+    $stmt->execute([$evento_id]);
+    foreach ($stmt->fetchAll() as $c) {
+        if ((int)$c['id'] === $ignorar_id) continue;
+        if (preg_replace('/\D+/', '', $c['telefone']) === $digitosNovo) {
+            return $c['nome'];
+        }
+    }
+    return null;
+}
+
+/** Verifica se já existe outro convidado titular deste evento com o mesmo
+ *  primeiro nome E sem sobrenome cadastrado (ambíguo — dois "Marcos" sem
+ *  como diferenciar). Só é considerado conflito quando o convidado NOVO
+ *  também está sem sobrenome — se ele já informou um, a ambiguidade dessa
+ *  criação/edição específica já foi resolvida. */
+function convidado_nome_duplicado(PDO $pdo, int $evento_id, string $nomeCompleto, int $ignorar_id = 0): bool {
+    $alvo = trim($nomeCompleto);
+    if ($alvo === '') return false;
+    // Compara o nome final (já com sobrenome concatenado, se houver) contra o
+    // de todo mundo — não só contra quem também está sem sobrenome. Dar um
+    // sobrenome só resolve a ambiguidade se o resultado for um nome diferente;
+    // repetir "Rick" + "Bruno" três vezes tem que continuar batendo.
+    $stmt = $pdo->prepare("SELECT id FROM convidados WHERE evento_id = ? AND convidado_principal_id IS NULL AND LOWER(TRIM(nome)) = LOWER(TRIM(?)) AND id != ?");
+    $stmt->execute([$evento_id, $alvo, $ignorar_id]);
+    return (bool)$stmt->fetchColumn();
+}
+
+/** Pra repopular o campo "Nome" do modal de edição sem duplicar o sobrenome:
+ *  como "nome" guarda o nome completo já concatenado ("Marcos Vinícius"),
+ *  remove o sufixo " + sobrenome" pra voltar só o primeiro nome digitado.
+ *  Registros antigos (sem sobrenome próprio) retornam o nome como está. */
+function nome_convidado_sem_sobrenome(string $nome, ?string $sobrenome): string {
+    $sobrenome = trim((string)$sobrenome);
+    if ($sobrenome === '') return $nome;
+    $sufixo = ' ' . $sobrenome;
+    if (str_ends_with($nome, $sufixo)) {
+        return substr($nome, 0, -strlen($sufixo));
+    }
+    return $nome;
 }
 
 /* ============================================================
@@ -240,13 +301,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         json_out(['ok' => true]);
     }
 
-    // AJAX: Salvar posição (x/y em %) da mesa no mapa arrastável
+    // AJAX: Salvar posição (x/y em %) e, opcionalmente, o tamanho da mesa no
+    // mapa arrastável — "tamanho_mapa" só vem preenchido quando o usuário usa
+    // a alça de redimensionar; um simples arrastar de posição não deve reset
+    // o tamanho de volta ao padrão.
     if (isset($_POST['salvar_posicao_mesa'])) {
         $mid = (int)($_POST['mesa_id'] ?? 0);
         $px  = max(0, min(100, (float)($_POST['pos_x'] ?? 0)));
         $py  = max(0, min(100, (float)($_POST['pos_y'] ?? 0)));
-        $pdo->prepare("UPDATE mesas SET pos_x = ?, pos_y = ? WHERE id = ? AND evento_id = ?")
-            ->execute([$px, $py, $mid, $evento_id]);
+        if (isset($_POST['tamanho_mapa'])) {
+            $tam = max(0.5, min(2.5, (float)$_POST['tamanho_mapa']));
+            $pdo->prepare("UPDATE mesas SET pos_x = ?, pos_y = ?, tamanho_mapa = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$px, $py, $tam, $mid, $evento_id]);
+        } else {
+            $pdo->prepare("UPDATE mesas SET pos_x = ?, pos_y = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$px, $py, $mid, $evento_id]);
+        }
         json_out(['ok' => true]);
     }
 
@@ -262,7 +332,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ]);
     }
 
-    // AJAX: Salvar posição/tamanho/rotação (x/y/largura/altura em %, rotação em graus) de um elemento do mapa
+    // AJAX: Salvar posição/tamanho/rotação/escala (x/y/largura/altura em %,
+    // rotação em graus, escala é usada só pela Entrada) de um elemento do mapa
     if (isset($_POST['salvar_elemento_mapa'])) {
         $eid = (int)($_POST['elemento_id'] ?? 0);
         $px  = max(0, min(100, (float)($_POST['pos_x'] ?? 0)));
@@ -271,8 +342,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $al  = max(5, min(80, (float)($_POST['altura'] ?? 16)));
         $rot = fmod((float)($_POST['rotacao'] ?? 0), 360);
         if ($rot < 0) $rot += 360;
-        $pdo->prepare("UPDATE mapa_elementos SET pos_x = ?, pos_y = ?, largura = ?, altura = ?, rotacao = ? WHERE id = ? AND evento_id = ?")
-            ->execute([$px, $py, $lg, $al, $rot, $eid, $evento_id]);
+        $esc = max(0.5, min(2.5, (float)($_POST['escala'] ?? 1)));
+        $pdo->prepare("UPDATE mapa_elementos SET pos_x = ?, pos_y = ?, largura = ?, altura = ?, rotacao = ?, escala = ? WHERE id = ? AND evento_id = ?")
+            ->execute([$px, $py, $lg, $al, $rot, $esc, $eid, $evento_id]);
         json_out(['ok' => true]);
     }
 
@@ -419,10 +491,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Sempre entra como "pendente" — só o próprio convidado sabe se vai comparecer.
     if (isset($_POST['adicionar_convidado'])) {
         $nome       = trim($_POST['nome_convidado']      ?? '');
+        $sobrenome  = trim($_POST['sobrenome_convidado']  ?? '');
         $fone       = trim($_POST['telefone_convidado']  ?? '');
         $cat        = trim($_POST['categoria_convidado'] ?? 'Outros');
         $nomes_acomp  = $_POST['nome_acompanhante_novo']  ?? [];
         $faixas_acomp = $_POST['faixa_acompanhante_novo'] ?? [];
+        $nome_completo = trim($nome . ($sobrenome !== '' ? ' ' . $sobrenome : ''));
 
         $mesa_destino = null;
         $mid_novo = (int)($_POST['mesa_id'] ?? 0);
@@ -437,14 +511,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['msg_erro'] = "Informe o nome do convidado.";
         } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
             $_SESSION['msg_erro'] = "Informe um telefone/WhatsApp válido (com DDD) para o convidado.";
+        } elseif (($dup_nome = convidado_telefone_duplicado($pdo, $evento_id, $fone)) !== null) {
+            $_SESSION['msg_erro'] = "Esse telefone já está cadastrado para <strong>" . htmlspecialchars($dup_nome, ENT_QUOTES, 'UTF-8') . "</strong>. Cada convidado precisa de um número diferente.";
+        } elseif (convidado_nome_duplicado($pdo, $evento_id, $nome_completo)) {
+            $_SESSION['msg_erro'] = "Já existe um convite com o nome <strong>" . htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8') . "</strong>. Informe um sobrenome diferente pra identificar cada um.";
         } else {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, confirmado, mesa_id) VALUES (?, ?, ?, ?, 0, ?)")
-                ->execute([$evento_id, $nome, $fone, $cat, $mesa_destino]);
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, sobrenome, telefone, categoria, confirmado, mesa_id) VALUES (?, ?, ?, ?, ?, 0, ?)")
+                ->execute([$evento_id, $nome_completo, $sobrenome ?: null, $fone, $cat, $mesa_destino]);
             $novo_id = (int)$pdo->lastInsertId();
             sincronizar_acompanhantes($pdo, $evento_id, $novo_id, [], $nomes_acomp, $faixas_acomp);
             $_SESSION['msg_sucesso'] = $mesa_destino
-                ? "Convite <strong>" . htmlspecialchars($nome) . "</strong> criado e adicionado à <strong>" . htmlspecialchars($nomeMesa) . "</strong>!"
-                : "Convite <strong>" . htmlspecialchars($nome) . "</strong> criado!";
+                ? "Convite <strong>" . htmlspecialchars($nome_completo) . "</strong> criado e adicionado à <strong>" . htmlspecialchars($nomeMesa) . "</strong>!"
+                : "Convite <strong>" . htmlspecialchars($nome_completo) . "</strong> criado!";
         }
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
     }
@@ -453,20 +531,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['editar_convidado'])) {
         $cid        = (int)($_POST['convidado_id'] ?? 0);
         $nome       = trim($_POST['nome_convidado']      ?? '');
+        $sobrenome  = trim($_POST['sobrenome_convidado']  ?? '');
         $fone       = trim($_POST['telefone_convidado']  ?? '');
         $cat        = trim($_POST['categoria_convidado'] ?? 'Outros');
         $ids_acomp    = $_POST['id_acompanhante_edit']    ?? [];
         $nomes_acomp  = $_POST['nome_acompanhante_edit']  ?? [];
         $faixas_acomp = $_POST['faixa_acompanhante_edit'] ?? [];
+        $nome_completo = trim($nome . ($sobrenome !== '' ? ' ' . $sobrenome : ''));
         if ($cid <= 0 || $nome === '') {
             $_SESSION['msg_erro'] = "Informe o nome do convidado.";
         } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
             $_SESSION['msg_erro'] = "Informe um telefone/WhatsApp válido (com DDD) para o convidado.";
+        } elseif (($dup_nome = convidado_telefone_duplicado($pdo, $evento_id, $fone, $cid)) !== null) {
+            $_SESSION['msg_erro'] = "Esse telefone já está cadastrado para <strong>" . htmlspecialchars($dup_nome, ENT_QUOTES, 'UTF-8') . "</strong>. Cada convidado precisa de um número diferente.";
+        } elseif (convidado_nome_duplicado($pdo, $evento_id, $nome_completo, $cid)) {
+            $_SESSION['msg_erro'] = "Já existe um convite com o nome <strong>" . htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8') . "</strong>. Informe um sobrenome diferente pra identificar cada um.";
         } else {
-            $pdo->prepare("UPDATE convidados SET nome = ?, telefone = ?, categoria = ? WHERE id = ? AND evento_id = ?")
-                ->execute([$nome, $fone, $cat, $cid, $evento_id]);
+            $pdo->prepare("UPDATE convidados SET nome = ?, sobrenome = ?, telefone = ?, categoria = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$nome_completo, $sobrenome ?: null, $fone, $cat, $cid, $evento_id]);
             sincronizar_acompanhantes($pdo, $evento_id, $cid, $ids_acomp, $nomes_acomp, $faixas_acomp);
-            $_SESSION['msg_sucesso'] = "Convidado <strong>" . htmlspecialchars($nome) . "</strong> atualizado!";
+            $_SESSION['msg_sucesso'] = "Convidado <strong>" . htmlspecialchars($nome_completo) . "</strong> atualizado!";
         }
         if (!$is_ajax_html) { header("Location: organizar_mesas.php?id=$evento_id"); exit; }
     }
@@ -542,11 +626,11 @@ foreach ($lista_elementos_mapa as $el) {
 if (!$elemento_entrada) {
     $pdo->prepare("INSERT INTO mapa_elementos (evento_id, tipo, rotulo, pos_x, pos_y, largura, altura) VALUES (?, 'entrada', 'Entrada', 50, 94, 0, 0)")
         ->execute([$evento_id]);
-    $elemento_entrada = ['id' => (int)$pdo->lastInsertId(), 'tipo' => 'entrada', 'rotulo' => 'Entrada', 'pos_x' => 50, 'pos_y' => 94, 'largura' => 0, 'altura' => 0, 'rotacao' => 0];
+    $elemento_entrada = ['id' => (int)$pdo->lastInsertId(), 'tipo' => 'entrada', 'rotulo' => 'Entrada', 'pos_x' => 50, 'pos_y' => 94, 'largura' => 0, 'altura' => 0, 'rotacao' => 0, 'escala' => 1.0];
 }
 
 $stmtC = $pdo->prepare("
-    SELECT id, nome, telefone, categoria, confirmado, mesa_id, convidado_principal_id, faixa_etaria, resposta_rsvp
+    SELECT id, nome, sobrenome, telefone, categoria, confirmado, mesa_id, convidado_principal_id, faixa_etaria, resposta_rsvp
     FROM convidados WHERE evento_id = ? ORDER BY nome ASC
 ");
 $stmtC->execute([$evento_id]);
@@ -776,7 +860,8 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       overflow: hidden; touch-action: none;
     }
     .mapa-mesa-chip {
-      --chip-size: 68px;
+      --escala-mesa: 1;
+      --chip-size: calc(68px * var(--escala-mesa));
       position: absolute; width: var(--chip-size); height: var(--chip-size);
       margin: calc(var(--chip-size) / -2) 0 0 calc(var(--chip-size) / -2);
       border-radius: 50%; background: #fff; border: 3px solid #94a3b8;
@@ -789,9 +874,10 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     .mapa-mesa-chip.arrastando { cursor: grabbing; z-index: 10; box-shadow: 0 10px 24px rgba(0,0,0,.28); transition: none; }
     .mapa-mesa-nome { font-size: .62rem; font-weight: 700; color: #1e293b; max-width: calc(var(--chip-size) - 12px); line-height: 1.1; }
     /* Mesas menores no mobile — na tela pequena, o mesmo tamanho de desktop
-       fazia as mesas ficarem coladas/sobrepostas umas nas outras. */
+       fazia as mesas ficarem coladas/sobrepostas umas nas outras. A escala
+       (aumentar/diminuir manualmente) continua funcionando em cima disso. */
     @media (max-width: 575.98px) {
-      .mapa-mesa-chip { --chip-size: 48px; border-width: 2px; padding: .1rem; }
+      .mapa-mesa-chip { --chip-size: calc(48px * var(--escala-mesa)); border-width: 2px; padding: .1rem; }
       .mapa-mesa-nome { font-size: .5rem; line-height: 1.05; }
       .mapa-mesa-ocup { font-size: .44rem !important; margin-top: 0 !important; }
     }
@@ -816,6 +902,18 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     }
     .palco-resize-handle {
       position: absolute; right: -6px; bottom: -6px; width: 16px; height: 16px; border-radius: 4px;
+      background: #fff; border: 2px solid #0f172a; cursor: nwse-resize;
+    }
+    /* Alça de redimensionar da mesa (chip circular) — canto inferior direito da
+       "caixa" do círculo, funciona junto com --chip-size (ver .mapa-mesa-chip). */
+    .mesa-resize-handle {
+      position: absolute; right: -2px; bottom: -2px; width: 14px; height: 14px; border-radius: 4px;
+      background: #fff; border: 2px solid #475569; cursor: nwse-resize;
+    }
+    /* Alça de redimensionar da Entrada — escala o "pill" inteiro (não tem
+       largura/altura próprias, é sizado pelo conteúdo/font-size). */
+    .entrada-resize-handle {
+      position: absolute; right: -8px; bottom: -8px; width: 14px; height: 14px; border-radius: 4px;
       background: #fff; border: 2px solid #0f172a; cursor: nwse-resize;
     }
     /* Alça de girar — usada tanto no Palco quanto na Entrada; gira junto com o
@@ -1153,7 +1251,8 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                         <button type="button" class="btn-icon-conv text-primary btn-edit-convidado"
                                 title="Editar convidado"
                                 data-id="<?= $c['id'] ?>"
-                                data-nome="<?= htmlspecialchars($c['nome'], ENT_QUOTES, 'UTF-8') ?>"
+                                data-nome="<?= htmlspecialchars(nome_convidado_sem_sobrenome($c['nome'], $c['sobrenome'] ?? null), ENT_QUOTES, 'UTF-8') ?>"
+                                data-sobrenome="<?= htmlspecialchars($c['sobrenome'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                                 data-telefone="<?= htmlspecialchars($c['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                                 data-categoria="<?= htmlspecialchars($c['categoria'], ENT_QUOTES, 'UTF-8') ?>"
                                 data-acompanhantes-json="<?= htmlspecialchars(json_encode(array_map(fn($a) => ['id' => $a['id'], 'nome' => $a['nome'], 'faixa' => $a['faixa_etaria']], $c['acompanhantes_lista'])), ENT_QUOTES, 'UTF-8') ?>"
@@ -1347,7 +1446,8 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                         <button type="button" class="btn-icon-conv text-primary btn-edit-convidado"
                                 title="Editar convidado"
                                 data-id="<?= $cm['id'] ?>"
-                                data-nome="<?= htmlspecialchars($cm['nome'], ENT_QUOTES, 'UTF-8') ?>"
+                                data-nome="<?= htmlspecialchars(nome_convidado_sem_sobrenome($cm['nome'], $cm['sobrenome'] ?? null), ENT_QUOTES, 'UTF-8') ?>"
+                                data-sobrenome="<?= htmlspecialchars($cm['sobrenome'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                                 data-telefone="<?= htmlspecialchars($cm['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                                 data-categoria="<?= htmlspecialchars($cm['categoria'], ENT_QUOTES, 'UTF-8') ?>"
                                 data-acompanhantes-json="<?= htmlspecialchars(json_encode(array_map(fn($a) => ['id' => $a['id'], 'nome' => $a['nome'], 'faixa' => $a['faixa_etaria']], $cm['acompanhantes_lista'])), ENT_QUOTES, 'UTF-8') ?>"
@@ -1446,9 +1546,16 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         <input type="hidden" name="mesa_id" id="ac-mesa-id" value="">
         <div class="modal-body py-3">
           <div id="ac-mesa-hint" class="alert alert-success py-2 px-3 small mb-3" style="display:none;"></div>
-          <div class="mb-3">
-            <label class="form-label small fw-semibold text-secondary">Nome do Convidado / Família (Titular)</label>
-            <input type="text" name="nome_convidado" class="form-control rounded-3" required>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <label class="form-label small fw-semibold text-secondary">Nome / Família</label>
+              <input type="text" name="nome_convidado" id="add-nome" class="form-control rounded-3" required>
+              <div class="invalid-feedback aviso-nome-duplicado-add"></div>
+            </div>
+            <div class="col-6">
+              <label class="form-label small fw-semibold text-secondary">Sobrenome</label>
+              <input type="text" name="sobrenome_convidado" id="add-sobrenome" class="form-control rounded-3" placeholder="Opcional">
+            </div>
           </div>
           <div class="row g-3 mb-3">
             <div class="col-md-6">
@@ -1464,7 +1571,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
             </div>
             <div class="col-md-6">
               <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" name="telefone_convidado" class="form-control rounded-3" placeholder="(00) 00000-0000" required>
+              <input type="text" inputmode="numeric" name="telefone_convidado" class="form-control rounded-3 input-telefone" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-3 text-secondary opacity-25">
@@ -1499,9 +1606,16 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         <input type="hidden" name="editar_convidado" value="1">
         <input type="hidden" name="convidado_id" id="ec-id">
         <div class="modal-body py-3">
-          <div class="mb-3">
-            <label class="form-label small fw-semibold text-secondary">Nome do Convidado / Família (Titular)</label>
-            <input type="text" name="nome_convidado" id="ec-nome" class="form-control rounded-3" required>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <label class="form-label small fw-semibold text-secondary">Nome / Família</label>
+              <input type="text" name="nome_convidado" id="ec-nome" class="form-control rounded-3" required>
+              <div class="invalid-feedback aviso-nome-duplicado-edit"></div>
+            </div>
+            <div class="col-6">
+              <label class="form-label small fw-semibold text-secondary">Sobrenome</label>
+              <input type="text" name="sobrenome_convidado" id="ec-sobrenome" class="form-control rounded-3" placeholder="Opcional">
+            </div>
           </div>
           <div class="row g-3 mb-3">
             <div class="col-md-6">
@@ -1510,7 +1624,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
             </div>
             <div class="col-md-6">
               <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" name="telefone_convidado" id="ec-telefone" class="form-control rounded-3" placeholder="(00) 00000-0000" required>
+              <input type="text" inputmode="numeric" name="telefone_convidado" id="ec-telefone" class="form-control rounded-3 input-telefone" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-3 text-secondary opacity-25">
@@ -1553,13 +1667,14 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
       $defY = min(14 + $rowMapa * 24, 88);
 
       $mapa_mesas[] = [
-          'id'   => $m['id'],
-          'nome' => $m['nome'],
-          'cap'  => $capMapa,
-          'ocup' => $ocupMapa,
-          'cor'  => $corMapa,
-          'x'    => $m['pos_x'] !== null ? (float)$m['pos_x'] : $defX,
-          'y'    => $m['pos_y'] !== null ? (float)$m['pos_y'] : $defY,
+          'id'      => $m['id'],
+          'nome'    => $m['nome'],
+          'cap'     => $capMapa,
+          'ocup'    => $ocupMapa,
+          'cor'     => $corMapa,
+          'x'       => $m['pos_x'] !== null ? (float)$m['pos_x'] : $defX,
+          'y'       => $m['pos_y'] !== null ? (float)$m['pos_y'] : $defY,
+          'tamanho' => isset($m['tamanho_mapa']) ? (float)$m['tamanho_mapa'] : 1.0,
       ];
   }
   $temMapaConteudo = !empty($mapa_mesas) || !empty($lista_elementos_palco);
@@ -1587,11 +1702,12 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         <?php endif; ?>
         <div id="mapa-mesas-area" class="mapa-mesas-area">
           <?php foreach ($mapa_mesas as $mm): ?>
-          <div class="mapa-mesa-chip" data-mesa-id="<?= $mm['id'] ?>"
-               style="left:<?= $mm['x'] ?>%; top:<?= $mm['y'] ?>%; border-color:<?= $mm['cor'] ?>;"
+          <div class="mapa-mesa-chip" data-mesa-id="<?= $mm['id'] ?>" data-tamanho="<?= $mm['tamanho'] ?>"
+               style="left:<?= $mm['x'] ?>%; top:<?= $mm['y'] ?>%; border-color:<?= $mm['cor'] ?>; --escala-mesa: <?= $mm['tamanho'] ?>;"
                title="<?= htmlspecialchars($mm['nome'], ENT_QUOTES, 'UTF-8') ?>">
             <div class="mapa-mesa-nome text-truncate"><?= htmlspecialchars($mm['nome'], ENT_QUOTES, 'UTF-8') ?></div>
             <div class="mapa-mesa-ocup" style="color:<?= $mm['cor'] ?>;"><?= $mm['ocup'] ?>/<?= $mm['cap'] ?></div>
+            <span class="mesa-resize-handle no-print" title="Redimensionar"></span>
           </div>
           <?php endforeach; ?>
           <?php foreach ($lista_elementos_palco as $el): $elRot = (float)($el['rotacao'] ?? 0); ?>
@@ -1605,11 +1721,13 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           </div>
           <?php endforeach; ?>
           <?php $entRot = (float)($elemento_entrada['rotacao'] ?? 0); ?>
-          <div class="mapa-entrada" data-elemento-id="<?= $elemento_entrada['id'] ?>" data-rotacao="<?= $entRot ?>"
-               style="left:<?= (float)$elemento_entrada['pos_x'] ?>%; top:<?= (float)$elemento_entrada['pos_y'] ?>%; transform: translate(-50%, -50%) rotate(<?= $entRot ?>deg);"
-               title="Entrada do espaço — arraste para mudar o lado, use a alça pra girar">
+          <?php $entEscala = (float)($elemento_entrada['escala'] ?? 1); ?>
+          <div class="mapa-entrada" data-elemento-id="<?= $elemento_entrada['id'] ?>" data-rotacao="<?= $entRot ?>" data-escala="<?= $entEscala ?>"
+               style="left:<?= (float)$elemento_entrada['pos_x'] ?>%; top:<?= (float)$elemento_entrada['pos_y'] ?>%; transform: translate(-50%, -50%) rotate(<?= $entRot ?>deg) scale(<?= $entEscala ?>);"
+               title="Entrada do espaço — arraste para mudar o lado, use as alças pra girar/redimensionar">
             <i class="bi bi-box-arrow-in-down"></i> Entrada
             <span class="elemento-rotate-handle no-print" title="Girar"><i class="bi bi-arrow-repeat"></i></span>
+            <span class="entrada-resize-handle no-print" title="Redimensionar"></span>
           </div>
         </div>
         <div class="d-flex align-items-center gap-3 flex-wrap mt-3" style="font-size:.7rem;color:#64748b;">
@@ -1711,6 +1829,72 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 
 <script>
 const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;
+// Nome completo (já com sobrenome, se houver) de cada convidado titular —
+// usado só pro aviso "já existe um convite com esse nome" ao criar/editar,
+// sem precisar de uma chamada AJAX extra a cada tecla digitada.
+const CONVIDADOS_NOMES = <?= json_encode(array_values(array_map(
+    fn($c) => ['id' => (int)$c['id'], 'nome' => mb_strtolower(trim($c['nome']))],
+    $titulares_ordenados
+))) ?>;
+
+/* ---- Máscara de telefone BR: (DD) XXXX-XXXX pra fixo, (DD) 9 XXXX-XXXX pra
+   celular — o "9" do celular fica separado pra ficar claro que é o prefixo. ---- */
+function formatarTelefoneBr(valorDigitado) {
+  const digitos = valorDigitado.replace(/\D/g, '');
+  if (digitos.length === 0) return '';
+  // Não trava a quantidade de dígitos nem força DDD/formato brasileiro pra
+  // números fora do padrão BR (DDD + 8 ou 9 dígitos) — pode ser um número
+  // internacional, com DDI ou outro formato qualquer.
+  if (digitos.length > 11) return digitos;
+  const ddd = digitos.slice(0, 2);
+  const resto = digitos.slice(2);
+  if (resto.length === 0) return '(' + ddd;
+  let out = '(' + ddd + ') ';
+  if (resto.length === 9) {
+    out += resto.slice(0, 1) + ' ' + resto.slice(1, 5) + (resto.length > 5 ? '-' + resto.slice(5, 9) : '');
+  } else {
+    out += resto.slice(0, 4) + (resto.length > 4 ? '-' + resto.slice(4, 8) : '');
+  }
+  return out;
+}
+document.querySelectorAll('.input-telefone').forEach(function (input) {
+  input.addEventListener('input', function () {
+    input.value = formatarTelefoneBr(input.value);
+  });
+});
+
+// Aviso de nome duplicado: compara o nome final (nome + sobrenome, se houver)
+// contra o de todo mundo — dar QUALQUER sobrenome não basta, tem que ser um
+// sobrenome que realmente resulte num nome diferente. Checagem só no
+// navegador; o backend valida de novo na hora de salvar de qualquer forma.
+function conferirNomeDuplicado(inputNome, inputSobrenome, avisoEl, idAtual) {
+  const nomeCompleto = (inputNome.value.trim() + ' ' + inputSobrenome.value.trim()).trim().toLowerCase();
+  const meuId = idAtual ? parseInt(idAtual, 10) : 0;
+  const duplicado = nomeCompleto !== '' && CONVIDADOS_NOMES.some(c => c.nome === nomeCompleto && c.id !== meuId);
+  inputNome.classList.toggle('is-invalid', duplicado);
+  if (duplicado) {
+    avisoEl.textContent = 'Já existe um convite com o nome "' + inputNome.value.trim() + (inputSobrenome.value.trim() ? ' ' + inputSobrenome.value.trim() : '') + '". Informe um sobrenome diferente pra identificar cada um.';
+  }
+  return duplicado;
+}
+
+const addNomeConv = document.getElementById('add-nome');
+const addSobrenomeConv = document.getElementById('add-sobrenome');
+const avisoNomeAddConv = document.querySelector('.aviso-nome-duplicado-add');
+if (addNomeConv && addSobrenomeConv && avisoNomeAddConv) {
+  const conferir = () => conferirNomeDuplicado(addNomeConv, addSobrenomeConv, avisoNomeAddConv, 0);
+  addNomeConv.addEventListener('input', conferir);
+  addSobrenomeConv.addEventListener('input', conferir);
+}
+
+const ecNomeConv = document.getElementById('ec-nome');
+const ecSobrenomeConv = document.getElementById('ec-sobrenome');
+const avisoNomeEditConv = document.querySelector('.aviso-nome-duplicado-edit');
+if (ecNomeConv && ecSobrenomeConv && avisoNomeEditConv) {
+  const conferir = () => conferirNomeDuplicado(ecNomeConv, ecSobrenomeConv, avisoNomeEditConv, document.getElementById('ec-id')?.value);
+  ecNomeConv.addEventListener('input', conferir);
+  ecSobrenomeConv.addEventListener('input', conferir);
+}
 
 /* ---- Mapa de Mesas: imprimir/exportar só o mapa (não a lista em texto) ---- */
 function imprimirMapaMesas() {
@@ -1730,9 +1914,21 @@ window.addEventListener('afterprint', () => document.body.classList.remove('impr
   let palcoOffset = null;
   let palcoResize = null;
   let resizeInicio = null;
+  let mesaResize = null;
+  let mesaResizeInicio = null;
+  let entradaResize = null;
+  let entradaResizeInicio = null;
   let rotAtivo = null;
   let rotCenter = null;
   let rotOffset = 0;
+
+  // Redimensionar a mesa (chip) ou a entrada é sempre uma escala única (não
+  // largura/altura separadas, já que os dois são "círculo"/"pill"), calculada
+  // a partir da distância arrastada — 150px de arrasto = 1 unidade de escala.
+  function calcNovaEscala(escalaInicial, startX, startY, clientX, clientY) {
+    const deltaPx = ((clientX - startX) + (clientY - startY)) / 2;
+    return Math.max(0.5, Math.min(2.5, escalaInicial + deltaPx / 150));
+  }
 
   // Ângulo do centro do elemento até o cursor, em graus, onde 0° = cursor
   // exatamente acima do centro (é daí que a alça de girar começa).
@@ -1743,7 +1939,7 @@ window.addEventListener('afterprint', () => document.body.classList.remove('impr
   function aplicarRotacao(el, deg) {
     el.dataset.rotacao = deg;
     el.style.transform = el.classList.contains('mapa-entrada')
-      ? 'translate(-50%, -50%) rotate(' + deg + 'deg)'
+      ? 'translate(-50%, -50%) rotate(' + deg + 'deg) scale(' + (el.dataset.escala || '1') + ')'
       : 'rotate(' + deg + 'deg)';
   }
 
@@ -1786,6 +1982,18 @@ window.addEventListener('afterprint', () => document.body.classList.remove('impr
       palcoResize.style.height = novaAlturaPct + '%';
       return;
     }
+    if (mesaResize) {
+      const nova = calcNovaEscala(mesaResizeInicio.escala, mesaResizeInicio.startX, mesaResizeInicio.startY, clientX, clientY);
+      mesaResize.dataset.tamanho = nova.toFixed(2);
+      mesaResize.style.setProperty('--escala-mesa', nova.toFixed(2));
+      return;
+    }
+    if (entradaResize) {
+      const nova = calcNovaEscala(entradaResizeInicio.escala, entradaResizeInicio.startX, entradaResizeInicio.startY, clientX, clientY);
+      entradaResize.dataset.escala = nova.toFixed(2);
+      aplicarRotacao(entradaResize, parseFloat(entradaResize.dataset.rotacao || '0'));
+      return;
+    }
     if (palcoAtivo) {
       const rect = area.getBoundingClientRect();
       const largura = parseFloat(palcoAtivo.style.width) || 28;
@@ -1814,10 +2022,34 @@ window.addEventListener('afterprint', () => document.body.classList.remove('impr
       try { await fetch(window.location.href, { method: 'POST', body: fd }); } catch (e) {}
       return;
     }
+    if (mesaResize) {
+      const chip = mesaResize;
+      chip.classList.remove('arrastando');
+      mesaResize = null;
+      mesaResizeInicio = null;
+
+      const fd = new FormData();
+      fd.append('csrf_token', CSRF_TOKEN);
+      fd.append('salvar_posicao_mesa', '1');
+      fd.append('mesa_id', chip.dataset.mesaId);
+      fd.append('pos_x', parseFloat(chip.style.left));
+      fd.append('pos_y', parseFloat(chip.style.top));
+      fd.append('tamanho_mapa', chip.dataset.tamanho);
+      try { await fetch(window.location.href, { method: 'POST', body: fd }); } catch (e) {}
+      return;
+    }
     if (entradaAtivo) {
       const el = entradaAtivo;
       el.classList.remove('arrastando');
       entradaAtivo = null;
+      await salvarElemento(el);
+      return;
+    }
+    if (entradaResize) {
+      const el = entradaResize;
+      el.classList.remove('arrastando');
+      entradaResize = null;
+      entradaResizeInicio = null;
       await salvarElemento(el);
       return;
     }
@@ -1849,6 +2081,7 @@ window.addEventListener('afterprint', () => document.body.classList.remove('impr
     fd.append('largura', parseFloat(el.style.width));
     fd.append('altura', parseFloat(el.style.height));
     fd.append('rotacao', el.dataset.rotacao || '0');
+    fd.append('escala', el.dataset.escala || '1');
     try { await fetch(window.location.href, { method: 'POST', body: fd }); } catch (e) {}
   }
 
@@ -1929,14 +2162,27 @@ window.addEventListener('afterprint', () => document.body.classList.remove('impr
 
   area.querySelectorAll('.mapa-mesa-chip').forEach(chip => {
     chip.addEventListener('mousedown', e => {
+      if (e.target.closest('.mesa-resize-handle')) return;
       e.preventDefault();
       chipAtivo = chip;
       chip.classList.add('arrastando');
     });
     chip.addEventListener('touchstart', e => {
+      if (e.target.closest('.mesa-resize-handle')) return;
       chipAtivo = chip;
       chip.classList.add('arrastando');
     }, { passive: true });
+
+    const resizeHandle = chip.querySelector('.mesa-resize-handle');
+    if (resizeHandle) {
+      const iniciarResizeMesa = (clientX, clientY) => {
+        mesaResize = chip;
+        chip.classList.add('arrastando');
+        mesaResizeInicio = { escala: parseFloat(chip.dataset.tamanho) || 1, startX: clientX, startY: clientY };
+      };
+      resizeHandle.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); iniciarResizeMesa(e.clientX, e.clientY); });
+      resizeHandle.addEventListener('touchstart', e => { e.stopPropagation(); const t = e.touches[0]; iniciarResizeMesa(t.clientX, t.clientY); }, { passive: true });
+    }
   });
 
   area.querySelectorAll('.mapa-palco-item').forEach(bindPalco);
@@ -1944,22 +2190,33 @@ window.addEventListener('afterprint', () => document.body.classList.remove('impr
   const entradaEl = area.querySelector('.mapa-entrada');
   if (entradaEl) {
     entradaEl.addEventListener('mousedown', e => {
-      if (e.target.closest('.elemento-rotate-handle')) return;
+      if (e.target.closest('.elemento-rotate-handle') || e.target.closest('.entrada-resize-handle')) return;
       e.preventDefault();
       entradaAtivo = entradaEl;
       entradaEl.classList.add('arrastando');
     });
     entradaEl.addEventListener('touchstart', e => {
-      if (e.target.closest('.elemento-rotate-handle')) return;
+      if (e.target.closest('.elemento-rotate-handle') || e.target.closest('.entrada-resize-handle')) return;
       entradaAtivo = entradaEl;
       entradaEl.classList.add('arrastando');
     }, { passive: true });
     bindRotate(entradaEl);
+
+    const entradaResizeHandle = entradaEl.querySelector('.entrada-resize-handle');
+    if (entradaResizeHandle) {
+      const iniciarResizeEntrada = (clientX, clientY) => {
+        entradaResize = entradaEl;
+        entradaEl.classList.add('arrastando');
+        entradaResizeInicio = { escala: parseFloat(entradaEl.dataset.escala) || 1, startX: clientX, startY: clientY };
+      };
+      entradaResizeHandle.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); iniciarResizeEntrada(e.clientX, e.clientY); });
+      entradaResizeHandle.addEventListener('touchstart', e => { e.stopPropagation(); const t = e.touches[0]; iniciarResizeEntrada(t.clientX, t.clientY); }, { passive: true });
+    }
   }
 
   document.addEventListener('mousemove', e => mover(e.clientX, e.clientY));
   document.addEventListener('touchmove', e => {
-    if (!chipAtivo && !entradaAtivo && !rotAtivo && !palcoAtivo && !palcoResize) return;
+    if (!chipAtivo && !entradaAtivo && !rotAtivo && !palcoAtivo && !palcoResize && !mesaResize && !entradaResize) return;
     const t = e.touches[0];
     mover(t.clientX, t.clientY);
   }, { passive: true });
@@ -2094,8 +2351,10 @@ document.addEventListener('DOMContentLoaded', function () {
     if (btnEditConv) {
       document.getElementById('ec-id').value        = btnEditConv.dataset.id;
       document.getElementById('ec-nome').value       = btnEditConv.dataset.nome;
+      document.getElementById('ec-sobrenome').value  = btnEditConv.dataset.sobrenome || '';
+      document.getElementById('ec-nome').classList.remove('is-invalid');
       document.getElementById('ec-categoria').value  = btnEditConv.dataset.categoria;
-      document.getElementById('ec-telefone').value   = btnEditConv.dataset.telefone;
+      document.getElementById('ec-telefone').value   = formatarTelefoneBr(btnEditConv.dataset.telefone || '');
 
       const listaEdit = document.getElementById('acomp-edit-lista');
       listaEdit.innerHTML = '';

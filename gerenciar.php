@@ -14,6 +14,8 @@ $is_admin = in_array($_SESSION['usuario_tipo'], ['admin', 'desenvolvedor'], true
 
 garantir_coluna_tipo_evento($pdo);
 garantir_coluna_nome_secundario_cliente($pdo);
+garantir_coluna_tipo_evento_checklist_modelos($pdo);
+garantir_coluna_sobrenome_convidado($pdo);
 
 // Evita que o navegador guarde esta página (dados financeiros/de convidados) em cache,
 // o que já causou telas desatualizadas aparecerem depois de mudanças no sistema.
@@ -320,6 +322,56 @@ function sincronizar_acompanhantes(PDO $pdo, int $evento_id, int $principal_id, 
     }
 }
 
+/** Verifica se já existe outro convidado titular deste evento com o mesmo
+ *  telefone (comparando só os dígitos, já que a formatação pode variar).
+ *  Cada convidado precisa de um número próprio, pois é o que identifica o
+ *  link de convite individual. Retorna o nome do convidado conflitante, ou
+ *  null se não houver. */
+function convidado_telefone_duplicado(PDO $pdo, int $evento_id, string $fone, int $ignorar_id = 0): ?string {
+    $digitosNovo = preg_replace('/\D+/', '', $fone);
+    if ($digitosNovo === '') return null;
+    $stmt = $pdo->prepare("SELECT id, nome, telefone FROM convidados WHERE evento_id = ? AND convidado_principal_id IS NULL AND telefone IS NOT NULL AND telefone <> ''");
+    $stmt->execute([$evento_id]);
+    foreach ($stmt->fetchAll() as $c) {
+        if ((int)$c['id'] === $ignorar_id) continue;
+        if (preg_replace('/\D+/', '', $c['telefone']) === $digitosNovo) {
+            return $c['nome'];
+        }
+    }
+    return null;
+}
+
+/** Verifica se já existe outro convidado titular deste evento com o mesmo
+ *  primeiro nome E sem sobrenome cadastrado (ambíguo — dois "Marcos" sem
+ *  como diferenciar). Só é considerado conflito quando o convidado NOVO
+ *  também está sem sobrenome — se ele já informou um, a ambiguidade dessa
+ *  criação/edição específica já foi resolvida. */
+function convidado_nome_duplicado(PDO $pdo, int $evento_id, string $nomeCompleto, int $ignorar_id = 0): bool {
+    $alvo = trim($nomeCompleto);
+    if ($alvo === '') return false;
+    // Compara o nome final (já com sobrenome concatenado, se houver) contra o
+    // de todo mundo — não só contra quem também está sem sobrenome. Dar um
+    // sobrenome só resolve a ambiguidade se o resultado for um nome diferente;
+    // repetir "Rick" + "Bruno" três vezes tem que continuar batendo.
+    $stmt = $pdo->prepare("SELECT id FROM convidados WHERE evento_id = ? AND convidado_principal_id IS NULL AND LOWER(TRIM(nome)) = LOWER(TRIM(?)) AND id != ?");
+    $stmt->execute([$evento_id, $alvo, $ignorar_id]);
+    return (bool)$stmt->fetchColumn();
+}
+
+/** Pra repopular o campo "Nome" do modal de edição sem duplicar o sobrenome:
+ *  como "nome" guarda o nome completo já concatenado ("Marcos Vinícius"),
+ *  remove o sufixo " + sobrenome" pra voltar só o primeiro nome digitado.
+ *  Registros antigos (sem sobrenome próprio) retornam o nome como está. */
+function nome_convidado_sem_sobrenome(string $nome, ?string $sobrenome): string {
+    $sobrenome = trim((string)$sobrenome);
+    if ($sobrenome === '') return $nome;
+    $sufixo = ' ' . $sobrenome;
+    if (str_ends_with($nome, $sufixo)) {
+        return substr($nome, 0, -strlen($sufixo));
+    }
+    return $nome;
+}
+
 /* Formata um tamanho em bytes pra "KB"/"MB" legível */
 function tamanho_arquivo_fmt(int $bytes): string {
     if ($bytes >= 1024 * 1024) return number_format($bytes / (1024 * 1024), 1, ',', '.') . ' MB';
@@ -351,8 +403,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$is_admin) { $_SESSION['msg_erro'] = "Acesso negado."; header("Location: gerenciar.php?id=$evento_id"); exit; }
 
         $tipo    = trim($_POST['tipo_padrao'] ?? '');
-        $stmt    = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ?");
-        $stmt->execute([$tipo]);
+        $stmt    = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ? AND tipo_evento = ?");
+        $stmt->execute([$tipo, $modulo_ativo]);
         $modelos = $stmt->fetchAll(PDO::FETCH_ASSOC);
         if (!empty($modelos)) {
             $ins = $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0)");
@@ -491,17 +543,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // 10. Criar convite (titular + acompanhantes) — sempre entra como "pendente"
     if (isset($_POST['adicionar_convidado_admin'])) {
         $nome       = trim($_POST['nome_convidado']       ?? '');
+        $sobrenome  = trim($_POST['sobrenome_convidado']  ?? '');
         $fone       = trim($_POST['telefone_convidado']   ?? '');
         $cat        = trim($_POST['categoria_convidado']  ?? 'Outros');
         $nomes_acomp  = $_POST['nome_acompanhante_novo']  ?? [];
         $faixas_acomp = $_POST['faixa_acompanhante_novo'] ?? [];
+        $nome_completo = trim($nome . ($sobrenome !== '' ? ' ' . $sobrenome : ''));
         if ($nome === '') {
             $_SESSION['msg_erro'] = "Informe o nome do convidado.";
         } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
             $_SESSION['msg_erro'] = "Informe um telefone/WhatsApp válido (com DDD) para o convidado.";
+        } elseif (($dup_nome = convidado_telefone_duplicado($pdo, $evento_id, $fone)) !== null) {
+            $_SESSION['msg_erro'] = "Esse telefone já está cadastrado para <strong>" . htmlspecialchars($dup_nome, ENT_QUOTES, 'UTF-8') . "</strong>. Cada convidado precisa de um número diferente.";
+        } elseif (convidado_nome_duplicado($pdo, $evento_id, $nome_completo)) {
+            $_SESSION['msg_erro'] = "Já existe um convite com o nome <strong>" . htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8') . "</strong>. Informe um sobrenome diferente pra identificar cada um.";
         } else {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, confirmado) VALUES (?, ?, ?, ?, 0)")
-                ->execute([$evento_id, $nome, $fone, $cat]);
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, sobrenome, telefone, categoria, confirmado) VALUES (?, ?, ?, ?, ?, 0)")
+                ->execute([$evento_id, $nome_completo, $sobrenome ?: null, $fone, $cat]);
             $novo_id = (int)$pdo->lastInsertId();
             sincronizar_acompanhantes($pdo, $evento_id, $novo_id, [], $nomes_acomp, $faixas_acomp);
             $_SESSION['msg_sucesso'] = "Convite criado!";
@@ -525,18 +583,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['editar_convidado'])) {
         $id         = (int)($_POST['convidado_id'] ?? 0);
         $nome       = trim($_POST['nome_convidado']      ?? '');
+        $sobrenome  = trim($_POST['sobrenome_convidado']  ?? '');
         $fone       = trim($_POST['telefone_convidado']  ?? '');
         $cat        = trim($_POST['categoria_convidado'] ?? '') ?: 'Outros';
         $ids_acomp    = $_POST['id_acompanhante_edit']    ?? [];
         $nomes_acomp  = $_POST['nome_acompanhante_edit']  ?? [];
         $faixas_acomp = $_POST['faixa_acompanhante_edit'] ?? [];
+        $nome_completo = trim($nome . ($sobrenome !== '' ? ' ' . $sobrenome : ''));
         if ($id <= 0 || $nome === '') {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o nome do convidado.']);
         } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Informe um telefone/WhatsApp válido (com DDD) para o convidado.']);
+        } elseif (($dup_nome = convidado_telefone_duplicado($pdo, $evento_id, $fone, $id)) !== null) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Esse telefone já está cadastrado para ' . $dup_nome . '. Cada convidado precisa de um número diferente.']);
+        } elseif (convidado_nome_duplicado($pdo, $evento_id, $nome_completo, $id)) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Já existe um convite com o nome ' . htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8') . '. Informe um sobrenome diferente pra identificar cada um.']);
         } else {
-            $pdo->prepare("UPDATE convidados SET nome = ?, telefone = ?, categoria = ? WHERE id = ? AND evento_id = ?")
-                ->execute([$nome, $fone, $cat, $id, $evento_id]);
+            $pdo->prepare("UPDATE convidados SET nome = ?, sobrenome = ?, telefone = ?, categoria = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$nome_completo, $sobrenome ?: null, $fone, $cat, $id, $evento_id]);
             sincronizar_acompanhantes($pdo, $evento_id, $id, $ids_acomp, $nomes_acomp, $faixas_acomp);
             if ($ajax) {
                 $stAc = $pdo->prepare("SELECT id, nome, faixa_etaria FROM convidados WHERE convidado_principal_id = ? AND evento_id = ?");
@@ -545,7 +609,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 json_out([
                     'ok'             => true,
                     'id'             => $id,
-                    'nome'           => htmlspecialchars($nome, ENT_QUOTES, 'UTF-8'),
+                    'nome'           => htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8'),
+                    'sobrenome'      => htmlspecialchars($sobrenome, ENT_QUOTES, 'UTF-8'),
+                    'nome_sem_sobrenome' => htmlspecialchars($nome, ENT_QUOTES, 'UTF-8'),
                     'categoria'      => htmlspecialchars($cat, ENT_QUOTES, 'UTF-8'),
                     'telefone'       => htmlspecialchars($fone, ENT_QUOTES, 'UTF-8'),
                     'acompanhantes'  => $acompanhantes_atuais,
@@ -2120,6 +2186,25 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
           </div>
         </a>
 
+        <a href="convidados.php?id=<?= $evento_id ?>" class="btn-musicas-sidebar text-decoration-none" style="background: linear-gradient(135deg, #cffafe 0%, #a5f3fc 100%); border-color: #67e8f9;">
+          <div class="d-flex justify-content-between align-items-center gap-2 p-3">
+            <div class="d-flex align-items-center gap-3" style="min-width:0;">
+              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0" style="width:44px;height:44px;">
+                <i class="bi bi-people-fill fs-4" style="color:#0891b2;"></i>
+              </div>
+              <div style="min-width:0;">
+                <h6 class="mb-0 fw-bold text-dark text-truncate">Gerenciar Convidados</h6>
+                <small class="text-dark text-truncate d-block" style="font-size:.78rem;opacity:.6;">
+                  <?= $total_conf ?> confirmado<?= $total_conf !== 1 ? 's' : '' ?>
+                </small>
+              </div>
+            </div>
+            <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm flex-shrink-0" style="pointer-events:none; background:#0891b2; border:none; color:#fff;">
+              Abrir <i class="bi bi-arrow-right ms-1"></i>
+            </span>
+          </div>
+        </a>
+
         <div class="card shadow-sm border-0" style="border-radius: var(--radius);">
           <div class="card-body p-3">
             <div class="d-flex justify-content-between align-items-center mb-3 border-bottom pb-2">
@@ -2303,9 +2388,16 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
         <input type="hidden" name="adicionar_convidado_admin" value="1">
         <div class="modal-body p-4">
-          <div class="mb-3">
-            <label class="form-label small fw-bold text-secondary">Nome do Convidado / Família (Titular)</label>
-            <input type="text" name="nome_convidado" class="form-control" required>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <label class="form-label small fw-bold text-secondary">Nome / Família</label>
+              <input type="text" name="nome_convidado" id="add-nome" class="form-control" required>
+              <div class="invalid-feedback aviso-nome-duplicado-add"></div>
+            </div>
+            <div class="col-6">
+              <label class="form-label small fw-bold text-secondary">Sobrenome</label>
+              <input type="text" name="sobrenome_convidado" id="add-sobrenome" class="form-control" placeholder="Opcional">
+            </div>
           </div>
           <div class="row g-3 mb-4">
             <div class="col-12 col-md-6">
@@ -2325,7 +2417,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
             </div>
             <div class="col-12 col-md-6">
               <label class="form-label small fw-bold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" name="telefone_convidado" class="form-control" placeholder="(00) 00000-0000" required>
+              <input type="text" inputmode="numeric" name="telefone_convidado" class="form-control input-telefone" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-4 text-secondary opacity-25">
@@ -2356,9 +2448,16 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
       <form id="form-edit-convidado">
         <input type="hidden" id="econv-id">
         <div class="modal-body p-4">
-          <div class="mb-3">
-            <label class="form-label small fw-bold text-secondary">Nome do Convidado / Família (Titular)</label>
-            <input type="text" id="econv-nome" class="form-control" required>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <label class="form-label small fw-bold text-secondary">Nome / Família</label>
+              <input type="text" id="econv-nome" class="form-control" required>
+              <div class="invalid-feedback aviso-nome-duplicado-edit"></div>
+            </div>
+            <div class="col-6">
+              <label class="form-label small fw-bold text-secondary">Sobrenome</label>
+              <input type="text" id="econv-sobrenome" class="form-control" placeholder="Opcional">
+            </div>
           </div>
           <div class="row g-3 mb-4">
             <div class="col-12 col-md-6">
@@ -2367,7 +2466,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
             </div>
             <div class="col-12 col-md-6">
               <label class="form-label small fw-bold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" id="econv-telefone" class="form-control" placeholder="(00) 00000-0000" required>
+              <input type="text" inputmode="numeric" id="econv-telefone" class="form-control input-telefone" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-4 text-secondary opacity-25">
@@ -3151,6 +3250,32 @@ async function ajax(obj) {
   return r.json();
 }
 
+/* ---- Máscara de telefone BR: (DD) XXXX-XXXX pra fixo, (DD) 9 XXXX-XXXX pra
+   celular — o "9" do celular fica separado pra ficar claro que é o prefixo. ---- */
+function formatarTelefoneBr(valorDigitado) {
+  const digitos = valorDigitado.replace(/\D/g, '');
+  if (digitos.length === 0) return '';
+  // Não trava a quantidade de dígitos nem força DDD/formato brasileiro pra
+  // números fora do padrão BR (DDD + 8 ou 9 dígitos) — pode ser um número
+  // internacional, com DDI ou outro formato qualquer.
+  if (digitos.length > 11) return digitos;
+  const ddd = digitos.slice(0, 2);
+  const resto = digitos.slice(2);
+  if (resto.length === 0) return '(' + ddd;
+  let out = '(' + ddd + ') ';
+  if (resto.length === 9) {
+    out += resto.slice(0, 1) + ' ' + resto.slice(1, 5) + (resto.length > 5 ? '-' + resto.slice(5, 9) : '');
+  } else {
+    out += resto.slice(0, 4) + (resto.length > 4 ? '-' + resto.slice(4, 8) : '');
+  }
+  return out;
+}
+document.querySelectorAll('.input-telefone').forEach(function (input) {
+  input.addEventListener('input', function () {
+    input.value = formatarTelefoneBr(input.value);
+  });
+});
+
 /* ---- BRL helpers — CORRIGIDO: remove "R$ " antes de parsear ---- */
 function brl(n) {
   return 'R$ ' + parseFloat(n).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -3550,7 +3675,7 @@ function bindEditConv(btn) {
     document.getElementById('econv-id').value        = btn.dataset.id;
     document.getElementById('econv-nome').value       = btn.dataset.nome;
     document.getElementById('econv-categoria').value  = btn.dataset.categoria;
-    document.getElementById('econv-telefone').value   = btn.dataset.telefone;
+    document.getElementById('econv-telefone').value   = formatarTelefoneBr(btn.dataset.telefone || '');
 
     const listaEdit = document.getElementById('acomp-edit-lista');
     listaEdit.innerHTML = '';

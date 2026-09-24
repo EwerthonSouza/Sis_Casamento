@@ -43,6 +43,17 @@ if (!schema_ja_verificado('confirmar_v2')) {
     marcar_schema_verificado('confirmar_v2');
 }
 
+// Posição de enquadramento da foto do casal no convite (arrastar pra ajustar,
+// em vez de sempre cortar centralizado). Marcador próprio: 'confirmar_v2' já
+// tinha rodado antes de essas colunas existirem.
+if (!schema_ja_verificado('convite_foto_posicao_v1')) {
+    try { $pdo->query("SELECT foto_casal_pos_x FROM eventos LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal_pos_x DECIMAL(5,2) NOT NULL DEFAULT 50"); }
+    try { $pdo->query("SELECT foto_casal_pos_y FROM eventos LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal_pos_y DECIMAL(5,2) NOT NULL DEFAULT 50"); }
+    marcar_schema_verificado('convite_foto_posicao_v1');
+}
+
 // ajustar_cor() já vem de modulos_evento.inc.php (compartilhada com o resto do painel).
 
 const FAIXAS_ETARIAS = [
@@ -354,8 +365,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <div class="container">
     <div class="rsvp-card">
         <div class="rsvp-topo">
-            <?php if (!empty($evento['foto_casal_ativa']) && !empty($evento['foto_casal'])): ?>
-                <img src="uploads/<?= htmlspecialchars($evento['foto_casal'], ENT_QUOTES, 'UTF-8') ?>" alt="<?= htmlspecialchars($labels['label_foto_convite']) ?>" class="foto-casal">
+            <?php if (!empty($evento['foto_casal_ativa']) && !empty($evento['foto_casal'])):
+                $foto_pos_x = $evento['foto_casal_pos_x'] ?? 50;
+                $foto_pos_y = $evento['foto_casal_pos_y'] ?? 50;
+            ?>
+                <img src="uploads/<?= htmlspecialchars($evento['foto_casal'], ENT_QUOTES, 'UTF-8') ?>" alt="<?= htmlspecialchars($labels['label_foto_convite']) ?>" class="foto-casal"
+                     style="object-position: <?= htmlspecialchars((string)$foto_pos_x, ENT_QUOTES, 'UTF-8') ?>% <?= htmlspecialchars((string)$foto_pos_y, ENT_QUOTES, 'UTF-8') ?>%;">
             <?php else: ?>
                 <div class="anel"><i class="bi <?= htmlspecialchars($labels['icone_convite_publico']) ?>"></i></div>
             <?php endif; ?>

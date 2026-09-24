@@ -14,6 +14,7 @@ require_once 'notificacoes.inc.php';
 
 garantir_coluna_tipo_evento($pdo);
 garantir_coluna_nome_secundario_cliente($pdo);
+garantir_coluna_sobrenome_convidado($pdo);
 
 if (empty($_SESSION['evento_id'])) {
     header("Location: hub_eventos_cliente.php");
@@ -97,6 +98,16 @@ if (!schema_ja_verificado('noivos')) {
     catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN modo_confirmacao VARCHAR(20) NOT NULL DEFAULT 'geral'"); }
 
     marcar_schema_verificado('noivos');
+}
+
+// Posição de enquadramento da foto do casal (arrastar pra ajustar) — marcador
+// próprio porque 'noivos' já tinha rodado antes de essas colunas existirem.
+if (!schema_ja_verificado('convite_foto_posicao_v1')) {
+    try { $pdo->query("SELECT foto_casal_pos_x FROM eventos LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal_pos_x DECIMAL(5,2) NOT NULL DEFAULT 50"); }
+    try { $pdo->query("SELECT foto_casal_pos_y FROM eventos LIMIT 1"); }
+    catch (Exception $e) { $pdo->exec("ALTER TABLE eventos ADD COLUMN foto_casal_pos_y DECIMAL(5,2) NOT NULL DEFAULT 50"); }
+    marcar_schema_verificado('convite_foto_posicao_v1');
 }
 
 // Tabela de documentos/uploads (contrato, RG, comprovantes...) — compartilhada com
@@ -213,6 +224,56 @@ function sincronizar_acompanhantes(PDO $pdo, int $evento_id, int $principal_id, 
     }
 }
 
+/** Verifica se já existe outro convidado titular deste evento com o mesmo
+ *  telefone (comparando só os dígitos, já que a formatação pode variar).
+ *  Cada convidado precisa de um número próprio, pois é o que identifica o
+ *  link de convite individual. Retorna o nome do convidado conflitante, ou
+ *  null se não houver. */
+function convidado_telefone_duplicado(PDO $pdo, int $evento_id, string $fone, int $ignorar_id = 0): ?string {
+    $digitosNovo = preg_replace('/\D+/', '', $fone);
+    if ($digitosNovo === '') return null;
+    $stmt = $pdo->prepare("SELECT id, nome, telefone FROM convidados WHERE evento_id = ? AND convidado_principal_id IS NULL AND telefone IS NOT NULL AND telefone <> ''");
+    $stmt->execute([$evento_id]);
+    foreach ($stmt->fetchAll() as $c) {
+        if ((int)$c['id'] === $ignorar_id) continue;
+        if (preg_replace('/\D+/', '', $c['telefone']) === $digitosNovo) {
+            return $c['nome'];
+        }
+    }
+    return null;
+}
+
+/** Verifica se já existe outro convidado titular deste evento com o mesmo
+ *  primeiro nome E sem sobrenome cadastrado (ambíguo — dois "Marcos" sem
+ *  como diferenciar). Só é considerado conflito quando o convidado NOVO
+ *  também está sem sobrenome — se ele já informou um, a ambiguidade dessa
+ *  criação/edição específica já foi resolvida. */
+function convidado_nome_duplicado(PDO $pdo, int $evento_id, string $nomeCompleto, int $ignorar_id = 0): bool {
+    $alvo = trim($nomeCompleto);
+    if ($alvo === '') return false;
+    // Compara o nome final (já com sobrenome concatenado, se houver) contra o
+    // de todo mundo — não só contra quem também está sem sobrenome. Dar um
+    // sobrenome só resolve a ambiguidade se o resultado for um nome diferente;
+    // repetir "Rick" + "Bruno" três vezes tem que continuar batendo.
+    $stmt = $pdo->prepare("SELECT id FROM convidados WHERE evento_id = ? AND convidado_principal_id IS NULL AND LOWER(TRIM(nome)) = LOWER(TRIM(?)) AND id != ?");
+    $stmt->execute([$evento_id, $alvo, $ignorar_id]);
+    return (bool)$stmt->fetchColumn();
+}
+
+/** Pra repopular o campo "Nome" do modal de edição sem duplicar o sobrenome:
+ *  como "nome" guarda o nome completo já concatenado ("Marcos Vinícius"),
+ *  remove o sufixo " + sobrenome" pra voltar só o primeiro nome digitado.
+ *  Registros antigos (sem sobrenome próprio) retornam o nome como está. */
+function nome_convidado_sem_sobrenome(string $nome, ?string $sobrenome): string {
+    $sobrenome = trim((string)$sobrenome);
+    if ($sobrenome === '') return $nome;
+    $sufixo = ' ' . $sobrenome;
+    if (str_ends_with($nome, $sufixo)) {
+        return substr($nome, 0, -strlen($sufixo));
+    }
+    return $nome;
+}
+
 /* Retorna [classe_css, texto] do badge de prazo de uma tarefa */
 function badge_prazo(?string $data_prazo, bool $done): array {
     if (empty($data_prazo)) return ['sem', 'Sem prazo'];
@@ -314,17 +375,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // 6b. Criar convite (Noivos) — sempre entra como "pendente"
     if (isset($_POST['adicionar_convidado_noivos'])) {
         $nome       = trim($_POST['nome_convidado']      ?? '');
+        $sobrenome  = trim($_POST['sobrenome_convidado']  ?? '');
         $fone       = trim($_POST['telefone_convidado']  ?? '');
         $cat        = trim($_POST['categoria_convidado'] ?? '') ?: 'Outros';
         $nomes_acomp  = $_POST['nome_acompanhante_novo']  ?? [];
         $faixas_acomp = $_POST['faixa_acompanhante_novo'] ?? [];
+        $nome_completo = trim($nome . ($sobrenome !== '' ? ' ' . $sobrenome : ''));
         if ($nome === '') {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o nome do convidado.']);
         } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Informe um telefone/WhatsApp válido (com DDD) para o convidado.']);
+        } elseif (($dup_nome = convidado_telefone_duplicado($pdo, $evento_id, $fone)) !== null) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Esse telefone já está cadastrado para ' . $dup_nome . '. Cada convidado precisa de um número diferente.']);
+        } elseif (convidado_nome_duplicado($pdo, $evento_id, $nome_completo)) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Já existe um convite com o nome ' . htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8') . '. Informe um sobrenome diferente pra identificar cada um.']);
         } else {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, confirmado) VALUES (?, ?, ?, ?, 0)")
-                ->execute([$evento_id, $nome, $fone, $cat]);
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, sobrenome, telefone, categoria, confirmado) VALUES (?, ?, ?, ?, ?, 0)")
+                ->execute([$evento_id, $nome_completo, $sobrenome ?: null, $fone, $cat]);
             $novo_id = (int)$pdo->lastInsertId();
             sincronizar_acompanhantes($pdo, $evento_id, $novo_id, [], $nomes_acomp, $faixas_acomp);
             if ($ajax) {
@@ -332,13 +399,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stAc->execute([$novo_id, $evento_id]);
                 $acompanhantes_atuais = array_map(fn($a) => ['id' => $a['id'], 'nome' => $a['nome'], 'faixa' => $a['faixa_etaria']], $stAc->fetchAll(PDO::FETCH_ASSOC));
                 json_out([
-                    'ok'             => true,
-                    'id'             => $novo_id,
-                    'nome'           => htmlspecialchars($nome),
-                    'categoria'      => htmlspecialchars($cat),
-                    'telefone'       => htmlspecialchars($fone),
-                    'acompanhantes'  => $acompanhantes_atuais,
-                    'confirmado'     => 0,
+                    'ok'                  => true,
+                    'id'                  => $novo_id,
+                    'nome'                => htmlspecialchars($nome_completo),
+                    'nome_sem_sobrenome'  => htmlspecialchars($nome),
+                    'sobrenome'           => htmlspecialchars($sobrenome),
+                    'categoria'           => htmlspecialchars($cat),
+                    'telefone'            => htmlspecialchars($fone),
+                    'acompanhantes'       => $acompanhantes_atuais,
+                    'confirmado'          => 0,
                 ]);
             }
         }
@@ -349,27 +418,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['editar_convidado_noivos'])) {
         $id         = (int)($_POST['convidado_id'] ?? 0);
         $nome       = trim($_POST['nome_convidado']      ?? '');
+        $sobrenome  = trim($_POST['sobrenome_convidado']  ?? '');
         $fone       = trim($_POST['telefone_convidado']  ?? '');
         $cat        = trim($_POST['categoria_convidado'] ?? '') ?: 'Outros';
         $ids_acomp    = $_POST['id_acompanhante_edit']    ?? [];
         $nomes_acomp  = $_POST['nome_acompanhante_edit']  ?? [];
         $faixas_acomp = $_POST['faixa_acompanhante_edit'] ?? [];
+        $nome_completo = trim($nome . ($sobrenome !== '' ? ' ' . $sobrenome : ''));
         if ($id <= 0 || $nome === '') {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o nome do convidado.']);
         } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Informe um telefone/WhatsApp válido (com DDD) para o convidado.']);
+        } elseif (($dup_nome = convidado_telefone_duplicado($pdo, $evento_id, $fone, $id)) !== null) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Esse telefone já está cadastrado para ' . $dup_nome . '. Cada convidado precisa de um número diferente.']);
+        } elseif (convidado_nome_duplicado($pdo, $evento_id, $nome_completo, $id)) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Já existe um convite com o nome ' . htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8') . '. Informe um sobrenome diferente pra identificar cada um.']);
         } else {
-            $pdo->prepare("UPDATE convidados SET nome = ?, telefone = ?, categoria = ? WHERE id = ? AND evento_id = ?")
-                ->execute([$nome, $fone, $cat, $id, $evento_id]);
+            $pdo->prepare("UPDATE convidados SET nome = ?, sobrenome = ?, telefone = ?, categoria = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$nome_completo, $sobrenome ?: null, $fone, $cat, $id, $evento_id]);
             sincronizar_acompanhantes($pdo, $evento_id, $id, $ids_acomp, $nomes_acomp, $faixas_acomp);
             if ($ajax) {
                 $stAc = $pdo->prepare("SELECT id, nome, faixa_etaria FROM convidados WHERE convidado_principal_id = ? AND evento_id = ?");
                 $stAc->execute([$id, $evento_id]);
                 $acompanhantes_atuais = array_map(fn($a) => ['id' => $a['id'], 'nome' => $a['nome'], 'faixa' => $a['faixa_etaria']], $stAc->fetchAll(PDO::FETCH_ASSOC));
                 json_out([
-                    'ok'             => true,
-                    'id'             => $id,
-                    'nome'           => htmlspecialchars($nome),
+                    'ok'                  => true,
+                    'id'                  => $id,
+                    'nome'                => htmlspecialchars($nome_completo),
+                    'nome_sem_sobrenome'  => htmlspecialchars($nome),
+                    'sobrenome'           => htmlspecialchars($sobrenome),
                     'categoria'      => htmlspecialchars($cat),
                     'telefone'       => htmlspecialchars($fone),
                     'acompanhantes'  => $acompanhantes_atuais,
@@ -470,6 +547,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // 10. Salvar / (re)ativar ou desativar a foto do casal exibida no convite
     if (isset($_POST['salvar_foto_casal'])) {
         $ativa = ($_POST['foto_ativa'] ?? '0') === '1';
+        $pos_x = isset($_POST['foto_casal_pos_x']) ? max(0, min(100, (float)$_POST['foto_casal_pos_x'])) : 50;
+        $pos_y = isset($_POST['foto_casal_pos_y']) ? max(0, min(100, (float)$_POST['foto_casal_pos_y'])) : 50;
 
         if (!$ativa) {
             $pdo->prepare("UPDATE eventos SET foto_casal_ativa = 0 WHERE id = ?")->execute([$evento_id]);
@@ -493,15 +572,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $antigo = './uploads/' . $evento['foto_casal'];
                         if (is_file($antigo)) @unlink($antigo);
                     }
-                    $pdo->prepare("UPDATE eventos SET foto_casal = ?, foto_casal_ativa = 1 WHERE id = ?")
-                        ->execute([$novo_nome, $evento_id]);
+                    $pdo->prepare("UPDATE eventos SET foto_casal = ?, foto_casal_ativa = 1, foto_casal_pos_x = ?, foto_casal_pos_y = ? WHERE id = ?")
+                        ->execute([$novo_nome, $pos_x, $pos_y, $evento_id]);
                     if ($ajax) json_out(['ok' => true, 'ativa' => 1, 'foto_url' => 'uploads/' . $novo_nome]);
                 } else {
                     if ($ajax) json_out(['ok' => false, 'msg' => 'Falha ao salvar o arquivo no servidor.']);
                 }
             }
         } elseif (!empty($evento['foto_casal'])) {
-            $pdo->prepare("UPDATE eventos SET foto_casal_ativa = 1 WHERE id = ?")->execute([$evento_id]);
+            $pdo->prepare("UPDATE eventos SET foto_casal_ativa = 1, foto_casal_pos_x = ?, foto_casal_pos_y = ? WHERE id = ?")
+                ->execute([$pos_x, $pos_y, $evento_id]);
             if ($ajax) json_out(['ok' => true, 'ativa' => 1, 'foto_url' => 'uploads/' . $evento['foto_casal']]);
         } else {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Anexe uma foto para ativar essa opção.']);
@@ -542,6 +622,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($nome_link === '' || strlen($tel_link_digits) < 10) {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o nome e um número de WhatsApp válido (com DDD).']);
+            header("Location: noivos.php"); exit;
+        }
+        $dup_nome_link = convidado_telefone_duplicado($pdo, $evento_id, $tel_link);
+        if ($dup_nome_link !== null) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Esse telefone já está cadastrado para ' . $dup_nome_link . '. Cada convidado precisa de um número diferente.']);
+            header("Location: noivos.php"); exit;
+        }
+        if (convidado_nome_duplicado($pdo, $evento_id, $nome_link)) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Já existe um convite com o nome ' . htmlspecialchars($nome_link, ENT_QUOTES, 'UTF-8') . '. Use a opção "Criar Convite" e informe um sobrenome pra diferenciar.']);
             header("Location: noivos.php"); exit;
         }
         // Número digitado é só DDD+telefone (10/11 dígitos); sem o código do país o
@@ -1610,9 +1699,16 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       </div>
       <form id="form-convidado">
         <div class="modal-body py-3">
-          <div class="mb-3">
-            <label class="form-label small fw-semibold text-secondary">Nome do Convidado / Família</label>
-            <input type="text" id="conv-nome" class="form-control rounded-3" required>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <label class="form-label small fw-semibold text-secondary">Nome / Família</label>
+              <input type="text" id="conv-nome" class="form-control rounded-3" required>
+              <div class="invalid-feedback aviso-nome-duplicado-add"></div>
+            </div>
+            <div class="col-6">
+              <label class="form-label small fw-semibold text-secondary">Sobrenome</label>
+              <input type="text" id="conv-sobrenome" class="form-control rounded-3" placeholder="Opcional">
+            </div>
           </div>
           <div class="row g-3 mb-3">
             <div class="col-md-6">
@@ -1627,7 +1723,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
             </div>
             <div class="col-md-6">
               <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" id="conv-telefone" class="form-control rounded-3" placeholder="(00) 00000-0000" required>
+              <input type="text" inputmode="numeric" id="conv-telefone" class="form-control rounded-3 input-telefone" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-3 text-secondary opacity-25">
@@ -1661,9 +1757,16 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
       <form id="form-edit-convidado">
         <input type="hidden" id="econv-id">
         <div class="modal-body py-3">
-          <div class="mb-3">
-            <label class="form-label small fw-semibold text-secondary">Nome do Convidado / Família</label>
-            <input type="text" id="econv-nome" class="form-control rounded-3" required>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <label class="form-label small fw-semibold text-secondary">Nome / Família</label>
+              <input type="text" id="econv-nome" class="form-control rounded-3" required>
+              <div class="invalid-feedback aviso-nome-duplicado-edit"></div>
+            </div>
+            <div class="col-6">
+              <label class="form-label small fw-semibold text-secondary">Sobrenome</label>
+              <input type="text" id="econv-sobrenome" class="form-control rounded-3" placeholder="Opcional">
+            </div>
           </div>
           <div class="row g-3 mb-3">
             <div class="col-md-6">
@@ -1672,7 +1775,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
             </div>
             <div class="col-md-6">
               <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" id="econv-telefone" class="form-control rounded-3" placeholder="(00) 00000-0000" required>
+              <input type="text" inputmode="numeric" id="econv-telefone" class="form-control rounded-3 input-telefone" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-3 text-secondary opacity-25">
@@ -1712,7 +1815,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
             </div>
             <div class="col-md-6">
               <label class="form-label small fw-bold text-secondary mb-1">WhatsApp</label>
-              <input type="text" id="link-esp-telefone" class="form-control form-control-sm" placeholder="(00) 00000-0000">
+              <input type="text" inputmode="numeric" id="link-esp-telefone" class="form-control form-control-sm input-telefone" placeholder="(00) 00000-0000">
             </div>
           </div>
 
@@ -1776,12 +1879,18 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
           </div>
 
           <div id="area-foto-convite" class="mt-3 pt-3 border-top" style="border-color:#fecaca !important; <?= !empty($evento['foto_casal_ativa']) ? '' : 'display:none;' ?>">
-            <div class="text-center mb-3">
-              <img id="preview-foto-convite"
-                   src="<?= !empty($evento['foto_casal']) ? 'uploads/' . htmlspecialchars($evento['foto_casal']) : '' ?>"
-                   class="rounded-circle shadow-sm <?= empty($evento['foto_casal']) ? 'd-none' : '' ?>"
-                   style="width:96px;height:96px;object-fit:cover;border:3px solid #fff;">
+            <div class="text-center mb-2">
+              <div id="crop-foto-convite"
+                   class="rounded-circle shadow-sm mx-auto <?= empty($evento['foto_casal']) ? 'd-none' : '' ?>"
+                   style="width:140px;height:140px;border:3px solid #fff;cursor:grab;background-repeat:no-repeat;background-size:cover;
+                          background-image:<?= !empty($evento['foto_casal']) ? "url('uploads/" . htmlspecialchars($evento['foto_casal'], ENT_QUOTES, 'UTF-8') . "')" : 'none' ?>;
+                          background-position:<?= htmlspecialchars((string)($evento['foto_casal_pos_x'] ?? 50), ENT_QUOTES, 'UTF-8') ?>% <?= htmlspecialchars((string)($evento['foto_casal_pos_y'] ?? 50), ENT_QUOTES, 'UTF-8') ?>%;"></div>
+              <small class="text-muted d-block mt-2" id="dica-arrastar-foto" style="font-size:.7rem; <?= empty($evento['foto_casal']) ? 'display:none;' : '' ?>">
+                <i class="bi bi-arrows-move me-1"></i>Arraste a foto para ajustar o enquadramento
+              </small>
             </div>
+            <input type="hidden" id="input-foto-convite-pos-x" value="<?= htmlspecialchars((string)($evento['foto_casal_pos_x'] ?? 50), ENT_QUOTES, 'UTF-8') ?>">
+            <input type="hidden" id="input-foto-convite-pos-y" value="<?= htmlspecialchars((string)($evento['foto_casal_pos_y'] ?? 50), ENT_QUOTES, 'UTF-8') ?>">
             <label class="form-label small fw-semibold text-secondary mb-1">Escolher imagem</label>
             <input type="file" id="input-foto-convite" accept="image/png, image/jpeg, image/webp" class="form-control form-control-sm mb-3 bg-white">
             <div class="d-flex gap-2">
@@ -2524,7 +2633,8 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                           </button>
                           <button type="button" class="btn p-0 border-0 bg-transparent text-primary btn-edit-conv"
                                   data-id="<?= $con['id'] ?>"
-                                  data-nome="<?= htmlspecialchars($con['nome'], ENT_QUOTES, 'UTF-8') ?>"
+                                  data-nome="<?= htmlspecialchars(nome_convidado_sem_sobrenome($con['nome'], $con['sobrenome'] ?? null), ENT_QUOTES, 'UTF-8') ?>"
+                                  data-sobrenome="<?= htmlspecialchars($con['sobrenome'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                                   data-categoria="<?= htmlspecialchars($con['categoria'], ENT_QUOTES, 'UTF-8') ?>"
                                   data-telefone="<?= htmlspecialchars($con['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                                   data-acompanhantes-json="<?= htmlspecialchars(json_encode(array_map(fn($a) => ['id' => $a['id'], 'nome' => $a['nome'], 'faixa' => $a['faixa_etaria']], $acompCon)), ENT_QUOTES, 'UTF-8') ?>"
@@ -3183,6 +3293,13 @@ const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;
 const NOME_CASAL = <?= json_encode($evento['nome']) ?>;
 const MSG_CONVITE_PREFIXO = <?= json_encode($labels['msg_whatsapp_convite']) ?>;
 const LABEL_FOTO_CONVITE = <?= json_encode($labels['label_foto_convite']) ?>;
+// Nome completo (já com sobrenome, se houver) de cada convidado titular —
+// usado só pro aviso "já existe um convite com esse nome" ao criar/editar,
+// sem precisar de uma chamada AJAX extra a cada tecla digitada.
+const CONVIDADOS_NOMES = <?= json_encode(array_values(array_map(
+    fn($c) => ['id' => (int)$c['id'], 'nome' => mb_strtolower(trim($c['nome']))],
+    array_filter($lista_convidados, fn($c) => empty($c['convidado_principal_id']))
+))) ?>;
 
 async function ajax(obj) {
   obj.is_ajax = '1';
@@ -3198,6 +3315,32 @@ async function ajax(obj) {
   const r = await fetch(SELF, { method: 'POST', body: fd });
   return r.json();
 }
+
+/* ---- Máscara de telefone BR: (DD) XXXX-XXXX pra fixo, (DD) 9 XXXX-XXXX pra
+   celular — o "9" do celular fica separado pra ficar claro que é o prefixo. ---- */
+function formatarTelefoneBr(valorDigitado) {
+  const digitos = valorDigitado.replace(/\D/g, '');
+  if (digitos.length === 0) return '';
+  // Não trava a quantidade de dígitos nem força DDD/formato brasileiro pra
+  // números fora do padrão BR (DDD + 8 ou 9 dígitos) — pode ser um número
+  // internacional, com DDI ou outro formato qualquer.
+  if (digitos.length > 11) return digitos;
+  const ddd = digitos.slice(0, 2);
+  const resto = digitos.slice(2);
+  if (resto.length === 0) return '(' + ddd;
+  let out = '(' + ddd + ') ';
+  if (resto.length === 9) {
+    out += resto.slice(0, 1) + ' ' + resto.slice(1, 5) + (resto.length > 5 ? '-' + resto.slice(5, 9) : '');
+  } else {
+    out += resto.slice(0, 4) + (resto.length > 4 ? '-' + resto.slice(4, 8) : '');
+  }
+  return out;
+}
+document.querySelectorAll('.input-telefone').forEach(function (input) {
+  input.addEventListener('input', function () {
+    input.value = formatarTelefoneBr(input.value);
+  });
+});
 
 /* ============================================================
    FOTO DO CASAL E COR DA PÁGINA DO CONVITE
@@ -3220,11 +3363,72 @@ function initCustomizacaoConvite(sufixo) {
   const switchFoto     = document.getElementById('switch-foto-convite' + sufixo);
   const areaFoto       = document.getElementById('area-foto-convite' + sufixo);
   const inputFoto      = document.getElementById('input-foto-convite' + sufixo);
+  const cropFoto       = document.getElementById('crop-foto-convite' + sufixo);
+  const dicaArrastar   = document.getElementById('dica-arrastar-foto' + sufixo);
+  const inputPosX      = document.getElementById('input-foto-convite-pos-x' + sufixo);
+  const inputPosY      = document.getElementById('input-foto-convite-pos-y' + sufixo);
   const btnSalvarFoto  = document.getElementById('btn-salvar-foto-convite' + sufixo);
   const btnRemoverFoto = document.getElementById('btn-remover-foto-convite' + sufixo);
 
   switchFoto?.addEventListener('change', () => {
     areaFoto.style.display = switchFoto.checked ? '' : 'none';
+  });
+
+  function aplicarPosicaoFoto() {
+    cropFoto.style.backgroundPosition = inputPosX.value + '% ' + inputPosY.value + '%';
+  }
+
+  // Arrastar a foto dentro do círculo pra escolher qual parte fica visível —
+  // move em pixels, converte pra % relativo ao próprio círculo.
+  (function initArrastarFoto() {
+    if (!cropFoto) return;
+    let arrastando = false, inicioX = 0, inicioY = 0, posXInicial = 50, posYInicial = 50;
+
+    function comecar(clientX, clientY) {
+      if (cropFoto.classList.contains('d-none')) return;
+      arrastando = true;
+      inicioX = clientX; inicioY = clientY;
+      posXInicial = parseFloat(inputPosX.value) || 50;
+      posYInicial = parseFloat(inputPosY.value) || 50;
+      cropFoto.style.cursor = 'grabbing';
+    }
+    function mover(clientX, clientY) {
+      if (!arrastando) return;
+      const rect = cropFoto.getBoundingClientRect();
+      const deltaX = ((clientX - inicioX) / rect.width) * 100;
+      const deltaY = ((clientY - inicioY) / rect.height) * 100;
+      inputPosX.value = Math.min(100, Math.max(0, posXInicial - deltaX)).toFixed(1);
+      inputPosY.value = Math.min(100, Math.max(0, posYInicial - deltaY)).toFixed(1);
+      aplicarPosicaoFoto();
+    }
+    function soltar() {
+      arrastando = false;
+      cropFoto.style.cursor = 'grab';
+    }
+
+    cropFoto.addEventListener('mousedown', e => { e.preventDefault(); comecar(e.clientX, e.clientY); });
+    window.addEventListener('mousemove', e => mover(e.clientX, e.clientY));
+    window.addEventListener('mouseup', soltar);
+    cropFoto.addEventListener('touchstart', e => { const t = e.touches[0]; comecar(t.clientX, t.clientY); }, { passive: true });
+    window.addEventListener('touchmove', e => { if (!arrastando) return; const t = e.touches[0]; mover(t.clientX, t.clientY); }, { passive: true });
+    window.addEventListener('touchend', soltar);
+  })();
+
+  // Ao escolher um arquivo novo, mostra o preview já no círculo arrastável,
+  // recentralizado — o enquadramento anterior era da foto antiga.
+  inputFoto?.addEventListener('change', () => {
+    const arquivo = inputFoto.files[0];
+    if (!arquivo) return;
+    const leitor = new FileReader();
+    leitor.onload = e => {
+      cropFoto.style.backgroundImage = `url('${e.target.result}')`;
+      cropFoto.classList.remove('d-none');
+      inputPosX.value = '50';
+      inputPosY.value = '50';
+      aplicarPosicaoFoto();
+      dicaArrastar.style.display = '';
+    };
+    leitor.readAsDataURL(arquivo);
   });
 
   btnSalvarFoto?.addEventListener('click', async function () {
@@ -3236,16 +3440,22 @@ function initCustomizacaoConvite(sufixo) {
     btn.disabled  = true;
 
     try {
-      const payload = { salvar_foto_casal: '1', foto_ativa: switchFoto.checked ? '1' : '0' };
+      const payload = {
+        salvar_foto_casal: '1',
+        foto_ativa: switchFoto.checked ? '1' : '0',
+        foto_casal_pos_x: inputPosX.value,
+        foto_casal_pos_y: inputPosY.value,
+      };
       if (arquivo) payload.foto_casal_arquivo = arquivo;
 
       const r = await ajax(payload);
       if (r.ok) {
         if (r.foto_url) {
-          document.querySelectorAll('[id^="preview-foto-convite"]').forEach(img => {
-            img.src = r.foto_url + '?t=' + Date.now();
-            img.classList.remove('d-none');
+          document.querySelectorAll('[id^="crop-foto-convite"]').forEach(div => {
+            div.style.backgroundImage = `url('${r.foto_url}?t=${Date.now()}')`;
+            div.classList.remove('d-none');
           });
+          document.querySelectorAll('[id^="dica-arrastar-foto"]').forEach(d => { d.style.display = ''; });
           document.querySelectorAll('[id^="btn-remover-foto-convite"]').forEach(b => b.classList.remove('d-none'));
           inputFoto.value = '';
         }
@@ -3265,7 +3475,10 @@ function initCustomizacaoConvite(sufixo) {
     try {
       const r = await ajax({ remover_foto_casal: '1' });
       if (r.ok) {
-        document.querySelectorAll('[id^="preview-foto-convite"]').forEach(img => { img.classList.add('d-none'); img.src = ''; });
+        document.querySelectorAll('[id^="crop-foto-convite"]').forEach(div => { div.classList.add('d-none'); div.style.backgroundImage = 'none'; });
+        document.querySelectorAll('[id^="dica-arrastar-foto"]').forEach(d => { d.style.display = 'none'; });
+        document.querySelectorAll('[id^="input-foto-convite-pos-x"]').forEach(i => { i.value = '50'; });
+        document.querySelectorAll('[id^="input-foto-convite-pos-y"]').forEach(i => { i.value = '50'; });
         document.querySelectorAll('[id^="btn-remover-foto-convite"]').forEach(b => b.classList.add('d-none'));
         document.querySelectorAll('[id^="switch-foto-convite"]').forEach(sw => { sw.checked = false; });
         document.querySelectorAll('[id^="area-foto-convite"]').forEach(a => { a.style.display = 'none'; });
@@ -3896,8 +4109,10 @@ function bindEditConv(btn) {
   btn.addEventListener('click', () => {
     document.getElementById('econv-id').value        = btn.dataset.id;
     document.getElementById('econv-nome').value       = btn.dataset.nome;
+    document.getElementById('econv-sobrenome').value  = btn.dataset.sobrenome || '';
+    document.getElementById('econv-nome').classList.remove('is-invalid');
     document.getElementById('econv-categoria').value  = btn.dataset.categoria;
-    document.getElementById('econv-telefone').value   = btn.dataset.telefone;
+    document.getElementById('econv-telefone').value   = formatarTelefoneBr(btn.dataset.telefone || '');
 
     const listaEdit = document.getElementById('acomp-edit-lista');
     listaEdit.innerHTML = '';
@@ -3953,7 +4168,7 @@ function montarLinhaConvidado(r) {
             <span class="badge ${conf ? 'bg-success' : 'bg-warning text-dark'} rounded-pill" style="font-size:.6rem;">${conf ? '<i class="bi bi-check-circle-fill me-1"></i> Confirmado' : '<i class="bi bi-hourglass-split me-1"></i> Pendente'}</span>
           </button>
           <button type="button" class="btn p-0 border-0 bg-transparent text-primary btn-edit-conv"
-                  data-id="${r.id}" data-nome="${r.nome}" data-categoria="${r.categoria}" data-telefone="${r.telefone}"
+                  data-id="${r.id}" data-nome="${r.nome_sem_sobrenome || r.nome}" data-sobrenome="${r.sobrenome || ''}" data-categoria="${r.categoria}" data-telefone="${r.telefone}"
                   data-acompanhantes-json='${JSON.stringify(r.acompanhantes || [])}' title="Editar">
             <i class="bi bi-pencil fs-6"></i>
           </button>
@@ -3983,6 +4198,7 @@ document.getElementById('form-convidado').addEventListener('submit', async (e) =
     const r = await ajax({
       adicionar_convidado_noivos: '1',
       nome_convidado: nome,
+      sobrenome_convidado: document.getElementById('conv-sobrenome').value.trim(),
       categoria_convidado: document.getElementById('conv-categoria').value.trim(),
       telefone_convidado: document.getElementById('conv-telefone').value.trim(),
       nome_acompanhante_novo: nomesAcompAdd,
@@ -4014,6 +4230,11 @@ document.getElementById('form-convidado').addEventListener('submit', async (e) =
 
       deltaCntTotal(1);
       deltaCntStatus(r.confirmado === 1, 1);
+
+      // Mantém o aviso de nome duplicado atualizado nesta mesma sessão, sem
+      // precisar recarregar a página (o servidor sempre valida de novo, isso
+      // é só pro aviso do navegador não ficar desatualizado).
+      CONVIDADOS_NOMES.push({ id: r.id, nome: r.nome.toLowerCase() });
 
       document.getElementById('form-convidado').reset();
       document.getElementById('acomp-add-lista').innerHTML = '';
@@ -4049,6 +4270,7 @@ document.getElementById('form-edit-convidado').addEventListener('submit', async 
       editar_convidado_noivos: '1',
       convidado_id: id,
       nome_convidado: nome,
+      sobrenome_convidado: document.getElementById('econv-sobrenome').value.trim(),
       categoria_convidado: document.getElementById('econv-categoria').value.trim(),
       telefone_convidado: document.getElementById('econv-telefone').value.trim(),
       id_acompanhante_edit: idsAcompEdit,
@@ -4078,7 +4300,8 @@ document.getElementById('form-edit-convidado').addEventListener('submit', async 
 
         const btnEdit = row.querySelector('.btn-edit-conv');
         if (btnEdit) {
-          btnEdit.dataset.nome              = r.nome;
+          btnEdit.dataset.nome              = r.nome_sem_sobrenome || r.nome;
+          btnEdit.dataset.sobrenome         = r.sobrenome || '';
           btnEdit.dataset.categoria         = cat;
           btnEdit.dataset.telefone          = r.telefone;
           btnEdit.dataset.acompanhantesJson = JSON.stringify(r.acompanhantes || []);
@@ -4675,6 +4898,39 @@ document.getElementById('modalDocumentos')?.addEventListener('hidden.bs.modal', 
   const conteudo = document.getElementById('docs-preview-conteudo');
   if (conteudo) conteudo.innerHTML = '';
 });
+
+// Aviso de nome duplicado: compara o nome final (nome + sobrenome, se houver)
+// contra o de todo mundo — dar QUALQUER sobrenome não basta, tem que ser um
+// sobrenome que realmente resulte num nome diferente. Checagem só no
+// navegador; o backend valida de novo na hora de salvar de qualquer forma.
+function conferirNomeDuplicado(inputNome, inputSobrenome, avisoEl, idAtual) {
+    const nomeCompleto = (inputNome.value.trim() + ' ' + inputSobrenome.value.trim()).trim().toLowerCase();
+    const meuId = idAtual ? parseInt(idAtual, 10) : 0;
+    const duplicado = nomeCompleto !== '' && CONVIDADOS_NOMES.some(c => c.nome === nomeCompleto && c.id !== meuId);
+    inputNome.classList.toggle('is-invalid', duplicado);
+    if (duplicado) {
+        avisoEl.textContent = 'Já existe um convite com o nome "' + inputNome.value.trim() + (inputSobrenome.value.trim() ? ' ' + inputSobrenome.value.trim() : '') + '". Informe um sobrenome diferente pra identificar cada um.';
+    }
+    return duplicado;
+}
+
+const convNome = document.getElementById('conv-nome');
+const convSobrenome = document.getElementById('conv-sobrenome');
+const avisoNomeAdd = document.querySelector('.aviso-nome-duplicado-add');
+if (convNome && convSobrenome && avisoNomeAdd) {
+    const conferir = () => conferirNomeDuplicado(convNome, convSobrenome, avisoNomeAdd, 0);
+    convNome.addEventListener('input', conferir);
+    convSobrenome.addEventListener('input', conferir);
+}
+
+const econvNome = document.getElementById('econv-nome');
+const econvSobrenome = document.getElementById('econv-sobrenome');
+const avisoNomeEdit = document.querySelector('.aviso-nome-duplicado-edit');
+if (econvNome && econvSobrenome && avisoNomeEdit) {
+    const conferir = () => conferirNomeDuplicado(econvNome, econvSobrenome, avisoNomeEdit, document.getElementById('econv-id')?.value);
+    econvNome.addEventListener('input', conferir);
+    econvSobrenome.addEventListener('input', conferir);
+}
 </script>
 </body>
 </html>
