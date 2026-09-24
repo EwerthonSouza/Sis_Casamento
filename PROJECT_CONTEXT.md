@@ -6,12 +6,17 @@
 
 ## O que é o sistema
 
-Sistema web para **assessorias de casamento** gerenciarem eventos (casamentos)
-de ponta a ponta: checklist de tarefas, lista de convidados com RSVP,
-organização de mesas, fornecedores, playlist da cerimônia, mural de
-inspirações, equipe da assessoria e relatórios em PDF. Os noivos têm um
-painel próprio para acompanhar tudo e interagir (marcar tarefas, comentar,
-confirmar presença de convidados).
+Sistema web para **assessorias de eventos** gerenciarem eventos de ponta a
+ponta: checklist de tarefas, lista de convidados com RSVP, organização de
+mesas, fornecedores, playlist da cerimônia, mural de inspirações, equipe da
+assessoria e relatórios em PDF. Os noivos/responsáveis têm um painel próprio
+para acompanhar tudo e interagir (marcar tarefas, comentar, confirmar
+presença de convidados).
+
+Desde a introdução do **multi-módulo** (ver seção própria abaixo), o sistema
+não atende só casamentos: a mesma estrutura serve **Casamentos, Aniversários,
+Eventos Corporativos e Eventos Acadêmicos/Educacionais**, com rótulos e (onde
+fizer sentido) dados isolados por módulo.
 
 ## Stack técnica
 
@@ -170,15 +175,18 @@ Web Console). Achados e correções:
 
 Login único em `index.php`, que checa duas tabelas:
 
-- **`usuarios`** — equipe da assessoria. Campo `tipo` = `admin` ou
-  `assistente`. Senhas com `password_hash()`/bcrypt.
-- **`clientes`** — noivos (login por e-mail do casal). Papel `noivos`.
+- **`usuarios`** — equipe da assessoria. Campo `tipo` = `admin`, `assistente`
+  ou `desenvolvedor` (acesso total a todos os módulos, usado em
+  `dev_painel.php` pra liberar módulos/planos por usuário). Senhas com
+  `password_hash()`/bcrypt.
+- **`clientes`** — noivos/responsável (login por e-mail). Papel `noivos`.
 
 > A tabela legada `administradores` (senha em texto puro) foi **removida**
 > do código e do schema nesta sessão de trabalho — não existe mais.
 
-Sessão guarda `$_SESSION['usuario_tipo']` (`admin` | `assistente` | `noivos`)
-e `$_SESSION['usuario_id']`. Cada página faz o próprio check de role no topo
+Sessão guarda `$_SESSION['usuario_tipo']` (`admin` | `assistente` |
+`desenvolvedor` | `noivos`) e `$_SESSION['usuario_id']`. Cada página faz o
+próprio check de role no topo
 (não há middleware central). Timeout de sessão de 30 min
 (`sessao_timeout.inc.php` → `verificar_sessao_ativa()`, chamado logo após
 `session_start()`).
@@ -186,29 +194,107 @@ e `$_SESSION['usuario_id']`. Cada página faz o próprio check de role no topo
 Proteção CSRF: `verificar_csrf()`/`validar_csrf()` comparam
 `$_SESSION['csrf_token']` com o POST ou header `X-CSRF-Token`.
 
+## Módulos de evento (Casamentos / Aniversários / Corporativo / Acadêmico)
+
+Depois do login da equipe, `hub_modulos.php` deixa escolher qual tipo de
+evento administrar; a escolha fica em `$_SESSION['modulo_ativo']`
+(`casamento` | `aniversario` | `corporativo` | `academico`). Um link "Trocar
+módulo" na navbar volta pro hub sem deslogar. O portal do cliente
+(`noivos.php`) não usa `modulo_ativo` — ele já sabe o módulo pelo
+`eventos.tipo_evento` do próprio evento logado.
+
+- **`modulos_evento.inc.php`** é o dicionário central: `labels_modulo_evento()`
+  devolve todos os textos que mudam por módulo (nome do módulo, "casal" vs
+  "aniversariante" vs "responsável", títulos de seção, mensagens de
+  WhatsApp etc.), `MODULOS_EVENTO_VALIDOS` é a whitelist,
+  `modulo_evento_valido()`/`modulos_liberados_sessao()` validam a sessão,
+  `decoracao_hero_svg()` e `titulo_subtitulo_evento()` cuidam de
+  detalhes visuais por módulo (este último trata **casamento como caso
+  especial**: só ali os dois nomes do cliente são concatenados com "&"; nos
+  demais módulos o 2º nome é tratado como "responsável", vira subtítulo).
+- **`eventos.tipo_evento`** (default `casamento`) é a fonte da verdade de a
+  qual módulo um evento pertence. Cada página de equipe que abre um evento
+  específico (`gerenciar.php`, `convidados.php`, `organizar_mesas.php`,
+  `fornecedores_evento.php`, `inspiracoes.php`, `relatorio_pdf.php`,
+  `modelos_checklist.php`) faz uma **trava cross-módulo**: busca o
+  `tipo_evento` do registro alvo e compara com `$_SESSION['modulo_ativo']`;
+  se não bater, trata como "não encontrado"/redireciona pro painel — isso
+  vale tanto pra renderizar a página quanto pra qualquer ação POST/AJAX
+  nela, então um usuário do módulo Aniversário não consegue nem ver nem
+  manipular por URL/POST direto um evento de Casamento.
+- **Módulo liberado por usuário**: `usuarios_modulos_liberados` (tabela)
+  controla quais módulos cada admin/assistente pode ver no hub — configurado
+  pelo desenvolvedor. Sem nenhuma linha pra um usuário, o *fallback* é só
+  `casamento` liberado (módulo histórico, pra não tirar acesso de ninguém
+  sem querer). **Cuidado ao testar**: inserir uma linha pra QUALQUER módulo
+  remove esse fallback — se o teste precisar de dois módulos, insira os dois
+  explicitamente.
+- **Padrão estabelecido pra dados que não devem ser compartilhados entre
+  módulos**: adicionar uma coluna `tipo_evento VARCHAR(20) NOT NULL DEFAULT
+  'casamento'` na tabela (default `casamento` preserva o comportamento pra
+  dados já existentes) e escopar toda `SELECT`/`INSERT`/`UPDATE`/`DELETE`
+  por `$modulo_ativo`. Dois exemplos já migrados assim nesta base:
+  `notas_gerais_painel` (Bloco de Notas Geral do `painel_admin.php` — cada
+  módulo tem o seu, não é mais uma lista global única) e
+  `checklist_modelos` (modelos reutilizáveis de checklist usados no
+  "Importar Cronograma Padrão" — os que já existiam ficaram em `casamento`;
+  os outros módulos começam com a lista vazia, precisam ser cadastrados do
+  zero em `modelos_checklist.php`).
+
 ## Modelo de dados (visão geral)
 
-- `usuarios` — equipe (admin/assistente).
-- `clientes` — noivos/casal (login, dados de contato). `cpf` é **opcional**
-  (nullable — nunca gravar `''`, ver seção Armadilhas abaixo).
-- `eventos` — o casamento em si (`cliente_id`, `data_evento`, nome do evento
+- `usuarios` — equipe (admin/assistente/desenvolvedor).
+- `usuarios_modulos_liberados` — quais módulos cada usuário da equipe pode
+  ver no hub (ver seção Módulos acima).
+- `clientes` — noivos/responsável (login, dados de contato). `cpf` é
+  **opcional** (nullable — nunca gravar `''`, ver seção Armadilhas abaixo).
+  `nome_secundario` guarda o 2º nome (noivo, no módulo casamento; o
+  "responsável" nos demais módulos — ver `titulo_subtitulo_evento()`).
+- `eventos` — o evento em si (`cliente_id`, `data_evento`, `tipo_evento`
   etc.). Um cliente pode ter vários eventos ao longo do tempo.
-- `checklist` / `checklist_comentarios` / `checklist_modelos` — tarefas do
-  evento, comentários (assessoria ↔ noivos), e modelos reutilizáveis de
-  checklist.
-- `convidados` — lista de convidados por evento; `confirmado`,
-  `resposta_rsvp`, `acompanhantes`, `filhos`, `mesa_id` (FK opcional para
-  `mesas`).
-- `mesas` — mesas do evento (`nome`, `capacidade`, `ordem`).
+  `foto_casal`/`foto_casal_ativa` controlam a foto exibida no topo do link
+  de convite (`confirmar.php`); `foto_casal_pos_x`/`foto_casal_pos_y`
+  (0–100, default 50) guardam o enquadramento escolhido arrastando a foto
+  no preview (`object-position`/`background-position`), pra não cortar
+  sempre centralizado.
+- `checklist` / `checklist_comentarios` — tarefas do evento e comentários
+  (assessoria ↔ cliente).
+- `checklist_modelos` — modelos reutilizáveis de checklist ("Importar
+  Cronograma Padrão"), com `tipo_padrao` (`com_recepcao`/`sem_recepcao`,
+  eixo independente do módulo) **e** `tipo_evento` (módulo — ver seção
+  Módulos acima).
+- `notas_gerais_painel` — Bloco de Notas Geral do `painel_admin.php`, sem
+  `evento_id` (não é do cliente) mas **com** `tipo_evento` (por módulo).
+- `convidados` — lista de convidados por evento; `nome` guarda o **nome
+  completo já concatenado** (primeiro nome + sobrenome, se houver);
+  `sobrenome` guarda só o sobrenome separado, usado pra detectar nome
+  duplicado (ver Armadilhas) e pra repopular corretamente os dois campos no
+  modal de edição — nunca reconcatenar `nome` sem antes tirar o sufixo
+  `sobrenome` dele. Também: `confirmado`, `resposta_rsvp`, `mesa_id` (FK
+  opcional pra `mesas`), `convidado_principal_id` (não-nulo = é
+  acompanhante de outro convidado, não aparece como linha própria na
+  listagem), `token_convite` (link de RSVP individual).
+- `mesas` — mesas do evento (`nome`, `capacidade`, `ordem`, `pos_x`/`pos_y`
+  — posição no Mapa de Mesas arrastável, `tamanho_mapa` — escala do chip
+  circular no mapa, 0.5–2.5, default 1).
+- `mapa_elementos` — elementos livres do Mapa de Mesas (Palco, Entrada):
+  `pos_x`/`pos_y`, `largura`/`altura` (retângulos como o Palco),
+  `rotacao`, `escala` (elementos sem largura/altura próprias, como a
+  Entrada, redimensionam por escala). A entrada é criada automaticamente
+  (`tipo='entrada'`) na primeira vez que o mapa é aberto pro evento.
 - `fornecedores` / `fornecedores_evento` — cadastro geral de fornecedores e
-  vínculo com um evento específico.
+  vínculo com um evento específico (valor previsto, `valor_pago`,
+  categoria, prazo). `fornecedores_pagamentos` guarda o histórico
+  individual de cada pagamento (valor, data, comprovante).
 - `referencias_fornecedores` — mural de referências/portfólio de
   fornecedores (página `referencias.php`).
 - `inspiracoes_fotos` — fotos do mural de inspirações (`inspiracoes.php`),
   com upload de arquivo físico em `uploads/`.
 - `musicas_evento` / `playlist_evento` — playlist sugerida por momento da
-  cerimônia.
-- `notas_evento` — bloco de notas/alinhamentos com o casal.
+  cerimônia (a lista de "momentos" é definida por módulo em
+  `modulos_evento.inc.php`).
+- `notas_evento` — bloco de notas/alinhamentos com o cliente (por evento;
+  diferente do `notas_gerais_painel`, que é por módulo e não tem dono).
 - `servicos_assessoria` — serviços que a assessoria oferece.
 - `calendario_anotacoes` — anotações no calendário do painel admin.
 - `notificacoes_lidas` — controla até quando cada usuário já viu o sino de
@@ -228,22 +314,33 @@ dessas três é feita explicitamente dentro de `excluir_evento` em
 |---|---|---|
 | `index.php` | público | Login único (equipe + noivos) |
 | `logout.php` | logado | Encerra sessão |
-| `painel_admin.php` | admin | Dashboard geral: lista/cadastra/exclui casamentos, calendário, notificações globais, editar cadastro do casal |
+| `hub_modulos.php` | admin/assistente | Escolhe o módulo ativo da sessão (Casamentos/Aniversários/Corporativo/Acadêmico) |
+| `painel_admin.php` | admin/assistente | Dashboard do módulo ativo: lista/cadastra/exclui eventos, calendário, notificações, Bloco de Notas Geral do módulo, editar cadastro do cliente |
 | `gerenciar.php` | admin/assistente | Tela principal de um evento específico: checklist, resumo financeiro, acesso rápido às outras seções |
+| `convidados.php` | admin/assistente/noivos | Tela principal de convidados de um evento: criar/editar convite, acompanhantes, WhatsApp/link de RSVP |
 | `gerenciar_equipe.php` | admin | CRUD da equipe (`usuarios`) |
-| `modelos_checklist.php` | admin/assistente | Modelos reutilizáveis de checklist |
-| `organizar_mesas.php` | admin/assistente | Drag-and-drop de convidados em mesas |
-| `fornecedores_evento.php` | admin/assistente | Fornecedores vinculados a um evento |
+| `modelos_checklist.php` | admin/assistente | Modelos reutilizáveis de checklist (por módulo) |
+| `organizar_mesas.php` | admin/assistente/noivos | Mapa de mesas arrastável (mesas, palco, entrada) + drag-and-drop de convidados em mesas |
+| `fornecedores_evento.php` | admin/assistente | Fornecedores vinculados a um evento (valor, categoria, prazo, histórico de pagamentos com comprovante) |
 | `referencias.php` | admin/assistente | Mural de referências de fornecedores (portfólio) |
 | `inspiracoes.php` | admin/assistente/noivos | Mural de inspirações (upload de fotos, favoritar, exclusão restrita a admin) |
 | `relatorio_pdf.php` | admin/assistente | Gera PDF do evento (seções escolhidas via `?secoes=`: convidados — com mesa, checklist, fornecedores etc.) via DOMPDF |
-| `noivos.php` | noivos | Painel do casal: checklist, playlist, notas, visão geral do evento |
-| `confirmar.php` | público (link enviado ao convidado) | Página de RSVP para o convidado confirmar/recusar presença |
+| `noivos.php` | noivos | Painel do cliente: checklist, playlist, convidados, notas, personalização do convite, visão geral do evento |
+| `confirmar.php` | público (link enviado ao convidado) | Página de RSVP para o convidado confirmar/recusar presença — por token individual ou busca por nome (modo geral) |
 | `notificacoes_marcar_lidas.php` | logado | Endpoint AJAX que marca o sino de notificações como lido |
 | `notificacoes.inc.php` | (include) | Lógica compartilhada de notificações (usado por `painel_admin.php` e `gerenciar.php`) |
 | `sessao_timeout.inc.php` | (include) | Timeout de inatividade de 30 min |
 | `modal_editar_modelo.inc.php` | (include) | Modal de edição usado em `modelos_checklist.php` |
-| `conexao.php` | (include) | Conexão PDO, lê `DB_HOST`/`DB_NAME`/`DB_USER`/`DB_PASS` do ambiente |
+| `modulos_evento.inc.php` | (include) | Dicionário central de rótulos/labels por módulo (ver seção Módulos acima) |
+| `conexao.php` | (include) | Conexão PDO + todas as funções `garantir_*()` de auto-migração idempotente (ver Convenções) |
+
+> **`gerenciar.php` tem um modal "Criar Convite"/"Editar Convidado" órfão**
+> (handlers `adicionar_convidado_admin`/`editar_convidado` continuam no
+> código, com toda a lógica de sobrenome/duplicidade aplicada por
+> consistência) mas **sem nenhum botão que o abra** — a aba Convidados virou
+> link direto pra `convidados.php` numa sessão anterior e o modal antigo não
+> foi removido. Não é alcançável pela interface hoje; não usar como
+> referência de fluxo ativo.
 
 ## Padrões de UI/CSS estabelecidos
 
@@ -349,6 +446,37 @@ dessas três é feita explicitamente dentro de `excluir_evento` em
     diário automatizado configurado (banco + droplet inteira — ver
     Infraestrutura). **Nunca mais deixar porta de banco publicada sem
     firewall, mesmo que "seja só pra debug".**
+12. **Nome de convidado duplicado — comparar o nome FINAL, não só "tem
+    sobrenome ou não".** A checagem em `convidado_nome_duplicado()`
+    (duplicada em `convidados.php`/`gerenciar.php`/`noivos.php`/
+    `organizar_mesas.php`) já passou por uma versão com um bug real: a
+    primeira implementação só bloqueava quando o convidado NOVO estava sem
+    sobrenome, então dar *qualquer* sobrenome (mesmo repetido) escapava da
+    checagem — "Rick" + "Bruno" cadastrado três vezes com telefones
+    diferentes passava direto. A versão corrigida concatena nome+sobrenome
+    (`$nome_completo`) e compara isso contra o `nome` de **todo mundo** no
+    evento (`LOWER(TRIM(nome)) = LOWER(TRIM(?))`, mesmo padrão usado pela
+    busca por nome do RSVP em `confirmar.php`) — só um sobrenome que resulte
+    num nome realmente diferente resolve a ambiguidade. Ao alterar essa
+    lógica de novo, testar exatamente esse caso (mesmo nome+sobrenome
+    repetido, telefones diferentes) antes de considerar corrigido.
+13. **Telefone e valores monetários têm máscara só em JS, sem biblioteca
+    compartilhada.** `formatarTelefoneBr()` (formata como `(DD) 9 XXXX-XXXX`
+    pro celular, com o "9" separado, e `(DD) XXXX-XXXX` pro fixo) está
+    duplicada em `convidados.php`/`gerenciar.php`/`noivos.php`/
+    `organizar_mesas.php` — cada página é standalone, sem include JS
+    compartilhado. Só formata como BR até 11 dígitos; acima disso (número
+    internacional/DDI) devolve os dígitos como estão, sem tentar impor
+    DDD/parênteses. A máscara de moeda BR (formata enquanto digita, dígitos
+    viram centavos primeiro — `1500` → `R$ 15,00`) fica só em
+    `fornecedores_evento.php`, mesma lógica sem biblioteca.
+14. **Padrão pra ajustar enquadramento de imagem (arrastar pra recortar)**:
+    a foto do casal no convite (`eventos.foto_casal_pos_x/y`) usa um `<div>`
+    com `background-image`/`background-position` arrastável (não um
+    `<img>` com `object-position`, exceto no HTML final do convidado em
+    `confirmar.php`, que já não precisa de interação). Ver
+    `convidados.php`/`noivos.php` pra reaproveitar esse padrão em qualquer
+    upload de imagem futuro que precise de recorte manual.
 
 ## Convenções de código observadas
 
@@ -359,3 +487,26 @@ dessas três é feita explicitamente dentro de `excluir_evento` em
 - Textos e comentários do sistema em **português**; siga esse padrão em
   qualquer código/copy novo.
 - Validar com `php -l` dentro do container após qualquer edição.
+- **Sem módulo JS/PHP compartilhado entre páginas** (cada página é
+  standalone) — funções que servem várias telas (`convidado_telefone_duplicado()`,
+  `convidado_nome_duplicado()`, `nome_convidado_sem_sobrenome()`,
+  `formatarTelefoneBr()`, `sincronizar_acompanhantes()`) ficam **duplicadas
+  literalmente** em `convidados.php`/`gerenciar.php`/`noivos.php`/
+  `organizar_mesas.php`. Ao corrigir um bug numa dessas funções, procurar e
+  corrigir a mesma função nos outros 3 arquivos — não existe um único ponto
+  de verdade. Exceções que viram função de fato compartilhada só quando
+  usadas em ≥2 páginas de propósitos bem diferentes (não guest-management):
+  `garantir_*()` de migração ficam em `conexao.php`; helpers de módulo
+  ficam em `modulos_evento.inc.php`.
+- **Migração de schema é sempre idempotente e auto-executada**: cada
+  coluna/tabela nova ganha uma função `garantir_coluna_x()`/
+  `garantir_tabela_x()` (em `conexao.php` quando é usada por várias
+  páginas, ou inline na própria página quando é local) que faz
+  `try { SELECT coluna } catch { ALTER TABLE }`, guardada por um marcador
+  em disco (`schema_ja_verificado()`/`marcar_schema_verificado()`) pra não
+  bater no banco em toda requisição. **Uma tabela/coluna adicionada a um
+  bloco de migração que já rodou antes (marcador já gravado) nunca chega a
+  ser criada** — precisa de um marcador NOVO e próprio pra essa coluna
+  específica (visto várias vezes nesta sessão: `coluna_sobrenome_convidado`,
+  `coluna_tipo_evento_checklist_modelos`, `convite_foto_posicao_v1`,
+  `organizar_mesas_tamanho_v1`).
