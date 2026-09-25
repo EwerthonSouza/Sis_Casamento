@@ -123,6 +123,15 @@ body {
     color: var(--bs-body-color);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    animation: paginaFadeIn 0.3s ease both;
+}
+
+/* Efeito suave ao abrir qualquer página do sistema (aplicado no <body>,
+   então vale em todas as telas automaticamente, sem precisar repetir em
+   cada arquivo). */
+@keyframes paginaFadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
 }
 
 /* PWA: com viewport-fit=cover + status bar translúcida (iOS), o conteúdo
