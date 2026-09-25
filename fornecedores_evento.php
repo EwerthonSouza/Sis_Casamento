@@ -668,6 +668,23 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
         /* Com a correção aberta, a lista cresce (sem rolagem interna cortando o formulário) */
         .historico-pgto-modal:has(.form-editar-pgto:not([hidden])) { max-height: none; }
         .historico-pgto-modal .list-group-item { font-size: .85rem; }
+
+        /* ---- CABEÇALHO DE FORNECEDORES ---- */
+        .forn-hero-icon {
+            width: 52px; height: 52px; border-radius: 14px; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
+            background: rgba(255,255,255,.18); font-size: 1.4rem; color: #fff;
+        }
+        .forn-hero-badge {
+            background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.28);
+            border-radius: 999px; padding: .4rem .85rem; font-size: .82rem; font-weight: 600;
+            white-space: nowrap; color: #fff;
+        }
+        .forn-hero-badge strong { margin-left: .3rem; }
+        @media (max-width: 767.98px) {
+            .forn-hero-icon { width: 42px; height: 42px; font-size: 1.1rem; border-radius: 12px; }
+            .forn-hero-badge { font-size: .7rem; padding: .32rem .6rem; }
+        }
     </style>
 </head>
 <body class="bg-light">
@@ -685,14 +702,19 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
 </nav>
 <div class="container my-3 my-md-5" id="conteudo-forn">
 
-    <div class="bg-white p-3 p-md-4 rounded shadow-sm mb-4 d-flex flex-wrap justify-content-between align-items-center gap-2">
-        <div class="cabecalho-forn-titulo">
-            <h2 class="mb-0 fs-4 fs-md-2">Fornecedores</h2>
-            <small class="text-muted cliente-forn">Cliente: <?= htmlspecialchars($evento['nome']) ?></small>
-        </div>
-        <div class="d-flex flex-wrap gap-3 text-start text-sm-end text-muted small">
-            <div class="text-nowrap"><i class="bi bi-people-fill"></i> Total de Serviços: <strong><?= $total_fornecedores ?></strong></div>
-            <div class="text-nowrap"><i class="bi bi-check-circle-fill" style="color: #28a745;"></i> Contratados: <strong><?= $fornecedores_contratados ?></strong></div>
+    <div class="forn-hero rounded shadow-sm mb-4 p-3 p-md-4 text-white" style="background: linear-gradient(135deg, rgba(255,255,255,.14) 0%, rgba(0,0,0,.2) 100%), <?= htmlspecialchars($cor_modulo) ?>;">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+            <div class="d-flex align-items-center gap-3 cabecalho-forn-titulo">
+                <span class="forn-hero-icon"><i class="bi bi-briefcase-fill"></i></span>
+                <div>
+                    <h2 class="mb-0 fs-4 fs-md-2 fw-bold">Fornecedores</h2>
+                    <small class="cliente-forn" style="opacity:.85;">Cliente: <?= htmlspecialchars($evento['nome']) ?></small>
+                </div>
+            </div>
+            <div class="d-flex flex-wrap gap-2 forn-hero-badges">
+                <span class="forn-hero-badge"><i class="bi bi-people-fill me-1"></i> Total de Serviços <strong><?= $total_fornecedores ?></strong></span>
+                <span class="forn-hero-badge forn-hero-badge-ok"><i class="bi bi-check-circle-fill me-1"></i> Contratados <strong><?= $fornecedores_contratados ?></strong></span>
+            </div>
         </div>
     </div>
 
