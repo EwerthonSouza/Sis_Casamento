@@ -1134,7 +1134,7 @@ $msg_erro    = $_SESSION['msg_erro']    ?? '';
 unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 
 // Notificações (atividade dos noivos neste evento)
-$notificacoes    = buscar_notificacoes($pdo, $evento_id, 15);
+$notificacoes    = buscar_notificacoes($pdo, $evento_id, 15, null, null, $is_admin);
 $vistas_notif    = chaves_vistas_usuario($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
 $nao_lidas       = contar_nao_vistas($notificacoes, $vistas_notif);
 $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset($vistas_notif[$item['chave']])));
@@ -1400,6 +1400,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
       display: block; width: 100%; text-align: left; cursor: pointer;
     }
     .btn-musicas-sidebar:hover { box-shadow: 0 6px 18px rgba(169,116,79,.3); transform: translateY(-1px); }
+    .btn-musicas-sidebar.atalho-restrito:hover { box-shadow: none; transform: none; }
     .musica-item {
       transition: box-shadow .15s, transform .15s;
       animation: notaEntra .3s ease both;
@@ -2131,6 +2132,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
           </div>
         </button>
 
+        <?php if ($is_admin): /* financeiro/fornecedores: só admin abre (mesma regra do Resumo Financeiro e do PDF) */ ?>
         <a href="fornecedores_evento.php?id=<?= $evento_id ?>" class="btn-musicas-sidebar text-decoration-none" style="background: linear-gradient(135deg, #ede9fe 0%, #ddd6fe 100%); border-color: #c4b5fd;">
           <div class="d-flex justify-content-between align-items-center gap-2 p-3">
             <div class="d-flex align-items-center gap-3" style="min-width:0;">
@@ -2149,6 +2151,25 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
             </span>
           </div>
         </a>
+        <?php else: /* assistente: vê que a área existe, mas bloqueada e sem valores */ ?>
+        <div class="btn-musicas-sidebar atalho-restrito" title="Área financeira restrita ao administrador"
+             style="background: #f1f5f9; border-color: #e2e8f0; cursor: not-allowed;">
+          <div class="d-flex justify-content-between align-items-center gap-2 p-3">
+            <div class="d-flex align-items-center gap-3" style="min-width:0;">
+              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0" style="width:44px;height:44px;">
+                <i class="bi bi-briefcase-fill fs-4" style="color:#94a3b8;"></i>
+              </div>
+              <div style="min-width:0;">
+                <h6 class="mb-0 fw-bold text-secondary text-truncate">Fornecedores &amp; Orçamentos</h6>
+                <small class="text-muted text-truncate d-block" style="font-size:.78rem;">Restrito ao administrador</small>
+              </div>
+            </div>
+            <span class="btn btn-sm fw-bold rounded-pill px-3 flex-shrink-0" style="pointer-events:none; background:#e2e8f0; border:none; color:#64748b;">
+              <i class="bi bi-lock-fill me-1"></i> Restrito
+            </span>
+          </div>
+        </div>
+        <?php endif; ?>
 
         <a href="convidados.php?id=<?= $evento_id ?>" class="btn-musicas-sidebar text-decoration-none" style="background: linear-gradient(135deg, #cffafe 0%, #a5f3fc 100%); border-color: #67e8f9;">
           <div class="d-flex justify-content-between align-items-center gap-2 p-3">

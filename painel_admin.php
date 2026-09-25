@@ -708,7 +708,7 @@ unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
 // módulo — sem isso, quem tá administrando Aniversários via notificação de
 // um Casamento e vice-versa, o que confunde) + avisos da Central em modo
 // sino, quando quem está logado é admin.
-$notificacoes = buscar_notificacoes($pdo, null, 15, $modulo_ativo, $is_admin ? (int)$_SESSION['usuario_id'] : null);
+$notificacoes = buscar_notificacoes($pdo, null, 15, $modulo_ativo, $is_admin ? (int)$_SESSION['usuario_id'] : null, $is_admin);
 $vistas_notif = chaves_vistas_usuario($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
 $nao_lidas    = contar_nao_vistas($notificacoes, $vistas_notif);
 $notificacoes = array_values(array_filter($notificacoes, fn($item) => !isset($vistas_notif[$item['chave']])));

@@ -963,28 +963,9 @@ try {
     }
 } catch (Exception $e) {}
 
-// Arquivos que a assessoria enviou nos fornecedores (prints de orçamento,
-// comprovantes, contrato) + comprovantes anexados a pagamentos — tabela/colunas
-// podem não existir ainda se ninguém abriu fornecedores_evento.php neste deploy.
+// Comprovantes que a assessoria anexou aos pagamentos dos fornecedores —
+// colunas podem não existir ainda se ninguém abriu fornecedores_evento.php.
 try {
-    $tipos_arquivo_forn = ['orcamento' => 'um orçamento', 'comprovante' => 'um comprovante', 'contrato' => 'um contrato', 'outro' => 'um arquivo'];
-    $rsArq = $pdo->prepare("
-        SELECT a.id, a.fornecedor_id, a.tipo, a.criado_em, f.servico
-        FROM fornecedores_anexos a
-        INNER JOIN fornecedores_evento f ON f.id = a.fornecedor_id
-        WHERE f.evento_id = ? AND a.enviado_por = 'Assessoria'
-        ORDER BY a.criado_em DESC LIMIT 15
-    ");
-    $rsArq->execute([$evento_id]);
-    foreach ($rsArq->fetchAll() as $a) {
-        $notificacoes[] = [
-            'tipo'          => 'arquivo_fornecedor',
-            'texto'         => 'A assessoria enviou ' . ($tipos_arquivo_forn[$a['tipo']] ?? 'um arquivo') . ' de "' . $a['servico'] . '"',
-            'link'          => 'fornecedores_evento.php?arquivos=' . (int)$a['fornecedor_id'],
-            'chave'         => 'forn_anexo:' . $a['id'],
-            'data_cadastro' => $a['criado_em'],
-        ];
-    }
     $rsPg = $pdo->prepare("
         SELECT p.id, p.fornecedor_id, p.valor, p.comprovante_enviado_em, f.servico
         FROM fornecedores_pagamentos p
@@ -997,7 +978,7 @@ try {
         $notificacoes[] = [
             'tipo'          => 'arquivo_fornecedor',
             'texto'         => 'A assessoria enviou o comprovante de R$ ' . number_format((float)$p['valor'], 2, ',', '.') . ' de "' . $p['servico'] . '"',
-            'link'          => 'fornecedores_evento.php?arquivos=' . (int)$p['fornecedor_id'],
+            'link'          => 'fornecedores_evento.php?pagamento=' . (int)$p['fornecedor_id'],
             'chave'         => 'forn_pgto:' . $p['id'],
             'data_cadastro' => $p['comprovante_enviado_em'],
         ];

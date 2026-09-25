@@ -68,8 +68,11 @@ if (!schema_ja_verificado('notificacoes_vistas')) {
  * (o id do admin logado), soma os avisos da Central (modo sino) dirigidos a
  * ele — só painel_admin.php passa isso; gerenciar.php e noivos.php nunca
  * veem avisos da Central.
+ *
+ * $incluir_financeiro = false tira os avisos de arquivos/comprovantes de
+ * fornecedores (têm valores) — o assistente não vê dados financeiros.
  */
-function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?string $tipo_evento = null, ?int $avisos_central_admin_id = null): array
+function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?string $tipo_evento = null, ?int $avisos_central_admin_id = null, bool $incluir_financeiro = true): array
 {
     $itens = [];
     $filtro_modulo = ($tipo_evento && !$evento_id) ? " AND e.tipo_evento = ?" : "";
@@ -241,38 +244,14 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?strin
         }
     } catch (Exception $e) {}
 
-    // 8. Arquivos que o casal enviou nos fornecedores (prints de orçamento,
-    // comprovantes, contrato) + comprovantes que anexou a pagamentos. Tabela/
-    // colunas podem não existir ainda num deploy que nunca abriu
+    // 8. Comprovantes que o cliente (casal, aniversariante, empresa...) anexou
+    // aos pagamentos dos fornecedores.
+    // Colunas podem não existir ainda num deploy que nunca abriu
     // fornecedores_evento.php — ignora silenciosamente, igual às notas acima.
-    $tipos_arquivo_forn = ['orcamento' => 'um orçamento', 'comprovante' => 'um comprovante', 'contrato' => 'um contrato', 'outro' => 'um arquivo'];
-    try {
-        $sql8 = "
-            SELECT a.id, a.fornecedor_id, a.tipo, a.criado_em AS quando, f.servico, f.evento_id, cl.nome AS evento_nome
-            FROM fornecedores_anexos a
-            INNER JOIN fornecedores_evento f ON f.id = a.fornecedor_id
-            INNER JOIN eventos e ON e.id = f.evento_id
-            INNER JOIN clientes cl ON cl.id = e.cliente_id
-            WHERE a.enviado_por = 'Noivos'
-        " . ($evento_id ? " AND f.evento_id = ?" : $filtro_modulo) . "
-            ORDER BY a.criado_em DESC LIMIT " . (int)$limite;
-        $stmt8 = $pdo->prepare($sql8);
-        $stmt8->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
-        foreach ($stmt8->fetchAll() as $r) {
-            $itens[] = [
-                'tipo'        => 'arquivo_fornecedor',
-                'chave'       => 'forn_anexo:' . $r['id'],
-                'icone'       => 'bi-paperclip text-info',
-                'evento_id'   => (int)$r['evento_id'],
-                'evento_nome' => $r['evento_nome'],
-                'texto'       => 'Noivos enviaram ' . ($tipos_arquivo_forn[$r['tipo']] ?? 'um arquivo') . ' de "' . $r['servico'] . '"',
-                'quando'      => $r['quando'],
-                'link'        => 'fornecedores_evento.php?id=' . (int)$r['evento_id'] . '&arquivos=' . (int)$r['fornecedor_id'],
-            ];
-        }
-
+    // $incluir_financeiro = false (assistente): não mostra, porque tem valores.
+    if ($incluir_financeiro) try {
         $sql9 = "
-            SELECT p.id, p.fornecedor_id, p.valor, p.comprovante_enviado_em AS quando, f.servico, f.evento_id, cl.nome AS evento_nome
+            SELECT p.id, p.fornecedor_id, p.valor, p.comprovante_enviado_em AS quando, f.servico, f.evento_id, e.tipo_evento, cl.nome AS evento_nome
             FROM fornecedores_pagamentos p
             INNER JOIN fornecedores_evento f ON f.id = p.fornecedor_id
             INNER JOIN eventos e ON e.id = f.evento_id
@@ -283,15 +262,19 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?strin
         $stmt9 = $pdo->prepare($sql9);
         $stmt9->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
         foreach ($stmt9->fetchAll() as $r) {
+            // "O casal" / "O aniversariante" / "O responsável pela empresa"... conforme o módulo
+            $contratante = function_exists('labels_modulo_evento')
+                ? (labels_modulo_evento($r['tipo_evento'] ?? 'casamento')['singular_contratante'] ?? 'cliente')
+                : 'cliente';
             $itens[] = [
                 'tipo'        => 'arquivo_fornecedor',
                 'chave'       => 'forn_pgto:' . $r['id'],
                 'icone'       => 'bi-receipt text-success',
                 'evento_id'   => (int)$r['evento_id'],
                 'evento_nome' => $r['evento_nome'],
-                'texto'       => 'Noivos enviaram o comprovante de R$ ' . number_format((float)$r['valor'], 2, ',', '.') . ' de "' . $r['servico'] . '"',
+                'texto'       => 'O ' . $contratante . ' enviou o comprovante de R$ ' . number_format((float)$r['valor'], 2, ',', '.') . ' de "' . $r['servico'] . '"',
                 'quando'      => $r['quando'],
-                'link'        => 'fornecedores_evento.php?id=' . (int)$r['evento_id'] . '&arquivos=' . (int)$r['fornecedor_id'],
+                'link'        => 'fornecedores_evento.php?id=' . (int)$r['evento_id'] . '&pagamento=' . (int)$r['fornecedor_id'],
             ];
         }
     } catch (Exception $e) {}
