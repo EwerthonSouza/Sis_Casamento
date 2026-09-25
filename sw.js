@@ -1,6 +1,6 @@
-const CACHE_NAME = 'meuevento-pro-v3';
+const CACHE_NAME = 'meuevento-pro-v5';
 const ASSETS_ESTATICOS = [
-  '/css/estilo.css?v=16',
+  '/css/estilo.css?v=18',
   '/img/logo MEP1.svg',
   '/img/LOGO MEP NAV.svg',
   '/img/icon-192.png?v=2',

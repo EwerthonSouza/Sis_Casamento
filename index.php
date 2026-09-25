@@ -9,6 +9,27 @@ garantir_coluna_ultimo_login_usuarios($pdo);
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 header('Pragma: no-cache');
 
+// Já logado (sessão ainda ativa): não mostra o formulário de novo — vai direto
+// pro painel certo. Sem isso, abrir o endereço principal com a sessão válida
+// (ou uma pré-visualização que volta pra página inicial) parecia um logout.
+// A regra de inatividade (30 min) é checada antes: sessão vencida cai no login.
+require_once 'sessao_timeout.inc.php';
+if (!empty($_SESSION['usuario_tipo']) && $_SERVER['REQUEST_METHOD'] !== 'POST' && !isset($_GET['sessao_expirada'])) {
+    verificar_sessao_ativa();
+    switch ($_SESSION['usuario_tipo']) {
+        case 'desenvolvedor':
+            $destino_logado = 'dev_painel.php';
+            break;
+        case 'noivos':
+            $destino_logado = !empty($_SESSION['evento_id']) ? 'noivos.php' : 'hub_eventos_cliente.php';
+            break;
+        default: // admin / assistente
+            $destino_logado = !empty($_SESSION['modulo_ativo']) ? 'painel_admin.php' : 'hub_modulos.php';
+    }
+    header('Location: ' . $destino_logado);
+    exit;
+}
+
 $erro = "";
 $aviso_sessao_expirada = isset($_GET['sessao_expirada']);
 
@@ -135,7 +156,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-<link rel="stylesheet" href="css/estilo.css?v=16">
+<link rel="stylesheet" href="css/estilo.css?v=18">
 
 <style>
 

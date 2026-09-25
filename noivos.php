@@ -925,6 +925,20 @@ $rs3 = $pdo->prepare("
 $rs3->execute([$evento_id, $evento_id]);
 $notificacoes = array_map(fn($n) => $n + ['tipo' => 'comentario', 'chave' => 'comentario:' . $n['id']], $rs3->fetchAll());
 
+// Tarefas de checklist adicionadas pela assessoria
+try {
+    $rsChk = $pdo->prepare("SELECT id, tarefa, criado_em FROM checklist WHERE evento_id = ? AND origem = 'Assessoria' AND criado_em IS NOT NULL ORDER BY criado_em DESC LIMIT 15");
+    $rsChk->execute([$evento_id]);
+    foreach ($rsChk->fetchAll() as $c) {
+        $notificacoes[] = [
+            'tipo'          => 'checklist_novo',
+            'texto'         => 'Adicionou a tarefa "' . $c['tarefa'] . '" no checklist',
+            'chave'         => 'checklist_novo:' . $c['id'],
+            'data_cadastro' => $c['criado_em'],
+        ];
+    }
+} catch (Exception $e) {}
+
 // Notas criadas pela assessoria
 try {
     $rsNota = $pdo->prepare("SELECT id, titulo, criado_em FROM notas_evento WHERE evento_id = ? AND origem = 'Assessoria' ORDER BY criado_em DESC LIMIT 15");
@@ -1108,7 +1122,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
   <title><?= htmlspecialchars($labels['titulo_pagina_cliente']) ?> - Meu Evento PRO</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css?v=16">
+  <link rel="stylesheet" href="css/estilo.css?v=18">
   <?= estilo_tema_evento($cor_modulo) ?>
   <style>
     :root {
@@ -1838,6 +1852,12 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                       <div class="small fw-bold text-dark"><?= htmlspecialchars($n['texto'], ENT_QUOTES, 'UTF-8') ?></div>
                       <div class="text-muted" style="font-size:.7rem;"><?= tempo_relativo($n['data_cadastro']) ?></div>
                     </div>
+                  <?php elseif ($tipo === 'checklist_novo'): ?>
+                    <i class="bi bi-list-check text-success mt-1"></i>
+                    <div class="flex-fill" style="min-width:0;">
+                      <div class="small fw-bold text-dark"><?= htmlspecialchars($n['texto'], ENT_QUOTES, 'UTF-8') ?></div>
+                      <div class="text-muted" style="font-size:.7rem;"><?= tempo_relativo($n['data_cadastro']) ?></div>
+                    </div>
                   <?php elseif ($tipo === 'nota'): ?>
                     <i class="bi bi-journal-plus text-warning mt-1"></i>
                     <div class="flex-fill" style="min-width:0;">
@@ -2022,7 +2042,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                       </div>
                       <span class="text-white-50 pct-etapa" style="font-size:.72rem;min-width:30px;"><?= $pctE ?>%</span>
                     </div>
-                    <span class="badge bg-white bg-opacity-20 text-white rounded-pill px-2">
+                    <span class="badge text-white rounded-pill px-2" style="background: rgba(255,255,255,.2);">
                       <span class="conc-etapa"><?= $concE ?></span>/<?= $totE ?>
                     </span>
                     <i class="bi bi-chevron-down text-white small chevron-etapa"></i>
@@ -2038,7 +2058,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                         <?php foreach ($coments_etapa[$etapa] ?? [] as $ce):
                           $cor = $ce['autor'] === 'Noivos' ? 'bg-danger' : 'bg-primary'; ?>
                           <div class="my-1 bg-white border p-2 rounded-3 shadow-sm" style="font-size:.82rem;">
-                            <span class="badge <?= $cor ?> rounded-pill me-2"><?= htmlspecialchars($ce['autor']) ?></span>
+                            <span class="badge <?= $cor ?> rounded-pill me-2"><?= htmlspecialchars($ce['autor'] ?: 'Assessoria') ?></span>
                             <?= htmlspecialchars($ce['comentario']) ?>
                           </div>
                         <?php endforeach; ?>
@@ -2093,7 +2113,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
                                 <?php foreach ($coments_tarefa[$tid] ?? [] as $cm):
                                   $corC = $cm['autor'] === 'Noivos' ? 'text-danger' : 'text-primary'; ?>
                                   <div class="small my-1 bg-light p-2 rounded-3" style="font-size:.77rem;border:1px solid #f1f5f9;">
-                                    <strong class="<?= $corC ?>"><?= htmlspecialchars($cm['autor']) ?>:</strong>
+                                    <strong class="<?= $corC ?>"><?= htmlspecialchars($cm['autor'] ?: 'Assessoria') ?>:</strong>
                                     <?= htmlspecialchars($cm['comentario']) ?>
                                   </div>
                                 <?php endforeach; ?>

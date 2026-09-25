@@ -695,6 +695,27 @@ foreach ($lista_mesas as $m) $total_cap += (int)$m['capacidade'];
 $total_conv   = count($todos_raw);
 $total_livres = $total_cap - $total_alocados;
 
+// Agrupamento visual da Fila de Espera pro celular: cada titular vira o card
+// principal, com os próprios acompanhantes que também estão na fila (sem mesa)
+// logo em seguida — no mobile eles ficam recolhidos por padrão (só nomes),
+// abrindo a lista completa (editar/apagar cada um) ao tocar no titular. Cada
+// item continua um <div> irmão independente (arrastar pra mesa não muda),
+// só a exibição no celular é que agrupa/recolhe.
+$fila_grupos = [];
+foreach ($fila_itens as $c) {
+    if (empty($c['convidado_principal_id'])) {
+        $fila_grupos[] = ['titular' => $c, 'membros' => []];
+    } else {
+        $ultimo = count($fila_grupos) - 1;
+        if ($ultimo >= 0 && (int)$fila_grupos[$ultimo]['titular']['id'] === (int)$c['convidado_principal_id']) {
+            $fila_grupos[$ultimo]['membros'][] = $c;
+        } else {
+            // Órfão (não deveria acontecer, dada a ordenação de $todos_agrupados) — mostra avulso.
+            $fila_grupos[] = ['titular' => $c, 'membros' => []];
+        }
+    }
+}
+
 $categorias_existentes = array_values(array_unique(array_filter(array_map(fn($c) => trim($c['categoria']), $todos_raw))));
 sort($categorias_existentes);
 
@@ -711,7 +732,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
   <title>Organizar Mesas — <?= htmlspecialchars($evento['nome']) ?> - Meu Evento PRO</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css?v=16">
+  <link rel="stylesheet" href="css/estilo.css?v=18">
   <?= estilo_tema_evento($cor_modulo) ?>
 
   <style>
@@ -786,13 +807,43 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 
     @media (max-width: 575.98px) {
       html, body { overflow-x: hidden; }
-      .mesa-card .card-header .d-flex.justify-content-between.align-items-center h6 {
-        flex: 1 1 100%;
+    }
+
+    /* ---- CELULAR (organizar mesas) ---- */
+    @media (max-width: 767.98px) {
+      .logo-nav-mesas { height: 30px !important; }
+
+      /* 6 botões do cabeçalho em grade 3x2, todos do mesmo tamanho */
+      body .header-actions-mesas { display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .4rem !important; }
+      body .header-actions-mesas .quebra-mesas-mobile { display: none !important; }
+      body .header-actions-mesas .btn {
+        min-width: 0; padding: .45rem .2rem !important; font-size: .66rem; letter-spacing: -.01em; white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis; opacity: 1 !important;
       }
-      .mesa-card .card-header .d-flex.gap-1.flex-shrink-0.no-print {
-        flex: 1 1 100%;
-        justify-content: flex-end;
-      }
+      body .header-actions-mesas .btn i { margin-right: .2rem !important; }
+      body .header-actions-mesas .btn-mapa-mesas        { order: 3; }
+      body .header-actions-mesas .btn-convidados-mesas  { order: 5; }
+      body .header-actions-mesas .btn-imprimir-mesas    { order: 6; }
+
+      /* Cards de contagem mais compactos; o 5º (cadeiras livres) com a linha toda.
+         Número e nome (Convidados/Confirmados/Recusaram/Sem Mesa/Cadeiras
+         Livres) lado a lado em vez de um embaixo do outro — ganha altura. */
+      body .stats-mesas { margin-bottom: 1rem !important; }
+      body .stats-mesas > .col:last-child { width: 100%; }
+      body .stats-mesas .stat-card { padding: .65rem .5rem; gap: .45rem; min-width: 0; }
+      body .stats-mesas .stat-card > div { min-width: 0; }
+      body .stats-mesas .stat-card .stat-icon { width: 32px; height: 32px; border-radius: 10px; font-size: .9rem; }
+      body .stats-mesas .stat-card .val-lbl-row { display: flex; align-items: baseline; gap: .3rem; min-width: 0; }
+      body .stats-mesas .stat-card .val { font-size: 1.1rem; flex-shrink: 0; }
+      body .stats-mesas .stat-card .lbl { font-size: .6rem; letter-spacing: -.01em; margin-top: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+      /* Filtros da fila numa linha, ícone ao lado do texto */
+      body #filtros-wrap { flex-wrap: nowrap; }
+      body #filtros-wrap .btn { flex: 1 1 auto; min-width: 0; white-space: nowrap; padding: .3rem .3rem !important; font-size: .68rem !important; }
+
+      /* Card da mesa: nome e botões (➕ ✏️ 🗑️) na mesma linha */
+      body .mesa-card .card-header .d-flex.justify-content-between.align-items-center { flex-wrap: nowrap; }
+      body .mesa-card .card-header h6 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     }
 
     .conv-item { border-left: 4px solid transparent !important; cursor: grab; transition: background .1s, box-shadow .1s; user-select: none; }
@@ -934,6 +985,44 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     @media (max-width: 575.98px) {
       .mapa-palco-item { font-size: .58rem; }
     }
+    .mapa-selecionado { outline: 3px solid var(--color-primary, #a9744f); outline-offset: 3px; }
+    .mapa-mesa-chip.mapa-selecionado { border-radius: 50%; }
+
+    /* Celular: alças maiores pro dedo (a área de toque cresce com um "halo"
+       invisível; o quadradinho visível só aumenta um pouco). */
+    @media (max-width: 767.98px) {
+      .mesa-resize-handle, .entrada-resize-handle, .palco-resize-handle { width: 20px; height: 20px; }
+      .mesa-resize-handle { right: -6px; bottom: -6px; }
+      .elemento-rotate-handle { width: 24px; height: 24px; top: -32px; font-size: .75rem; }
+      .mesa-resize-handle::before, .entrada-resize-handle::before, .palco-resize-handle::before,
+      .elemento-rotate-handle::before { content: ''; position: absolute; inset: -12px; }
+      .palco-remove-btn { width: 24px; height: 24px; top: -11px; right: -11px; font-size: .7rem; }
+      /* Alças (aumentar/diminuir, girar, remover) só no item tocado — mapa limpo. */
+      .mesa-resize-handle, .entrada-resize-handle, .palco-resize-handle,
+      .elemento-rotate-handle, .palco-remove-btn { display: none; }
+      .mapa-selecionado .mesa-resize-handle, .mapa-selecionado .entrada-resize-handle,
+      .mapa-selecionado .palco-resize-handle { display: block; }
+      .mapa-selecionado .elemento-rotate-handle, .mapa-selecionado .palco-remove-btn { display: flex; }
+      .mapa-selecionado { z-index: 5; }
+      .dica-selecionar-mapa { font-size: .72rem; color: #64748b; margin: 0 0 .4rem; }
+
+      /* Fila de Espera: acompanhantes recolhidos por padrão — só o resumo de
+         nomes aparece, a lista completa (editar/apagar) só ao tocar no titular.
+         !important pra não perder pro applyFilter(), que também mexe no
+         style.display desses itens ao buscar/filtrar por status. */
+      #lista-espera .conv-item.fila-membro-item { display: none !important; }
+      #lista-espera .conv-item.fila-membro-item.fila-membro-aberto { display: block !important; }
+    }
+    .fila-toggle-membros {
+      display: flex; align-items: center; gap: .4rem; width: 100%;
+      margin-top: .5rem; padding: .35rem .5rem; border: 0; border-radius: 8px;
+      background: #f8fafc; color: #64748b; font-size: .68rem; text-align: left;
+    }
+    .fila-toggle-membros:active { background: #f1f5f9; }
+    .fila-toggle-nomes { flex: 1 1 auto; min-width: 0; }
+    .fila-toggle-chevron { transition: transform .2s ease; flex-shrink: 0; }
+    .fila-toggle-membros[aria-expanded="true"] .fila-toggle-chevron { transform: rotate(180deg); }
+    .fila-toggle-membros[aria-expanded="true"] { background: #eef2f6; color: #475569; }
 
     /* Marcador da entrada do espaço — arrastável, pra indicar de qual lado ela fica */
     .mapa-entrada {
@@ -1019,13 +1108,13 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 <body>
 
 <nav class="navbar navbar-dark shadow-sm no-print" style="background-color: <?= htmlspecialchars($cor_modulo) ?>;">
-  <div class="container-fluid px-3 px-lg-4">
-    <span class="navbar-brand mb-0">
-      <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">
+  <div class="container-fluid px-3 px-lg-4 flex-nowrap">
+    <span class="navbar-brand mb-0 flex-shrink-1" style="min-width:0;">
+      <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" class="logo-nav-mesas" style="height:40px;">
     </span>
-    <div class="d-flex align-items-center gap-2">
-      <a href="<?= $eh_noivos ? 'noivos.php' : 'gerenciar.php?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-3">
-        <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
+    <div class="d-flex align-items-center gap-2 flex-shrink-0">
+      <a href="<?= $eh_noivos ? 'noivos.php' : 'gerenciar.php?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-3 text-nowrap">
+        <i class="bi bi-arrow-left me-1"></i> <span class="d-none d-sm-inline">Voltar ao </span>Painel
       </a>
     </div>
   </div>
@@ -1132,23 +1221,23 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 
       <div class="d-flex flex-wrap gap-2 align-items-center header-actions-mesas">
         <button class="btn btn-sm btn-outline-light rounded-pill opacity-75 btn-imprimir-mesas" onclick="window.print()" title="Imprimir ou salvar como PDF">
-          <i class="bi bi-file-earmark-pdf me-1"></i> Exportar PDF
+          <i class="bi bi-file-earmark-pdf me-1"></i> <span class="d-none d-md-inline">Exportar </span>PDF
         </button>
         <button class="btn btn-sm btn-light rounded-pill text-dark fw-semibold btn-lote-mesas" data-bs-toggle="modal" data-bs-target="#modalLote">
-          <i class="bi bi-layers me-1"></i> Criar em Lote
+          <i class="bi bi-layers me-1"></i> <span class="d-none d-md-inline">Criar </span><span class="d-md-none">Em </span><span class="d-none d-md-inline">em </span>Lote
         </button>
         <button class="btn btn-sm btn-success rounded-pill fw-semibold shadow-sm px-3 btn-nova-mesa" data-bs-toggle="modal" data-bs-target="#modalAdd">
           <i class="bi bi-plus-lg me-1"></i> Nova Mesa
         </button>
-        <button class="btn btn-sm btn-outline-light rounded-pill fw-semibold px-3" data-bs-toggle="modal" data-bs-target="#modalMapaMesas">
-          <i class="bi bi-map-fill me-1"></i> Mapa de Mesas
+        <button class="btn btn-sm btn-outline-light rounded-pill fw-semibold px-3 btn-mapa-mesas" data-bs-toggle="modal" data-bs-target="#modalMapaMesas">
+          <i class="bi bi-map-fill me-1"></i> Mapa<span class="d-none d-md-inline"> de Mesas</span>
         </button>
         <div class="w-100 d-md-none quebra-mesas-mobile"></div>
         <button class="btn btn-sm btn-info rounded-pill text-dark fw-semibold shadow-sm px-3 btn-add-convidado-topo" data-bs-toggle="modal" data-bs-target="#modalAddConvidado">
-          <i class="bi bi-person-plus-fill me-1"></i> Criar Convite
+          <i class="bi bi-person-plus-fill me-1"></i> <span class="d-none d-md-inline">Criar </span>Convite
         </button>
-        <a href="convidados.php<?= $eh_noivos ? '' : '?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-pill fw-semibold px-3">
-          <i class="bi bi-people-fill me-1"></i> Gerenciar Convidados
+        <a href="convidados.php<?= $eh_noivos ? '' : '?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-pill fw-semibold px-3 btn-convidados-mesas">
+          <i class="bi bi-people-fill me-1"></i> <span class="d-none d-md-inline">Gerenciar </span>Convidados
         </a>
       </div>
     </div>
@@ -1156,29 +1245,29 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 
   <!-- Estatísticas -->
   <?php $cls_livres = $total_livres < 0 ? 'danger' : ($total_livres <= 5 ? 'warn' : 'ok'); ?>
-  <div class="row row-cols-2 row-cols-sm-5 g-2 mb-4 no-print">
+  <div class="row row-cols-2 row-cols-sm-5 g-2 mb-4 no-print stats-mesas">
     <div class="col">
       <div class="stat-card stat-total">
         <span class="stat-icon"><i class="bi bi-envelope-fill"></i></span>
-        <div><div class="val"><?= $total_conv ?></div><div class="lbl">Convidados</div></div>
+        <div><div class="val-lbl-row"><div class="val"><?= $total_conv ?></div><div class="lbl">Convidados</div></div></div>
       </div>
     </div>
     <div class="col">
       <div class="stat-card stat-confirmado">
         <span class="stat-icon"><i class="bi bi-check-circle-fill"></i></span>
-        <div><div class="val"><?= $total_conf ?></div><div class="lbl">Confirmados</div></div>
+        <div><div class="val-lbl-row"><div class="val"><?= $total_conf ?></div><div class="lbl">Confirmados</div></div></div>
       </div>
     </div>
     <div class="col">
       <div class="stat-card stat-recusado">
         <span class="stat-icon"><i class="bi bi-x-circle-fill"></i></span>
-        <div><div class="val"><?= $total_recusado ?></div><div class="lbl">Recusaram</div></div>
+        <div><div class="val-lbl-row"><div class="val"><?= $total_recusado ?></div><div class="lbl">Recusaram</div></div></div>
       </div>
     </div>
     <div class="col">
       <div class="stat-card stat-sem-mesa">
         <span class="stat-icon"><i class="bi bi-exclamation-triangle-fill"></i></span>
-        <div><div class="val" id="stat-sem-mesa-val"><?= count($sem_mesa) ?></div><div class="lbl">Sem Mesa</div></div>
+        <div><div class="val-lbl-row"><div class="val" id="stat-sem-mesa-val"><?= count($sem_mesa) ?></div><div class="lbl">Sem Mesa</div></div></div>
       </div>
     </div>
     <div class="col">
@@ -1188,7 +1277,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
             <path d="M4 1.5A1.5 1.5 0 0 1 5.5 0h5A1.5 1.5 0 0 1 12 1.5v6a1.5 1.5 0 0 1-1.5 1.5H11v5.5a.5.5 0 0 1-1 0V11H6v3.5a.5.5 0 0 1-1 0V9h-.5A1.5 1.5 0 0 1 3 7.5v-6A1.5 1.5 0 0 1 4 1.5zm1.5-.5a.5.5 0 0 0-.5.5v6a.5.5 0 0 0 .5.5h5a.5.5 0 0 0 .5-.5v-6a.5.5 0 0 0-.5-.5h-5z"/>
           </svg>
         </span>
-        <div><div class="val"><?= $total_livres ?></div><div class="lbl">Cadeiras Livres</div></div>
+        <div><div class="val-lbl-row"><div class="val"><?= $total_livres ?></div><div class="lbl">Cadeiras Livres</div></div></div>
       </div>
     </div>
   </div>
@@ -1229,11 +1318,12 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
               </div>
             <?php endif; ?>
 
-            <?php foreach ($fila_itens as $c):
+            <?php foreach ($fila_grupos as $grupo):
+                $c = $grupo['titular'];
+                $membros = $grupo['membros'];
                 $recusou = ($c['resposta_rsvp'] ?? '') === 'recusado';
                 $sc = $recusou ? 'recusado' : ($c['confirmado'] ? 'confirmado' : 'pendente'); ?>
-            <div class="list-group-item bg-white rounded-2 shadow-sm conv-item <?= $sc ?> p-2 mb-1 border-0<?= !empty($c['principal_nome']) ? ' ms-3' : '' ?>"
-                 style="<?= !empty($c['principal_nome']) ? 'width:calc(100% - 1rem);' : '' ?>"
+            <div class="list-group-item bg-white rounded-2 shadow-sm conv-item <?= $sc ?> p-2 mb-1 border-0"
                  data-conv-id="<?= $c['id'] ?>"
                  data-nome="<?= strtolower(htmlspecialchars($c['nome'])) ?>"
                  data-status="<?= $sc ?>"
@@ -1270,12 +1360,6 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                     </div>
                   </div>
 
-                  <?php if (!empty($c['principal_nome'])): ?>
-                  <div class="text-muted mt-1" style="font-size:.62rem;line-height:1.35;">
-                    <i class="bi bi-people me-1"></i>Acompanha: <?= htmlspecialchars($c['principal_nome'], ENT_QUOTES, 'UTF-8') ?>
-                  </div>
-                  <?php endif; ?>
-
                   <!-- Rodapé do Card da Fila com Botão de Confirmar -->
                   <div class="d-flex align-items-center justify-content-between mt-2 pt-1 border-top border-light" style="font-size:.64rem;">
                     <?php if ($recusou): ?>
@@ -1298,9 +1382,93 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
                     <span class="text-muted text-truncate" style="max-width:45%;" title="<?= htmlspecialchars($c['categoria']) ?>"><?= htmlspecialchars($c['categoria'] ?: 'Sem categoria') ?></span>
                   </div>
 
+                  <?php if (!empty($membros)): ?>
+                  <!-- Celular: acompanhantes recolhidos por padrão (só nomes) — toque
+                       no titular pra ver a lista completa e poder editar/apagar cada
+                       um. No computador eles continuam sempre visíveis, logo abaixo. -->
+                  <button type="button" class="fila-toggle-membros d-md-none no-print" data-titular-id="<?= $c['id'] ?>" aria-expanded="false">
+                    <i class="bi bi-people-fill"></i>
+                    <span class="fila-toggle-nomes text-truncate">
+                      <?= (int)count($membros) ?> acompanhante<?= count($membros) !== 1 ? 's' : '' ?>: <?= htmlspecialchars(implode(', ', array_map(fn($m) => $m['nome'], $membros)), ENT_QUOTES, 'UTF-8') ?>
+                    </span>
+                    <i class="bi bi-chevron-down fila-toggle-chevron"></i>
+                  </button>
+                  <?php endif; ?>
                 </div>
               </div>
             </div>
+
+            <?php foreach ($membros as $m):
+                $mRecusou = ($m['resposta_rsvp'] ?? '') === 'recusado';
+                $mSc = $mRecusou ? 'recusado' : ($m['confirmado'] ? 'confirmado' : 'pendente'); ?>
+            <div class="list-group-item bg-white rounded-2 shadow-sm conv-item fila-membro-item <?= $mSc ?> p-2 mb-1 border-0 ms-3"
+                 style="width:calc(100% - 1rem);"
+                 data-conv-id="<?= $m['id'] ?>"
+                 data-nome="<?= strtolower(htmlspecialchars($m['nome'])) ?>"
+                 data-status="<?= $mSc ?>"
+                 data-lugares="1"
+                 data-principal-fila="<?= $c['id'] ?>">
+
+              <div class="d-flex align-items-start gap-2">
+                <i class="bi <?= $mRecusou ? 'bi-lock-fill text-muted' : 'bi-grip-vertical drag-guest' ?> flex-shrink-0 mt-1" <?= $mRecusou ? 'title="Recusou — não pode ser colocado em mesa"' : '' ?>></i>
+                <div class="flex-grow-1 min-w-0">
+                  <div class="d-flex justify-content-between align-items-start gap-1">
+                    <span class="fw-semibold small text-dark text-truncate" title="<?= htmlspecialchars($m['nome']) ?>">
+                      <?= htmlspecialchars($m['nome']) ?>
+                    </span>
+                    <div class="d-flex align-items-center gap-2 flex-shrink-0 no-print">
+                      <div class="d-flex align-items-center gap-1 conv-actions">
+                        <button type="button" class="btn-icon-conv text-primary btn-edit-convidado"
+                                title="Editar convidado"
+                                data-id="<?= $m['id'] ?>"
+                                data-nome="<?= htmlspecialchars(nome_convidado_sem_sobrenome($m['nome'], $m['sobrenome'] ?? null), ENT_QUOTES, 'UTF-8') ?>"
+                                data-sobrenome="<?= htmlspecialchars($m['sobrenome'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                data-telefone="<?= htmlspecialchars($m['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                data-categoria="<?= htmlspecialchars($m['categoria'], ENT_QUOTES, 'UTF-8') ?>"
+                                data-acompanhantes-json="[]"
+                                data-bs-toggle="modal" data-bs-target="#modalEditConvidado">
+                          <i class="bi bi-pencil-fill"></i>
+                        </button>
+                        <form method="POST" class="m-0 form-excluir-convidado">
+                          <input type="hidden" name="excluir_convidado" value="1">
+                          <input type="hidden" name="convidado_id" value="<?= $m['id'] ?>">
+                          <button type="submit" class="btn-icon-conv text-danger" title="Excluir convidado">
+                            <i class="bi bi-trash-fill"></i>
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="text-muted mt-1" style="font-size:.62rem;line-height:1.35;">
+                    <i class="bi bi-people me-1"></i>Acompanha: <?= htmlspecialchars($c['nome'], ENT_QUOTES, 'UTF-8') ?>
+                  </div>
+
+                  <div class="d-flex align-items-center justify-content-between mt-2 pt-1 border-top border-light" style="font-size:.64rem;">
+                    <?php if ($mRecusou): ?>
+                      <span class="fw-semibold text-secondary d-flex align-items-center gap-1">
+                        <i class="bi bi-x-circle-fill" style="font-size:.85rem;"></i> Recusou
+                      </span>
+                    <?php else: ?>
+                    <form method="POST" class="m-0 no-print form-confirmar">
+                      <input type="hidden" name="alternar_confirmacao" value="1">
+                      <input type="hidden" name="convidado_id" value="<?= $m['id'] ?>">
+                      <button type="submit" class="btn btn-sm p-0 border-0 bg-transparent d-flex align-items-center gap-1 btn-acao-convidado"
+                              title="<?= $m['confirmado'] ? 'Mudar para Pendente' : 'Confirmar Presença' ?>">
+                        <i class="bi <?= $m['confirmado'] ? 'bi-check-circle-fill text-success' : 'bi-circle text-warning' ?>" style="font-size:.85rem;"></i>
+                        <span class="fw-semibold <?= $m['confirmado'] ? 'text-success' : 'text-warning' ?>" style="font-size:.68rem;">
+                          <?= $m['confirmado'] ? 'Confirmado' : 'Pendente' ?>
+                        </span>
+                      </button>
+                    </form>
+                    <?php endif; ?>
+                    <span class="text-muted text-truncate" style="max-width:45%;" title="<?= htmlspecialchars($m['categoria']) ?>"><?= htmlspecialchars($m['categoria'] ?: 'Sem categoria') ?></span>
+                  </div>
+
+                </div>
+              </div>
+            </div>
+            <?php endforeach; ?>
             <?php endforeach; ?>
           </div>
         </div>
@@ -1692,7 +1860,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
           <p class="text-muted mb-0 small"><?= htmlspecialchars($evento['nome']) ?> &bull; <?= date('d/m/Y', strtotime($evento['data_evento'])) ?></p>
         </div>
         <div class="d-flex align-items-start justify-content-between gap-2 flex-wrap mb-3 no-print">
-          <p class="text-muted mb-0" style="font-size:.78rem;">Arraste cada mesa, o palco ou a entrada pra representar como vão ficar no espaço do evento. A posição é salva sozinha.</p>
+          <p class="text-muted mb-0 texto-mapa-ajuda" style="font-size:.78rem;"><span class="d-none d-md-inline">Arraste cada mesa, o palco ou a entrada pra representar como vão ficar no espaço do evento. A posição é salva sozinha.</span><span class="d-md-none">Arraste mesas, palco e entrada com o dedo. A posição é salva sozinha.</span></p>
           <button type="button" id="btn-add-palco" class="btn btn-dark btn-sm rounded-pill fw-semibold px-3 flex-shrink-0">
             <i class="bi bi-square-fill me-1"></i> Adicionar Palco
           </button>
@@ -1700,6 +1868,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
         <?php if (!$temMapaConteudo): ?>
           <p class="text-center text-muted small mb-2 no-print"><i class="bi bi-info-circle me-1"></i>Crie uma mesa ou adicione um palco pra poder organizar o mapa.</p>
         <?php endif; ?>
+        <p class="dica-selecionar-mapa d-md-none no-print"><i class="bi bi-hand-index me-1"></i>Toque numa mesa para aparecer a alça de aumentar/diminuir.</p>
         <div id="mapa-mesas-area" class="mapa-mesas-area">
           <?php foreach ($mapa_mesas as $mm): ?>
           <div class="mapa-mesa-chip" data-mesa-id="<?= $mm['id'] ?>" data-tamanho="<?= $mm['tamanho'] ?>"
@@ -2295,6 +2464,27 @@ window.addEventListener('afterprint', () => document.body.classList.remove('impr
     } catch (e) {}
   }
   document.getElementById('modalMapaMesas')?.addEventListener('shown.bs.modal', atualizarOcupacaoMapa);
+
+  /* ---- Celular: tocar numa mesa/entrada/palco seleciona ela — só o item
+     selecionado mostra as alças (aumentar/diminuir, girar, remover), igual
+     no computador, mas sem poluir o mapa com alça em tudo. ---- */
+  let selecionado = null, toqueInicio = null;
+  function selecionar(el) {
+    if (selecionado) selecionado.classList.remove('mapa-selecionado');
+    selecionado = el;
+    if (el) el.classList.add('mapa-selecionado');
+  }
+  // Toque = selecionar (só se não arrastou)
+  area.addEventListener('pointerdown', e => { toqueInicio = { x: e.clientX, y: e.clientY }; }, true);
+  area.addEventListener('pointerup', e => {
+    if (!toqueInicio) return;
+    const moveu = Math.hypot(e.clientX - toqueInicio.x, e.clientY - toqueInicio.y) > 8;
+    toqueInicio = null;
+    if (moveu) return;
+    const el = e.target.closest('.mapa-mesa-chip, .mapa-entrada, .mapa-palco-item');
+    if (el || !e.target.closest('.mesa-resize-handle, .entrada-resize-handle, .palco-resize-handle, .elemento-rotate-handle, .palco-remove-btn')) selecionar(el || null);
+  }, true);
+  document.getElementById('modalMapaMesas')?.addEventListener('hidden.bs.modal', () => selecionar(null));
 })();
 
 /* ---- Repetidor de acompanhantes (nome + faixa etária) ---- */
@@ -2469,6 +2659,21 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   });
 
+  // Fila de Espera (celular): abre o grupo de acompanhantes de um titular —
+  // delegado no container (sobrevive ao innerHTML ser trocado pelo AJAX).
+  function abrirGrupoFila(btn, expandir) {
+    btn.setAttribute('aria-expanded', expandir ? 'true' : 'false');
+    const tid = btn.dataset.titularId;
+    document.querySelectorAll(`#lista-espera .fila-membro-item[data-principal-fila="${tid}"]`).forEach(item => {
+      item.classList.toggle('fila-membro-aberto', expandir);
+    });
+  }
+  document.getElementById('lista-espera')?.addEventListener('click', function (e) {
+    const btn = e.target.closest('.fila-toggle-membros');
+    if (!btn) return;
+    abrirGrupoFila(btn, btn.getAttribute('aria-expanded') !== 'true');
+  });
+
   // Filtros da Fila
   const busca = document.getElementById('busca');
   let filtroAtivo = 'todos';
@@ -2478,7 +2683,14 @@ document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('#lista-espera .conv-item').forEach(item => {
       const matchNome   = !t || (item.dataset.nome || '').includes(t);
       const matchStatus = filtroAtivo === 'todos' || item.dataset.status === filtroAtivo;
-      item.style.display = (matchNome && matchStatus) ? '' : 'none';
+      const visivel = matchNome && matchStatus;
+      item.style.display = visivel ? '' : 'none';
+      // Acompanhante que bateu na busca/filtro: abre o grupo dele automaticamente
+      // (celular) — senão ficaria recolhido mesmo "visível" pelo filtro.
+      if (visivel && item.classList.contains('fila-membro-item') && !item.classList.contains('fila-membro-aberto')) {
+        const btnGrupo = document.querySelector(`.fila-toggle-membros[data-titular-id="${item.dataset.principalFila}"]`);
+        if (btnGrupo) abrirGrupoFila(btnGrupo, true);
+      }
     });
   }
   busca.addEventListener('input', applyFilter);

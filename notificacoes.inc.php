@@ -57,6 +57,20 @@ if (!schema_ja_verificado('notificacoes_vistas')) {
     marcar_schema_verificado('notificacoes_vistas');
 }
 
+// Coluna de data de criação da tarefa do checklist — usada pra saber quais
+// tarefas são "novas" (pra notificar o casal quando a assessoria adiciona
+// checklist). Linhas antigas ganham uma data bem no passado, pra não virar
+// notificação de "tarefa nova" retroativa pra quem já tinha checklist.
+if (!schema_ja_verificado('checklist_criado_em')) {
+    try {
+        $pdo->query("SELECT criado_em FROM checklist LIMIT 1");
+    } catch (Exception $e) {
+        $pdo->exec("ALTER TABLE checklist ADD COLUMN criado_em DATETIME NULL");
+        $pdo->exec("UPDATE checklist SET criado_em = '2000-01-01 00:00:00' WHERE criado_em IS NULL");
+    }
+    marcar_schema_verificado('checklist_criado_em');
+}
+
 /**
  * Busca as notificações mais recentes (tarefas concluídas pelos noivos,
  * comentários dos noivos e confirmações/recusas de presença).

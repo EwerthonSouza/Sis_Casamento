@@ -138,22 +138,28 @@ body {
     transition: transform 0.3s ease, box-shadow 0.3s ease, opacity 0.3s ease, background-color 0.3s ease, color 0.3s ease;
 }
 
-/* Customização da Barra de Rolagem (Unificada) */
+/* Customização da Barra de Rolagem (Unificada) — transparente: quase
+   invisível parada, um pouco mais visível ao passar o mouse/arrastar. */
+/* (Sem scrollbar-width/scrollbar-color: nos navegadores novos essas propriedades
+   trocam a barra fina flutuante por uma fixa que ocupa ~13px da largura da tela.) */
 ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
+    background: transparent;
 }
 ::-webkit-scrollbar-track {
-    background: transparent; 
+    background: transparent;
     border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb {
-    background: #cbd5e1; 
+    background: rgba(100, 116, 139, .22);
     border-radius: 4px;
 }
-::-webkit-scrollbar-thumb:hover {
-    background: #94a3b8; 
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+    background: rgba(100, 116, 139, .45);
 }
+::-webkit-scrollbar-corner { background: transparent; }
 
 /* ============================================================
    3. ANIMAÇÕES GLOBAIS

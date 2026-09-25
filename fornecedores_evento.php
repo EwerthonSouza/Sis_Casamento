@@ -384,6 +384,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: fornecedores_evento.php?id=" . $evento_id . ($id_forn_ret ? "&pagamento=" . $id_forn_ret : '')); exit;
     }
 
+    // APAGAR PAGAMENTO registrado errado: tira a linha do histórico, desconta o
+    // valor do total pago e apaga o comprovante (se tiver) do disco.
+    if (isset($_POST['excluir_pagamento'])) {
+        $pag_id = (int)($_POST['id_pagamento'] ?? 0);
+        $sel = $pdo->prepare("SELECT p.id, p.valor, p.comprovante_arquivo, f.id AS forn_id, f.valor_pago FROM fornecedores_pagamentos p INNER JOIN fornecedores_evento f ON f.id = p.fornecedor_id WHERE p.id = ? AND f.evento_id = ?");
+        $sel->execute([$pag_id, $evento_id]);
+        $pag = $sel->fetch();
+        $id_forn_ret = $pag ? (int)$pag['forn_id'] : 0;
+
+        if (!$pag) {
+            $_SESSION['msg_erro'] = "Pagamento não encontrado.";
+        } else {
+            $novo_pago = max(0.0, (float)$pag['valor_pago'] - (float)$pag['valor']);
+            $pdo->prepare("DELETE FROM fornecedores_pagamentos WHERE id = ?")->execute([$pag_id]);
+            $pdo->prepare("UPDATE fornecedores_evento SET valor_pago = ? WHERE id = ? AND evento_id = ?")->execute([$novo_pago, $id_forn_ret, $evento_id]);
+            if (!empty($pag['comprovante_arquivo'])) {
+                $caminho = './uploads/' . basename($pag['comprovante_arquivo']);
+                if (is_file($caminho)) { @unlink($caminho); }
+            }
+            $_SESSION['msg_sucesso'] = "Pagamento de R$ " . number_format((float)$pag['valor'], 2, ',', '.') . " apagado.";
+        }
+        header("Location: fornecedores_evento.php?id=" . $evento_id . ($id_forn_ret ? "&pagamento=" . $id_forn_ret : '')); exit;
+    }
+
+    // CORRIGIR PAGAMENTO (valor e/ou data): ajusta o total pago pela diferença,
+    // sem nunca deixar o pago passar do valor combinado com o fornecedor.
+    if (isset($_POST['editar_pagamento'])) {
+        $pag_id    = (int)($_POST['id_pagamento'] ?? 0);
+        $valor_novo = !empty($_POST['valor_pagamento_edit']) ? (float)$_POST['valor_pagamento_edit'] : 0.00;
+        $data_nova = data_pagamento_valida($_POST['data_pagamento_edit'] ?? '');
+        $sel = $pdo->prepare("SELECT p.id, p.valor, f.id AS forn_id, f.valor AS valor_total, f.valor_pago FROM fornecedores_pagamentos p INNER JOIN fornecedores_evento f ON f.id = p.fornecedor_id WHERE p.id = ? AND f.evento_id = ?");
+        $sel->execute([$pag_id, $evento_id]);
+        $pag = $sel->fetch();
+        $id_forn_ret = $pag ? (int)$pag['forn_id'] : 0;
+
+        if (!$pag) {
+            $_SESSION['msg_erro'] = "Pagamento não encontrado.";
+        } elseif ($valor_novo <= 0) {
+            $_SESSION['msg_erro'] = "Informe um valor maior que zero (pra tirar o pagamento, use a lixeira).";
+        } else {
+            $pago_sem_este = max(0.0, (float)$pag['valor_pago'] - (float)$pag['valor']);
+            $maximo = max(0.0, (float)$pag['valor_total'] - $pago_sem_este);
+            $valor_real = min($valor_novo, $maximo);
+            $pdo->prepare("UPDATE fornecedores_pagamentos SET valor = ?, criado_em = ? WHERE id = ?")->execute([$valor_real, $data_nova, $pag_id]);
+            $pdo->prepare("UPDATE fornecedores_evento SET valor_pago = ? WHERE id = ? AND evento_id = ?")->execute([$pago_sem_este + $valor_real, $id_forn_ret, $evento_id]);
+            if ($valor_novo > $maximo) {
+                $_SESSION['msg_erro'] = "O valor informado (R$ " . number_format($valor_novo, 2, ',', '.') . ") passava do total combinado. Foi salvo R$ " . number_format($valor_real, 2, ',', '.') . ".";
+            } else {
+                $_SESSION['msg_sucesso'] = "Pagamento corrigido!";
+            }
+        }
+        header("Location: fornecedores_evento.php?id=" . $evento_id . ($id_forn_ret ? "&pagamento=" . $id_forn_ret : '')); exit;
+    }
+
     // EXCLUIR
     if (isset($_POST['excluir_fornecedor'])) {
         $id_forn = (int)$_POST['id_fornecedor'];
@@ -477,7 +531,7 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
     <title>Fornecedores do Evento - Meu Evento PRO</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=16">
+    <link rel="stylesheet" href="css/estilo.css?v=18">
     <?= estilo_tema_evento($cor_modulo) ?>
     <style>
         .stat-card-forn .card-body { padding: .75rem 1rem; }
@@ -500,14 +554,119 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
             .stat-card-forn .fs-4 { font-size: .85rem !important; }
             .stat-card-forn h4 { font-size: .78rem; white-space: nowrap; }
             .stat-card-forn .text-uppercase { font-size: .55rem; letter-spacing: 0; line-height: 1.15; }
+
+            /* Nome do cliente numa linha */
+            .cabecalho-forn-titulo { min-width: 0; width: 100%; }
+            .cliente-forn { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+            /* Filtros (Todos / Contratados / Orçamento / Cancelados) numa linha */
+            #filtro-status-forn { flex-wrap: nowrap !important; width: 100%; }
+            #filtro-status-forn .btn { flex: 1 1 0; min-width: 0; padding: .3rem .15rem; font-size: .7rem; }
         }
         @media (max-width: 420px) {
             .navbar .navbar-brand img { height: 32px; }
             .navbar .btn span.nav-btn-label { display: none; }
         }
 
+        /* ---- RESUMO DE VALORES (celular): recolhido, toque pra abrir ---- */
+        .resumo-valores-toggle {
+            display: flex; align-items: center; gap: .85rem; width: 100%;
+            background: #fff; border: 0; border-radius: 16px; padding: .9rem 1rem;
+            box-shadow: 0 4px 14px rgba(15,23,42,.06); text-align: left;
+        }
+        .rv-icone {
+            width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
+            background: #fee2e2; color: #dc2626; font-size: 1.25rem;
+        }
+        .rv-texto { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+        .rv-rotulo { font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: #64748b; }
+        .rv-destaque { font-size: 1.35rem; font-weight: 800; color: #dc2626; line-height: 1.15; }
+        .rv-barra { display: block; height: 5px; background: #e2e8f0; border-radius: 999px; overflow: hidden; margin: .35rem 0 .2rem; }
+        .rv-barra > span { display: block; height: 100%; background: linear-gradient(90deg, #16a34a, #22c55e); border-radius: 999px; }
+        .rv-sub { font-size: .72rem; color: #64748b; }
+        .rv-acao { display: flex; flex-direction: column; align-items: center; gap: .1rem; flex-shrink: 0; color: #64748b; }
+        .rv-acao-txt { font-size: .6rem; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
+        .rv-chevron { font-size: 1rem; transition: transform .25s ease; }
+        .resumo-valores-toggle:not(.collapsed) .rv-chevron { transform: rotate(180deg); }
+        .rv-txt-fechar { display: none; }
+        .resumo-valores-toggle:not(.collapsed) .rv-txt-abrir { display: none; }
+        .resumo-valores-toggle:not(.collapsed) .rv-txt-fechar { display: inline; }
+        .rv-lista { background: #fff; border-radius: 16px; margin-top: .5rem; padding: .35rem .9rem; box-shadow: 0 4px 14px rgba(15,23,42,.06); }
+        .rv-item { display: flex; align-items: center; gap: .75rem; padding: .7rem 0; border-bottom: 1px solid #f1f5f9; }
+        .rv-item:last-child { border-bottom: 0; }
+        .rv-item-icone { width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: .95rem; }
+        .rv-item-rotulo { flex: 1 1 auto; min-width: 0; font-size: .85rem; color: #334155; font-weight: 600; }
+        .rv-item-rotulo small { color: #94a3b8; font-weight: 500; }
+        .rv-item-valor { font-size: 1.08rem; font-weight: 800; color: #0f172a; white-space: nowrap; }
+
+        /* ---- Seletor de arquivo próprio (no lugar do nativo: no iPhone o
+           "Escolher arquivo / Nenhum arquivo selecionado" ficava grande e quebrado) ---- */
+        .seletor-arquivo {
+            display: flex; align-items: center; gap: .6rem; width: 100%; margin: 0;
+            border: 1.5px dashed #cbd5e1; border-radius: 12px; padding: .5rem .6rem;
+            background: #f8fafc; cursor: pointer; min-width: 0;
+        }
+        .seletor-arquivo input[type="file"] { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+        .seletor-arquivo-btn {
+            flex-shrink: 0; font-size: .82rem; font-weight: 600; color: var(--color-primary-dark, #6f4a2f);
+            background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: .35rem .6rem; white-space: nowrap;
+        }
+        .seletor-arquivo-nome { flex: 1 1 auto; min-width: 0; font-size: .78rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .seletor-arquivo.tem-arquivo { border-style: solid; border-color: #86efac; background: #f0fdf4; }
+        .seletor-arquivo.tem-arquivo .seletor-arquivo-nome { color: #15803d; font-weight: 600; }
+
+        /* ---- Visualizador de comprovante dentro do modal de pagamento ---- */
+        .visor-comprovante-inline { display: none; }
+        .modal-content.vendo-comprovante > .visor-comprovante-inline { display: block; }
+        .modal-content.vendo-comprovante > :not(.modal-header):not(.visor-comprovante-inline) { display: none !important; }
+        .visor-topo { display: flex; align-items: center; gap: .5rem; padding: .75rem 1rem; border-bottom: 1px solid #f1f5f9; }
+        .visor-nome { flex: 1 1 auto; min-width: 0; font-size: .8rem; color: #64748b; }
+        .visor-area { padding: 1rem; text-align: center; background: #f8fafc; }
+        .visor-img { max-width: 100%; max-height: 65vh; object-fit: contain; border-radius: 10px; box-shadow: 0 4px 14px rgba(0,0,0,.08); }
+        .visor-pdf { width: 100%; height: 60vh; border: 0; border-radius: 10px; background: #fff; }
+
+        /* Campos de valor/data dos pagamentos: mais baixos e compactos, lado a
+           lado. A letra continua 16px no celular (abaixo disso o iPhone dá zoom
+           ao tocar no campo) — o que diminui é o espaço interno. */
+        .form-registrar-pagamento .form-control,
+        .form-editar-pgto .form-control {
+            padding: .4rem .65rem; min-height: 0; height: 42px; border-radius: 10px;
+        }
+        .form-registrar-pagamento input[type="date"],
+        .form-editar-pgto input[type="date"] { -webkit-appearance: none; appearance: none; text-align: left; }
+        .form-registrar-pagamento input[type="date"]::-webkit-date-and-time-value,
+        .form-editar-pgto input[type="date"]::-webkit-date-and-time-value { text-align: left; margin: 0; }
+        .form-registrar-pagamento .form-label,
+        .form-editar-pgto .form-label { margin-bottom: .3rem; }
+
+        /* Data compacta: o texto visível é nosso (menor, dd/mm/aaaa); o campo de
+           data de verdade fica invisível por cima e continua com 16px — então o
+           iPhone abre o calendário nativo ao tocar, sem dar zoom e sem mostrar
+           a data grande e por extenso dentro do quadro. */
+        .data-compacta {
+            position: relative; display: flex; align-items: center; justify-content: space-between;
+            gap: .4rem; width: 100%; height: 42px; margin: 0; padding: 0 .65rem;
+            border: 1px solid #cbd5e1; border-radius: 10px; background: #f8fafc; cursor: pointer;
+        }
+        .form-editar-pgto .data-compacta { height: 38px; }
+        .data-compacta-txt { font-size: .88rem; color: #1e293b; white-space: nowrap; }
+        .data-compacta .bi-calendar3 { color: #94a3b8; font-size: .85rem; }
+        .data-compacta-input {
+            position: absolute; inset: 0; width: 100%; height: 100%;
+            opacity: 0; border: 0; padding: 0; margin: 0; cursor: pointer;
+            font-size: 16px; -webkit-appearance: none; appearance: none;
+        }
+        .data-compacta:focus-within { border-color: #c9a181; box-shadow: 0 0 0 4px rgba(169,116,79,.15); background: #fff; }
+
+        /* Botões de cada pagamento no histórico (ver/anexar, corrigir, apagar) */
+        .btn-acao-pgto { min-width: 32px; height: 30px; padding: 0 .5rem; display: inline-flex; align-items: center; justify-content: center; font-size: .85rem; }
+        .form-editar-pgto { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: .6rem; }
+
         /* Pagamentos anteriores no modal de registrar pagamento */
-        .historico-pgto-modal { max-height: 190px; overflow-y: auto; }
+        .historico-pgto-modal { max-height: 260px; overflow-y: auto; }
+        /* Com a correção aberta, a lista cresce (sem rolagem interna cortando o formulário) */
+        .historico-pgto-modal:has(.form-editar-pgto:not([hidden])) { max-height: none; }
         .historico-pgto-modal .list-group-item { font-size: .85rem; }
     </style>
 </head>
@@ -524,12 +683,12 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
     </div>
   </div>
 </nav>
-<div class="container my-3 my-md-5">
+<div class="container my-3 my-md-5" id="conteudo-forn">
 
     <div class="bg-white p-3 p-md-4 rounded shadow-sm mb-4 d-flex flex-wrap justify-content-between align-items-center gap-2">
-        <div>
+        <div class="cabecalho-forn-titulo">
             <h2 class="mb-0 fs-4 fs-md-2">Fornecedores</h2>
-            <small class="text-muted">Cliente: <?= htmlspecialchars($evento['nome']) ?></small>
+            <small class="text-muted cliente-forn">Cliente: <?= htmlspecialchars($evento['nome']) ?></small>
         </div>
         <div class="d-flex flex-wrap gap-3 text-start text-sm-end text-muted small">
             <div class="text-nowrap"><i class="bi bi-people-fill"></i> Total de Serviços: <strong><?= $total_fornecedores ?></strong></div>
@@ -537,8 +696,32 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
         </div>
     </div>
 
-    <div class="row g-2 g-md-3 mb-4">
-        <div class="col-6 col-lg">
+    <!-- Celular: resumo recolhido (o que falta pagar em destaque); toque abre
+         os 5 valores grandes. Computador/tablet: a fileira de 5 cards abaixo. -->
+    <div class="d-md-none mb-3 resumo-valores-mobile">
+        <button type="button" class="resumo-valores-toggle collapsed" data-bs-toggle="collapse" data-bs-target="#resumoValoresMobile" aria-expanded="false" aria-controls="resumoValoresMobile">
+            <span class="rv-icone"><i class="bi bi-wallet2"></i></span>
+            <span class="rv-texto">
+                <span class="rv-rotulo">Falta pagar</span>
+                <span class="rv-destaque">R$ <?= number_format($valor_restante_total, 2, ',', '.') ?></span>
+                <span class="rv-barra"><span style="width:<?= $pct_pago_total ?>%;"></span></span>
+                <span class="rv-sub"><?= $pct_pago_total ?>% pago de R$ <?= number_format($valor_total, 2, ',', '.') ?></span>
+            </span>
+            <span class="rv-acao"><span class="rv-acao-txt"><span class="rv-txt-abrir">Ver valores</span><span class="rv-txt-fechar">Fechar</span></span><i class="bi bi-chevron-down rv-chevron"></i></span>
+        </button>
+        <div class="collapse" id="resumoValoresMobile">
+            <div class="rv-lista">
+                <div class="rv-item"><span class="rv-item-icone" style="background:#f1f5f9;color:#334155;"><i class="bi bi-cash-stack"></i></span><span class="rv-item-rotulo">Custo previsto (total)</span><span class="rv-item-valor">R$ <?= number_format($valor_total, 2, ',', '.') ?></span></div>
+                <div class="rv-item"><span class="rv-item-icone" style="background:#dcfce7;color:#16a34a;"><i class="bi bi-check-circle"></i></span><span class="rv-item-rotulo">Já contratado</span><span class="rv-item-valor" style="color:#16a34a;">R$ <?= number_format($valor_contratado, 2, ',', '.') ?></span></div>
+                <div class="rv-item"><span class="rv-item-icone" style="background:#fef3c7;color:#d97706;"><i class="bi bi-hourglass-split"></i></span><span class="rv-item-rotulo">Em negociação</span><span class="rv-item-valor">R$ <?= number_format($valor_orcamento, 2, ',', '.') ?></span></div>
+                <div class="rv-item"><span class="rv-item-icone" style="background:#dcfce7;color:#16a34a;"><i class="bi bi-cash-coin"></i></span><span class="rv-item-rotulo">Já pago <small>(<?= $pct_pago_total ?>%)</small></span><span class="rv-item-valor" style="color:#16a34a;">R$ <?= number_format($valor_pago_total, 2, ',', '.') ?></span></div>
+                <div class="rv-item"><span class="rv-item-icone" style="background:#fee2e2;color:#dc2626;"><i class="bi bi-exclamation-circle"></i></span><span class="rv-item-rotulo">Saldo a pagar</span><span class="rv-item-valor" style="color:#dc2626;">R$ <?= number_format($valor_restante_total, 2, ',', '.') ?></span></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-4 linha-stats-forn d-none d-md-flex">
+        <div class="col">
             <div class="card bg-white shadow-sm border-0 h-100 stat-card-forn">
                 <div class="card-body d-flex align-items-center">
                     <div class="bg-light rounded-circle p-3 me-3 flex-shrink-0"><i class="bi bi-cash-stack fs-4"></i></div>
@@ -549,7 +732,7 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col">
             <div class="card bg-white shadow-sm border-0 h-100 stat-card-forn">
                 <div class="card-body d-flex align-items-center">
                     <div class="bg-light rounded-circle p-3 me-3 flex-shrink-0"><i class="bi bi-check-circle fs-4" style="color: #28a745;"></i></div>
@@ -560,7 +743,7 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col">
             <div class="card bg-white shadow-sm border-0 h-100 stat-card-forn">
                 <div class="card-body d-flex align-items-center">
                     <div class="bg-light rounded-circle p-3 me-3 flex-shrink-0"><i class="bi bi-hourglass-split fs-4" style="color: #ffc107;"></i></div>
@@ -571,7 +754,7 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col">
             <div class="card bg-white shadow-sm border-0 h-100 stat-card-forn">
                 <div class="card-body d-flex align-items-center">
                     <div class="bg-light rounded-circle p-3 me-3 flex-shrink-0"><i class="bi bi-cash-coin fs-4" style="color: #16a34a;"></i></div>
@@ -583,7 +766,7 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col">
             <div class="card bg-white shadow-sm border-0 h-100 stat-card-forn">
                 <div class="card-body d-flex align-items-center">
                     <div class="bg-light rounded-circle p-3 me-3 flex-shrink-0"><i class="bi bi-exclamation-circle fs-4" style="color: #dc3545;"></i></div>
@@ -863,7 +1046,11 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
               </div>
               <div class="mb-3">
                   <label class="form-label fw-bold small">Comprovante da entrada</label>
-                  <input type="file" name="comprovante_entrada_fornecedor" class="form-control" accept=".jpg,.jpeg,.png,.webp,.gif,.pdf">
+                  <label class="seletor-arquivo">
+                      <input type="file" name="comprovante_entrada_fornecedor" accept=".jpg,.jpeg,.png,.webp,.gif,.pdf,image/*,application/pdf">
+                      <span class="seletor-arquivo-btn"><i class="bi bi-paperclip"></i> Escolher comprovante</span>
+                      <span class="seletor-arquivo-nome">Nenhum arquivo</span>
+                  </label>
                   <small class="text-muted">Opcional — imagem ou PDF.</small>
               </div>
           </div>
@@ -967,40 +1154,68 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
                   $temComp = !empty($pgto['comprovante_arquivo']);
                   $porPgto = $temComp ? rotulo_enviado_por($pgto['comprovante_enviado_por'] ?? null, $pgto['comprovante_enviado_por_nome'] ?? null, $papel_usuario, $nome_usuario) : '';
               ?>
-              <li class="list-group-item d-flex justify-content-between align-items-center gap-2 py-2">
-                  <span class="small">
+              <?php $podeExcluirComp = $temComp && (!$eh_noivos || ($pgto['comprovante_enviado_por'] ?? null) === 'Noivos'); ?>
+              <li class="list-group-item py-2 linha-pgto" data-pgto-id="<?= (int)$pgto['id'] ?>">
+                <div class="d-flex justify-content-between align-items-center gap-2">
+                  <span class="small text-nowrap hist-pgto-info">
                       <i class="bi bi-calendar3 text-muted me-1"></i><?= date('d/m/Y', strtotime($pgto['criado_em'])) ?>
                       · <strong class="text-success">R$ <?= number_format((float)$pgto['valor'], 2, ',', '.') ?></strong>
                   </span>
                   <span class="d-flex align-items-center gap-1 flex-shrink-0">
                   <?php if ($temComp): ?>
-                  <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2 btn-ver-comprovante flex-shrink-0"
+                  <button type="button" class="btn btn-sm btn-outline-secondary btn-acao-pgto btn-ver-comprovante"
                           data-arquivo="uploads/<?= htmlspecialchars(rawurlencode($pgto['comprovante_arquivo']), ENT_QUOTES, 'UTF-8') ?>"
                           data-nome="<?= htmlspecialchars($pgto['comprovante_nome_original'] ?? 'comprovante', ENT_QUOTES, 'UTF-8') ?>"
                           data-imagem="<?= in_array($pgto['comprovante_extensao'], EXTENSOES_IMAGEM_ANEXO, true) ? '1' : '0' ?>"
+                          data-pgto-id="<?= (int)$pgto['id'] ?>"
+                          data-pode-excluir="<?= $podeExcluirComp ? '1' : '0' ?>"
                           title="Ver comprovante<?= $porPgto !== '' ? ' (enviado por ' . htmlspecialchars($porPgto) . ')' : '' ?>">
-                      <i class="bi <?= in_array($pgto['comprovante_extensao'], EXTENSOES_IMAGEM_ANEXO, true) ? 'bi-image' : 'bi-file-earmark-pdf' ?> me-1"></i>Comprovante
+                      <i class="bi <?= in_array($pgto['comprovante_extensao'], EXTENSOES_IMAGEM_ANEXO, true) ? 'bi-image' : 'bi-file-earmark-pdf' ?>"></i><span class="d-none d-sm-inline ms-1">Comprovante</span>
                   </button>
-                  <?php if (!$eh_noivos || ($pgto['comprovante_enviado_por'] ?? null) === 'Noivos'): ?>
-                  <form method="POST" class="d-inline flex-shrink-0" onsubmit="return confirm('Excluir este comprovante? O pagamento continua registrado, só o arquivo sai (depois dá pra anexar o correto).');">
-                      <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
-                      <input type="hidden" name="remover_comprovante_pagamento" value="1">
-                      <input type="hidden" name="id_pagamento" value="<?= (int)$pgto['id'] ?>">
-                      <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-1" title="Excluir comprovante (enviado errado)"><i class="bi bi-trash"></i></button>
-                  </form>
-                  <?php endif; ?>
                   <?php else: ?>
-                  <form method="POST" enctype="multipart/form-data" class="d-inline form-anexar-comprovante flex-shrink-0">
+                  <form method="POST" enctype="multipart/form-data" class="d-inline form-anexar-comprovante">
                       <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                       <input type="hidden" name="anexar_comprovante_pagamento" value="1">
                       <input type="hidden" name="id_pagamento" value="<?= (int)$pgto['id'] ?>">
-                      <label class="btn btn-sm btn-outline-warning py-0 px-2 mb-0" title="Pagamento sem comprovante — anexar agora">
-                          <i class="bi bi-plus-lg"></i> Anexar
-                          <input type="file" name="comprovante_existente" accept=".jpg,.jpeg,.png,.webp,.gif,.pdf,image/*,application/pdf" class="d-none" onchange="if (this.files.length) this.form.submit();">
+                      <label class="btn btn-sm btn-outline-warning btn-acao-pgto mb-0" title="Pagamento sem comprovante — anexar agora">
+                          <i class="bi bi-paperclip"></i><span class="d-none d-sm-inline ms-1">Anexar</span>
+                          <input type="file" name="comprovante_existente" accept=".jpg,.jpeg,.png,.webp,.gif,.pdf,image/*,application/pdf" class="d-none" onchange="if (this.files.length) { this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit(); }">
                       </label>
                   </form>
                   <?php endif; ?>
+                  <button type="button" class="btn btn-sm btn-outline-secondary btn-acao-pgto btn-editar-pgto" title="Corrigir valor ou data"><i class="bi bi-pencil"></i></button>
+                  <form method="POST" class="d-inline" onsubmit="return confirm('Apagar este pagamento de R$ <?= number_format((float)$pgto['valor'], 2, ',', '.') ?>?\n\nO valor sai do total pago<?= $temComp ? ' e o comprovante também é apagado' : '' ?>.');">
+                      <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
+                      <input type="hidden" name="excluir_pagamento" value="1">
+                      <input type="hidden" name="id_pagamento" value="<?= (int)$pgto['id'] ?>">
+                      <button type="submit" class="btn btn-sm btn-outline-danger btn-acao-pgto" title="Apagar pagamento (registrado errado)"><i class="bi bi-trash"></i></button>
+                  </form>
                   </span>
+                </div>
+                <!-- Corrigir: abre aqui mesmo, embaixo da linha -->
+                <form method="POST" class="form-editar-pgto mt-2" hidden>
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
+                    <input type="hidden" name="editar_pagamento" value="1">
+                    <input type="hidden" name="id_pagamento" value="<?= (int)$pgto['id'] ?>">
+                    <div class="row g-2">
+                        <div class="col-6">
+                            <label class="form-label small fw-bold mb-1">Valor (R$)</label>
+                            <input type="text" inputmode="decimal" name="valor_pagamento_edit" class="form-control form-control-sm input-moeda" value="<?= number_format((float)$pgto['valor'], 2, ',', '.') ?>" required>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-bold mb-1">Data</label>
+                            <label class="data-compacta">
+                                <span class="data-compacta-txt"><?= date('d/m/Y', strtotime($pgto['criado_em'])) ?></span>
+                                <i class="bi bi-calendar3"></i>
+                                <input type="date" name="data_pagamento_edit" class="data-compacta-input" value="<?= date('Y-m-d', strtotime($pgto['criado_em'])) ?>">
+                            </label>
+                        </div>
+                    </div>
+                    <div class="d-flex justify-content-end gap-2 mt-2">
+                        <button type="button" class="btn btn-sm btn-light border btn-cancelar-edit-pgto">Cancelar</button>
+                        <button type="submit" class="btn btn-sm btn-success"><i class="bi bi-check-lg me-1"></i> Salvar correção</button>
+                    </div>
+                </form>
               </li>
               <?php endforeach; ?>
           </ul>
@@ -1014,25 +1229,33 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
           <div class="modal-body">
               <p class="text-muted small mb-3">
                   <?= htmlspecialchars($forn['servico']) ?> — <?= htmlspecialchars($forn['nome']) ?><br>
-                  Já pago: <strong>R$ <?= number_format((float)($forn['valor_pago'] ?? 0), 2, ',', '.') ?></strong>
-                  de R$ <?= number_format((float)$forn['valor'], 2, ',', '.') ?>
-                  · Falta: <strong class="text-danger">R$ <?= number_format($forn_restante, 2, ',', '.') ?></strong>
+                  <span class="text-nowrap">Já pago: <strong>R$ <?= number_format((float)($forn['valor_pago'] ?? 0), 2, ',', '.') ?></strong></span>
+                  <span class="text-nowrap">de R$ <?= number_format((float)$forn['valor'], 2, ',', '.') ?></span>
+                  · <span class="text-nowrap">Falta: <strong class="text-danger">R$ <?= number_format($forn_restante, 2, ',', '.') ?></strong></span>
               </p>
               <div class="row">
                   <div class="col-6 mb-1">
-                      <label class="form-label fw-bold small">Valor deste pagamento (R$) *</label>
+                      <label class="form-label fw-bold small text-nowrap"><span class="d-none d-sm-inline">Valor deste pagamento (R$) *</span><span class="d-sm-none">Valor (R$) *</span></label>
                       <input type="text" inputmode="decimal" name="valor_pagamento" class="form-control input-moeda input-valor-pagamento" placeholder="Ex: 200,00" required autofocus>
                       <div class="invalid-feedback aviso-valor-excede"></div>
                   </div>
                   <div class="col-6 mb-1">
-                      <label class="form-label fw-bold small">Data do pagamento</label>
-                      <input type="date" name="data_pagamento" class="form-control" value="<?= date('Y-m-d') ?>">
+                      <label class="form-label fw-bold small text-nowrap"><span class="d-none d-sm-inline">Data do pagamento</span><span class="d-sm-none">Data</span></label>
+                      <label class="data-compacta">
+                          <span class="data-compacta-txt"><?= date('d/m/Y') ?></span>
+                          <i class="bi bi-calendar3"></i>
+                          <input type="date" name="data_pagamento" class="data-compacta-input" value="<?= date('Y-m-d') ?>">
+                      </label>
                   </div>
               </div>
               <small class="text-muted">Esse valor é somado ao que já foi pago — não substitui.</small>
               <div class="mt-3">
                   <label class="form-label fw-bold small">Comprovante</label>
-                  <input type="file" name="comprovante_pagamento" class="form-control" accept=".jpg,.jpeg,.png,.webp,.gif,.pdf">
+                  <label class="seletor-arquivo">
+                      <input type="file" name="comprovante_pagamento" accept=".jpg,.jpeg,.png,.webp,.gif,.pdf,image/*,application/pdf">
+                      <span class="seletor-arquivo-btn"><i class="bi bi-paperclip"></i> Escolher comprovante</span>
+                      <span class="seletor-arquivo-nome">Nenhum arquivo</span>
+                  </label>
                   <small class="text-muted">Opcional — imagem ou PDF.</small>
               </div>
           </div>
@@ -1057,125 +1280,22 @@ $pct_pago_total = $valor_total > 0 ? round($valor_pago_total / $valor_total * 10
 </div>
 <?php endforeach; ?>
 
-<!-- Modal único de visualização de comprovante — o conteúdo (imagem/PDF) é
-     preenchido via JS a partir dos data-* do botão "Ver comprovante" clicado,
-     em vez de um modal por pagamento. -->
-<div class="modal fade" id="modalVerComprovante" tabindex="-1">
-  <div class="modal-dialog modal-dialog-centered modal-lg">
-    <div class="modal-content">
-      <div class="modal-header bg-light">
-        <h5 class="modal-title text-truncate" id="comprovante-titulo"><i class="bi bi-receipt me-1"></i> Comprovante</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-      </div>
-      <div class="modal-body text-center p-0" style="background:#f1f3f5;">
-        <img id="comprovante-preview-img" src="" alt="Comprovante" class="img-fluid" style="max-height:75vh;display:none;">
-        <iframe id="comprovante-preview-pdf" src="" style="width:100%;height:75vh;border:0;display:none;"></iframe>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
-        <a id="comprovante-download-link" href="" download class="btn btn-primary">
-          <i class="bi bi-download me-1"></i> Baixar
-        </a>
-      </div>
-    </div>
-  </div>
-</div>
-
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-// Filtro por status (Todos/Contratados/Orçamento/Cancelados): filtra as linhas
-// já carregadas na página (mobile e desktop juntos), sem precisar recarregar.
-document.getElementById('filtro-status-forn')?.addEventListener('click', function (e) {
-    const btn = e.target.closest('button[data-filtro]');
-    if (!btn) return;
-    this.querySelectorAll('button').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    const filtro = btn.dataset.filtro;
-    let visiveis = 0;
-    document.querySelectorAll('.forn-linha').forEach(function (linha) {
-        const mostra = (filtro === 'todos' || linha.dataset.status === filtro);
-        linha.style.display = mostra ? '' : 'none';
-        if (mostra) visiveis++;
-    });
-    const msgVazio = document.getElementById('filtro-vazio-msg');
-    if (msgVazio) msgVazio.classList.toggle('d-none', visiveis > 0);
-});
+// ============================================================
+// Todos os comportamentos são "delegados" no document (registrados uma vez
+// só): valem pros botões que já existem e pros que chegam depois, quando as
+// ações do modal de pagamento atualizam a página sem recarregar (ver
+// enviarSemRecarregar, mais abaixo).
+// ============================================================
+const CSRF_FORN = <?= json_encode($csrf_token) ?>;
 
-// Visualizar comprovante: preenche o modal único com a imagem/PDF do botão
-// clicado, em vez de abrir o arquivo em outra aba. O botão fica dentro do
-// modal de Arquivos — fecha ele primeiro (Bootstrap não empilha modal bem)
-// e só abre o de visualização depois que o de Pagamentos terminou de sumir.
-const modalComprovanteEl = document.getElementById('modalVerComprovante');
-if (modalComprovanteEl) {
-    const modalComprovante = bootstrap.Modal.getOrCreateInstance(modalComprovanteEl);
-
-    function abrirComprovante(btn) {
-        const arquivo  = btn.dataset.arquivo;
-        const nome     = btn.dataset.nome || 'comprovante';
-        const ehImagem = btn.dataset.imagem === '1';
-
-        document.getElementById('comprovante-titulo').textContent = nome;
-        document.getElementById('comprovante-download-link').setAttribute('href', arquivo);
-        document.getElementById('comprovante-download-link').setAttribute('download', nome);
-
-        const img = document.getElementById('comprovante-preview-img');
-        const pdf = document.getElementById('comprovante-preview-pdf');
-        if (ehImagem) {
-            img.src = arquivo;
-            img.style.display = '';
-            pdf.style.display = 'none';
-            pdf.src = '';
-        } else {
-            pdf.src = arquivo;
-            pdf.style.display = '';
-            img.style.display = 'none';
-            img.src = '';
-        }
-        modalComprovante.show();
-    }
-
-    // Modal de onde o comprovante foi aberto (Pagamentos) — reaberto ao
-    // fechar a visualização, pra pessoa continuar vendo os outros arquivos.
-    let modalParaVoltar = null;
-
-    document.querySelectorAll('.btn-ver-comprovante').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-            const modalAtual = btn.closest('.modal');
-            if (modalAtual) {
-                modalParaVoltar = modalAtual;
-                modalAtual.addEventListener('hidden.bs.modal', () => abrirComprovante(btn), { once: true });
-                bootstrap.Modal.getInstance(modalAtual)?.hide();
-            } else {
-                abrirComprovante(btn);
-            }
-        });
-    });
-
-    // Limpa os previews ao fechar, pra não continuar carregando o PDF/imagem à toa.
-    modalComprovanteEl.addEventListener('hidden.bs.modal', function () {
-        document.getElementById('comprovante-preview-img').src = '';
-        document.getElementById('comprovante-preview-pdf').src = '';
-        if (modalParaVoltar) {
-            bootstrap.Modal.getOrCreateInstance(modalParaVoltar).show();
-            modalParaVoltar = null;
-        }
-    });
-}
-
-// Chegou por uma notificação ("enviou um comprovante") ou acabou de anexar/excluir
-// um comprovante: abre direto o modal de pagamentos daquele fornecedor.
-<?php if ($abrir_pagamento_forn > 0): ?>
-document.addEventListener('DOMContentLoaded', function () {
-    const el = document.getElementById('modalPagamentoForn<?= $abrir_pagamento_forn ?>');
-    if (el) bootstrap.Modal.getOrCreateInstance(el).show();
-});
-<?php endif; ?>
-// Máscara de moeda BR (1.234,56) — formata sozinho enquanto digita, sem
-// precisar digitar o ponto/vírgula na mão.
+// ---------- utilidades ----------
 function moedaParaFloat(v) {
     if (!v) return 0;
     return parseFloat(String(v).replace(/\./g, '').replace(',', '.')) || 0;
 }
+// Máscara de moeda BR (1.234,56) — formata sozinho enquanto digita.
 function moedaFormatar(digitosBrutos) {
     let digitos = digitosBrutos.replace(/\D/g, '').replace(/^0+(?=\d)/, '');
     if (digitos === '') return '';
@@ -1184,69 +1304,269 @@ function moedaFormatar(digitosBrutos) {
     const inteiro  = digitos.slice(0, -2).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
     return inteiro + ',' + centavos;
 }
-document.querySelectorAll('.input-moeda').forEach(function (input) {
-    input.addEventListener('input', function () {
-        input.value = moedaFormatar(input.value);
-    });
-});
-// Ao enviar cada form (exceto o de pagamento, que já cuida disso abaixo por
-// causa da confirmação de excesso), troca o valor mascarado (1.234,56) pelo
-// decimal puro (1234.56) que o PHP espera — sem isso, (float) do PHP lia só
-// até a primeira vírgula.
-document.querySelectorAll('form').forEach(function (form) {
-    if (form.classList.contains('form-registrar-pagamento')) return;
-    const camposMoeda = form.querySelectorAll('.input-moeda');
-    if (!camposMoeda.length) return;
-    form.addEventListener('submit', function () {
-        camposMoeda.forEach(function (input) {
-            if (input.value) input.value = moedaParaFloat(input.value).toFixed(2);
-        });
-    });
-});
-
-// Avisa quando o valor do pagamento ultrapassa o quanto ainda falta pagar —
-// o backend já limita ao valor restante (nunca deixa "valor_pago" passar de
-// "valor"), mas fazer isso silenciosamente confundia: a pessoa digitava um
-// valor e o sistema salvava outro, menor, sem avisar por quê.
 function brlPt(n) {
     return 'R$ ' + n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
-document.querySelectorAll('.form-registrar-pagamento').forEach(function (form) {
-    const restante = parseFloat(form.dataset.restante) || 0;
-    const input    = form.querySelector('.input-valor-pagamento');
-    const aviso    = form.querySelector('.aviso-valor-excede');
-    if (!input || !aviso) return;
+function toast(texto, ok = true) {
+    let wrap = document.getElementById('toast-wrap');
+    if (!wrap) { wrap = document.createElement('div'); wrap.id = 'toast-wrap'; document.body.appendChild(wrap); }
+    const el = document.createElement('div');
+    el.className = 'toast-item ' + (ok ? 'verde' : 'verm');
+    el.innerHTML = '<i class="bi ' + (ok ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill') + '"></i><span></span>';
+    el.querySelector('span').textContent = texto;
+    wrap.appendChild(el);
+    setTimeout(() => { el.style.transition = 'opacity .3s'; el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }, ok ? 2600 : 4500);
+}
 
-    function checarExcesso() {
-        const valor = moedaParaFloat(input.value);
-        const excede = valor > restante && restante >= 0;
-        input.classList.toggle('is-invalid', excede);
-        if (excede) {
-            aviso.textContent = 'Esse valor ultrapassa em ' + brlPt(valor - restante) + ' o quanto ainda falta (' + brlPt(restante) + ').';
-        }
-        return excede;
+// ---------- filtro por status (Todos/Contratados/Orçamento/Cancelados) ----------
+let filtroAtual = 'todos';
+function aplicarFiltro() {
+    let visiveis = 0;
+    document.querySelectorAll('.forn-linha').forEach(function (linha) {
+        const mostra = (filtroAtual === 'todos' || linha.dataset.status === filtroAtual);
+        linha.style.display = mostra ? '' : 'none';
+        if (mostra) visiveis++;
+    });
+    document.querySelectorAll('#filtro-status-forn button').forEach(b => b.classList.toggle('active', b.dataset.filtro === filtroAtual));
+    const msgVazio = document.getElementById('filtro-vazio-msg');
+    if (msgVazio) msgVazio.classList.toggle('d-none', visiveis > 0);
+}
+document.addEventListener('click', function (e) {
+    const btn = e.target.closest('#filtro-status-forn button[data-filtro]');
+    if (!btn) return;
+    filtroAtual = btn.dataset.filtro;
+    aplicarFiltro();
+});
+
+// ---------- corrigir pagamento: abre o formulário embaixo da linha ----------
+document.addEventListener('click', function (e) {
+    const editar = e.target.closest('.btn-editar-pgto');
+    if (editar) {
+        const linha = editar.closest('.linha-pgto');
+        const form = linha.querySelector('.form-editar-pgto');
+        const abrir = form.hidden;
+        linha.closest('.historico-pgto-modal').querySelectorAll('.form-editar-pgto').forEach(f => { f.hidden = true; });
+        form.hidden = !abrir;
+        if (abrir) form.querySelector('input[name="valor_pagamento_edit"]').focus();
+        return;
     }
+    const cancelar = e.target.closest('.btn-cancelar-edit-pgto');
+    if (cancelar) cancelar.closest('.form-editar-pgto').hidden = true;
+});
 
-    input.addEventListener('input', checarExcesso);
+// ---------- máscara de moeda e aviso de excesso no registrar ----------
+function checarExcesso(form) {
+    const input = form.querySelector('.input-valor-pagamento');
+    const aviso = form.querySelector('.aviso-valor-excede');
+    if (!input || !aviso) return false;
+    const restante = parseFloat(form.dataset.restante) || 0;
+    const valor = moedaParaFloat(input.value);
+    const excede = valor > restante && restante >= 0;
+    input.classList.toggle('is-invalid', excede);
+    if (excede) aviso.textContent = 'Esse valor ultrapassa em ' + brlPt(valor - restante) + ' o quanto ainda falta (' + brlPt(restante) + ').';
+    return excede;
+}
+document.addEventListener('input', function (e) {
+    if (!e.target.classList.contains('input-moeda')) return;
+    e.target.value = moedaFormatar(e.target.value);
+    const form = e.target.closest('.form-registrar-pagamento');
+    if (form && e.target.classList.contains('input-valor-pagamento')) checarExcesso(form);
+});
 
-    form.addEventListener('submit', function (e) {
-        if (!checarExcesso()) {
-            if (input.value) input.value = moedaParaFloat(input.value).toFixed(2);
-            return;
+// ---------- data compacta: mostra a data escolhida em dd/mm/aaaa ----------
+document.addEventListener('change', function (e) {
+    const input = e.target;
+    if (!input.classList || !input.classList.contains('data-compacta-input')) return;
+    const txt = input.closest('.data-compacta').querySelector('.data-compacta-txt');
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input.value || '');
+    if (m) txt.textContent = m[3] + '/' + m[2] + '/' + m[1];
+});
+
+// ---------- seletor de arquivo próprio: mostra o nome escolhido ----------
+document.addEventListener('change', function (e) {
+    const input = e.target;
+    if (input.type !== 'file' || !input.closest('.seletor-arquivo')) return;
+    const label = input.closest('.seletor-arquivo');
+    const nome = label.querySelector('.seletor-arquivo-nome');
+    if (!nome.dataset.padrao) nome.dataset.padrao = nome.textContent;
+    const arq = input.files && input.files[0];
+    nome.textContent = arq ? arq.name : nome.dataset.padrao;
+    label.classList.toggle('tem-arquivo', !!arq);
+});
+
+// ---------- visualizar comprovante DENTRO do modal de pagamento ----------
+// O histórico e o formulário dão lugar à imagem/PDF, com "Voltar" pra retornar.
+function visorDoModal(modalContent) {
+    let visor = modalContent.querySelector('.visor-comprovante-inline');
+    if (visor) return visor;
+    visor = document.createElement('div');
+    visor.className = 'visor-comprovante-inline';
+    visor.innerHTML =
+        '<div class="visor-topo">' +
+            '<button type="button" class="btn btn-sm btn-light border visor-voltar"><i class="bi bi-arrow-left me-1"></i> Voltar</button>' +
+            '<span class="visor-nome text-truncate"></span>' +
+            '<a class="btn btn-sm btn-outline-primary visor-baixar" download target="_blank" rel="noopener"><i class="bi bi-download"></i></a>' +
+        '</div>' +
+        '<div class="visor-area"></div>' +
+        '<form method="POST" class="visor-excluir px-3 pb-3 text-center" hidden onsubmit="return confirm(\'Excluir este comprovante? O pagamento continua registrado, só o arquivo sai (depois dá pra anexar o correto).\');">' +
+            '<input type="hidden" name="csrf_token">' +
+            '<input type="hidden" name="remover_comprovante_pagamento" value="1">' +
+            '<input type="hidden" name="id_pagamento">' +
+            '<button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i> Excluir este comprovante</button>' +
+        '</form>';
+    modalContent.querySelector('.modal-header').insertAdjacentElement('afterend', visor);
+    return visor;
+}
+function fecharVisor(modalContent) {
+    modalContent.classList.remove('vendo-comprovante');
+    const area = modalContent.querySelector('.visor-comprovante-inline .visor-area');
+    if (area) area.innerHTML = ''; // para de carregar a imagem/PDF
+}
+document.addEventListener('click', function (e) {
+    const voltar = e.target.closest('.visor-voltar');
+    if (voltar) { fecharVisor(voltar.closest('.modal-content')); return; }
+
+    const btn = e.target.closest('.btn-ver-comprovante');
+    if (!btn) return;
+    const modalContent = btn.closest('.modal-content');
+    if (!modalContent) { window.open(btn.dataset.arquivo, '_blank'); return; }
+    const visor = visorDoModal(modalContent);
+    const arquivo = btn.dataset.arquivo;
+    const nome = btn.dataset.nome || 'comprovante';
+    visor.querySelector('.visor-nome').textContent = nome;
+    const baixar = visor.querySelector('.visor-baixar');
+    baixar.href = arquivo;
+    baixar.setAttribute('download', nome);
+    const area = visor.querySelector('.visor-area');
+    area.innerHTML = '';
+    if (btn.dataset.imagem === '1') {
+        const img = document.createElement('img');
+        img.src = arquivo; img.alt = nome; img.className = 'visor-img';
+        area.appendChild(img);
+    } else {
+        // PDF: embutido + link pra abrir inteiro (o Safari do iPhone só
+        // mostra a 1ª página de um PDF dentro de iframe).
+        const frame = document.createElement('iframe');
+        frame.src = arquivo; frame.className = 'visor-pdf'; frame.title = nome;
+        area.appendChild(frame);
+        const abrir = document.createElement('a');
+        abrir.href = arquivo; abrir.target = '_blank'; abrir.rel = 'noopener';
+        abrir.className = 'btn btn-sm btn-outline-secondary mt-2';
+        abrir.innerHTML = '<i class="bi bi-box-arrow-up-right me-1"></i> Abrir PDF inteiro';
+        area.appendChild(abrir);
+    }
+    const formExcluir = visor.querySelector('.visor-excluir');
+    formExcluir.hidden = btn.dataset.podeExcluir !== '1';
+    formExcluir.querySelector('[name="csrf_token"]').value = CSRF_FORN;
+    formExcluir.querySelector('[name="id_pagamento"]').value = btn.dataset.pgtoId || '';
+    modalContent.classList.add('vendo-comprovante');
+    // Quem rola é o próprio .modal (e ele pode estar rolado até o campo de
+    // valor, que tem autofocus) — volta pro topo pra aparecer o "Voltar".
+    const modalEl = modalContent.closest('.modal');
+    if (modalEl) modalEl.scrollTop = 0;
+});
+// Ao fechar o modal, volta pro estado normal (histórico + formulário).
+document.querySelectorAll('.modal').forEach(function (m) {
+    m.addEventListener('hidden.bs.modal', function () {
+        const mc = m.querySelector('.modal-content');
+        if (mc && mc.classList.contains('vendo-comprovante')) fecharVisor(mc);
+    });
+});
+
+// ---------- envio dos formulários ----------
+// Ações do modal de pagamento (registrar, corrigir, apagar, anexar e excluir
+// comprovante) vão em segundo plano: o modal continua aberto e só as partes
+// que mudaram são trocadas. Os demais formulários (novo/editar/excluir
+// fornecedor) seguem o envio normal. Em todos, o valor mascarado (1.234,56)
+// vira decimal puro (1234.56) antes de sair — sem isso o (float) do PHP lia só
+// até a primeira vírgula.
+function converterMoedas(form) {
+    form.querySelectorAll('.input-moeda').forEach(function (input) {
+        if (input.value) input.value = moedaParaFloat(input.value).toFixed(2);
+    });
+}
+function ehAcaoDoModalPagamento(form) {
+    return !!form.closest('.modal[id^="modalPagamentoForn"]');
+}
+async function enviarSemRecarregar(form, submitter) {
+    const modalAberto = form.closest('.modal');
+    const botao = submitter || form.querySelector('[type="submit"]') || form.querySelector('label.btn');
+    const htmlOriginal = botao ? botao.innerHTML : '';
+    // Botão com o arquivo dentro (o "Anexar") não pode ter o conteúdo trocado
+    // antes de montar o FormData — senão o arquivo some junto.
+    const dados = new FormData(form);
+    if (submitter && submitter.name) dados.append(submitter.name, submitter.value);
+    if (botao) { botao.classList.add('disabled'); botao.setAttribute('aria-busy', 'true'); botao.innerHTML = '<span class="spinner-border spinner-border-sm"></span>'; }
+    try {
+        const resp = await fetch(form.getAttribute('action') || window.location.href, { method: 'POST', body: dados, credentials: 'same-origin' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const doc = new DOMParser().parseFromString(await resp.text(), 'text/html');
+        const novoConteudo = doc.getElementById('conteudo-forn');
+        if (!novoConteudo) throw new Error('resposta inesperada');
+
+        // Mensagens do servidor viram aviso rápido (em vez do alerta no topo).
+        const avisos = [...novoConteudo.querySelectorAll('.alert')].map(a => {
+            a.remove();
+            return { ok: a.classList.contains('alert-success'), texto: a.textContent.replace(/\s+/g, ' ').trim() };
+        });
+
+        // Mantém aberto o resumo de valores (celular) se estava aberto.
+        const resumoAberto = document.getElementById('resumoValoresMobile')?.classList.contains('show');
+        document.getElementById('conteudo-forn').innerHTML = novoConteudo.innerHTML;
+        if (resumoAberto) {
+            document.getElementById('resumoValoresMobile')?.classList.add('show');
+            document.querySelector('.resumo-valores-toggle')?.classList.remove('collapsed');
         }
-        e.preventDefault();
-        const valor = moedaParaFloat(input.value);
-        const confirmado = confirm(
+        aplicarFiltro();
+
+        // Troca o conteúdo de cada modal pelo atualizado (o elemento .modal
+        // continua o mesmo — o que está aberto segue aberto).
+        doc.querySelectorAll('.modal[id]').forEach(function (novo) {
+            const velho = document.getElementById(novo.id);
+            const mcNovo = novo.querySelector('.modal-content');
+            const mcVelho = velho && velho.querySelector('.modal-content');
+            if (!mcNovo || !mcVelho) return;
+            mcVelho.innerHTML = mcNovo.innerHTML;
+            mcVelho.classList.remove('vendo-comprovante');
+        });
+        if (modalAberto) modalAberto.scrollTop = 0;
+
+        avisos.forEach(a => toast(a.texto, a.ok));
+    } catch (err) {
+        if (botao && document.contains(botao)) { botao.classList.remove('disabled'); botao.removeAttribute('aria-busy'); botao.innerHTML = htmlOriginal; }
+        toast('Não foi possível salvar agora. Confira a conexão e tente de novo.', false);
+    }
+}
+document.addEventListener('submit', function (e) {
+    const form = e.target;
+    if (e.defaultPrevented) return; // cancelado por um confirm() do próprio formulário
+
+    if (form.classList.contains('form-registrar-pagamento') && checarExcesso(form)) {
+        const valor = moedaParaFloat(form.querySelector('.input-valor-pagamento').value);
+        const restante = parseFloat(form.dataset.restante) || 0;
+        const ok = confirm(
             'O valor informado (' + brlPt(valor) + ') é maior que o quanto ainda falta pagar (' + brlPt(restante) + ').\n\n' +
             'Se continuar, o pagamento será registrado apenas até completar o valor total (' + brlPt(restante) + ').\n\n' +
             'Deseja continuar mesmo assim?'
         );
-        if (confirmado) {
-            input.value = valor.toFixed(2);
-            form.submit();
-        }
-    });
+        if (!ok) { e.preventDefault(); return; }
+    }
+    converterMoedas(form);
+    if (ehAcaoDoModalPagamento(form)) {
+        e.preventDefault();
+        enviarSemRecarregar(form, e.submitter);
+    }
 });
+
+// Chegou por uma notificação ("enviou um comprovante"): abre direto o modal de
+// pagamentos daquele fornecedor.
+<?php if ($abrir_pagamento_forn > 0): ?>
+document.addEventListener('DOMContentLoaded', function () {
+    const el = document.getElementById('modalPagamentoForn<?= $abrir_pagamento_forn ?>');
+    if (el) bootstrap.Modal.getOrCreateInstance(el).show();
+});
+<?php endif; ?>
+
 </script>
 </body>
 </html>

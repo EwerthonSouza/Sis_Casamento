@@ -234,6 +234,14 @@ if (!schema_ja_verificado('notas_comentarios_v1')) {
 // especificamente comentou (pode ter mais de uma pessoa na assessoria).
 // Marcador separado do bloco acima porque esse já pode ter rodado antes
 // dessa coluna existir.
+// Comentários de checklist gravados por uma versão antiga com o autor em
+// branco (ela tentava salvar o nome da pessoa numa coluna ENUM que só aceita
+// 'Assessoria'/'Noivos' — o banco guardava vazio e a tela mostrava ": texto").
+// Os noivos sempre gravaram 'Noivos', então os vazios são da equipe. Roda uma vez.
+if (!schema_ja_verificado('comentarios_autor_vazio_v1')) {
+    try { $pdo->exec("UPDATE checklist_comentarios SET autor = 'Assessoria' WHERE autor = '' OR autor IS NULL"); } catch (Exception $e) {}
+    marcar_schema_verificado('comentarios_autor_vazio_v1');
+}
 if (!schema_ja_verificado('notas_comentarios_autor_nome_v1')) {
     try {
         $pdo->query("SELECT autor_nome FROM notas_comentarios LIMIT 1");
@@ -407,7 +415,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$tipo, $modulo_ativo]);
         $modelos = $stmt->fetchAll(PDO::FETCH_ASSOC);
         if (!empty($modelos)) {
-            $ins = $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0)");
+            $ins = $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado, criado_em) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0, NOW())");
             foreach ($modelos as $m) { $ins->execute([$evento_id, $m['etapa'], $m['tarefa'], $m['descricao']]); }
             $_SESSION['msg_sucesso'] = "Cronograma importado com sucesso!";
         } else {
@@ -426,7 +434,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $data_prazo = trim($_POST['data_prazo'] ?? '');
         $data_prazo = preg_match('/^\d{4}-\d{2}-\d{2}$/', $data_prazo) ? $data_prazo : null;
         if ($etapa !== '' && $tarefa !== '') {
-            $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado, data_prazo) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0, ?)")
+            $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado, data_prazo, criado_em) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0, ?, NOW())")
                 ->execute([$evento_id, $etapa, $tarefa, $descricao, $data_prazo]);
             $_SESSION['msg_sucesso'] = "Tarefa adicionada!";
         }
@@ -1041,6 +1049,12 @@ foreach ($lista_conv_principais as $c) {
 }
 ksort($conv_grupos);
 
+// Total de pessoas (titular + acompanhantes) e quantas já confirmaram — pro
+// atalho "Gerenciar Convidados" da barra lateral (ex: "5/50 confirmados").
+$total_pessoas_conv = count($lista_conv);
+$total_conf_pessoas  = 0;
+foreach ($lista_conv as $cp) { if ($cp['confirmado']) $total_conf_pessoas++; }
+
 // Checklist - Ordenado dinamicamente pela ordem cronológica de criação/importação das etapas
 $rs3 = $pdo->prepare("
     SELECT c.* FROM checklist c
@@ -1148,7 +1162,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
   <title>Gerenciar Evento - Meu Evento PRO</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css?v=16">
+  <link rel="stylesheet" href="css/estilo.css?v=18">
   <?= estilo_tema_evento($cor_modulo) ?>
   <style>
     /* ---- VARIÁVEL DE RAIO USADA EM VÁRIOS CARDS (estilo.css não a define) ---- */
@@ -1169,6 +1183,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
     /* ---- LINHA DE BOTÕES DO CABEÇALHO: Exportar PDF à esquerda, sino de
        notificações empurrado pra extremidade direita ---- */
     .header-btn-exportar  { order: 1; }
+    .header-top-actions .dias-pill-mobile { order: 1; } /* logo depois do Exportar PDF */
     .header-btn-sino      { order: 2; margin-left: auto; }
 
     /* ---- HERO DO CABEÇALHO (gerenciar.php) ---- */
@@ -1210,12 +1225,34 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
        a largura igualmente (em vez de empilhar quando o conteúdo não coube
        numa linha só). */
     @media (max-width: 767.98px) {
-      .info-tiles { flex-wrap: nowrap; }
-      .info-tiles .info-tile { flex: 1 1 0; min-width: 0; padding: .5rem .55rem .5rem .5rem; }
-      .info-tiles .info-tile-icon { width: 34px; height: 34px; font-size: .95rem; }
+      /* Com o 3º card (convidados confirmados) não cabia lado a lado com
+         ícone à esquerda — o texto não encolhia e um card invadia o outro.
+         No celular: ícone pequeno em cima, texto centralizado embaixo. */
+      /* Ícone ao lado da data/horário/confirmados (não em cima), tudo menor
+         pra caber os cards lado a lado sem invadir um ao outro. */
+      .info-tiles { flex-wrap: nowrap; gap: .35rem !important; }
+      .info-tiles .info-tile {
+        flex: 1 1 auto; min-width: 0; /* largura parte do tamanho do próprio texto */
+        gap: .35rem; padding: .4rem .45rem .4rem .35rem; border-radius: 12px;
+      }
+      .info-tiles .info-tile > div { min-width: 0; flex: 1 1 auto; }
+      .info-tiles .info-tile-icon { width: 24px; height: 24px; border-radius: 7px; font-size: .72rem; }
       .info-tiles .info-tile-val,
       .info-tiles .info-tile-lbl { overflow: hidden; text-overflow: ellipsis; }
-      .info-tiles .info-tile-val { font-size: .9rem; }
+      .info-tiles .info-tile-val { font-size: .74rem; }
+      .info-tiles .info-tile-lbl { font-size: .54rem; }
+
+      /* Barra do topo: logo menor pra "Painel" caber na mesma linha */
+      .logo-nav-evento { height: 30px !important; }
+
+      /* Atalhos da lateral (Mural, Notas, Playlist, Fornecedores, Convidados):
+         o "Abrir" vira só a seta, sobrando espaço pro título não cortar. */
+      .btn-musicas-sidebar > div > span.btn,
+      .btn-notas-sidebar > div > span.btn,
+      .card-inspiracoes .card-body > a.btn { font-size: 0; padding: .4rem .6rem !important; }
+      .btn-musicas-sidebar > div > span.btn i,
+      .btn-notas-sidebar > div > span.btn i,
+      .card-inspiracoes .card-body > a.btn i { font-size: .9rem; margin: 0 !important; }
     }
     .info-tile {
       display: flex; align-items: center; gap: .65rem;
@@ -1313,8 +1350,24 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
     .linha-contato-uploads { min-width: 0; }
     .linha-contato-uploads > .info-contato-evento { min-width: 0; flex-shrink: 1; }
     .contato-email-val { font-size: .78rem; }
+    /* WhatsApp: ícone verde clicável (abre a conversa no número cadastrado) */
+    .contato-whats-icone {
+      width: 36px; height: 36px; align-items: center; justify-content: center;
+      background: #dcfce7; color: #16a34a; font-size: 1.05rem;
+      transition: transform .15s ease, background .15s ease;
+    }
+    .contato-whats:hover .contato-whats-icone,
+    .contato-whats:active .contato-whats-icone { background: #16a34a; color: #fff; transform: scale(1.06); }
     @media (max-width: 767.98px) {
-      .contato-email-val { max-width: 40vw; }
+      /* E-mail ocupa todo o espaço que sobra (antes ficava espremido até
+         sobrar uma letra, porque o número do WhatsApp não encolhia). */
+      .info-contato-evento { flex: 1 1 auto; }
+      /* No celular os blocos (e-mail+WhatsApp / CPF) ficam em linhas próprias:
+         o divisor entre eles sobrava solto no fim da primeira linha. */
+      .info-contato-evento > div { padding-right: 0 !important; border-right: 0 !important; }
+      .info-contato-fixa { width: 100%; }
+      .info-contato-fixa > div:first-child { flex: 1 1 auto; min-width: 0; padding-right: .75rem; margin-right: .75rem; }
+      .contato-email-val { max-width: none; }
       /* Contrato fica oculto no mobile (d-none d-md-flex) — o item antes
          dele (que passa a ser o último visível) não deve mostrar a
          divisória à direita que sobraria solta. */
@@ -1325,6 +1378,51 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
       .btn-uploads-tile .rounded-circle i { font-size: .75rem; }
       .btn-uploads-tile .fw-bold { font-size: .72rem; }
       .btn-uploads-tile .badge { font-size: .55rem; padding: .25em .45em; }
+    }
+
+    /* ---- CONTATO NO CELULAR (duas linhas) ---- */
+    /* As duas linhas usam a mesma grade (nº de colunas = nº de quadradinhos):
+       o e-mail ocupa as da esquerda e o WhatsApp fica centralizado na última,
+       alinhado com o Uploads logo abaixo. */
+    .contato-mobile .cm-linha { display: grid; grid-template-columns: repeat(var(--cm-colunas, 3), minmax(0, 1fr)); gap: .45rem; align-items: center; }
+    /* O e-mail ocupa a linha toda, só reservando à direita espaço até o
+       WhatsApp (meia coluna + metade do ícone): usa todo o espaço livre sem
+       cortar à toa e sem encostar no ícone. */
+    .contato-mobile .cm-email {
+      grid-column: 1 / -1; grid-row: 1;
+      padding-right: calc((100% - (var(--cm-colunas, 3) - 1) * .45rem) / var(--cm-colunas, 3) / 2 + 24px); display: flex; align-items: center; gap: .6rem; min-width: 0; }
+    .contato-mobile .cm-whats { grid-column: -2 / -1; grid-row: 1; /* a última coluna */ justify-self: center; }
+    .contato-mobile .cm-icone {
+      width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: #f8f5f2; color: var(--color-primary, #a9744f);
+    }
+    /* e-mail só ocupa o próprio tamanho: o WhatsApp fica logo ao lado dele */
+    .contato-mobile .cm-texto { flex: 0 1 auto; min-width: 0; display: flex; flex-direction: column; }
+    .contato-mobile .cm-val { font-size: .82rem; font-weight: 700; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .contato-mobile .cm-lbl { font-size: .66rem; color: #94a3b8; }
+    .contato-mobile .cm-grade { display: grid; grid-template-columns: repeat(var(--cm-colunas, 3), minmax(0, 1fr)); gap: .45rem; margin-top: .75rem; }
+    .contato-mobile .cm-chip {
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .1rem;
+      min-width: 0; padding: .45rem .35rem; border-radius: 12px;
+      background: #f8fafc; border: 1px solid #eef2f6; text-align: center;
+    }
+    .contato-mobile .cm-chip-topo { display: flex; align-items: center; gap: .3rem; font-size: .62rem; color: #94a3b8; font-weight: 600; white-space: nowrap; }
+    .contato-mobile .cm-chip-topo i { font-size: .8rem; color: #64748b; }
+    .contato-mobile .cm-chip-val { font-size: .74rem; font-weight: 700; color: #1e293b; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .contato-mobile .cm-chip-val .badge { font-size: .55rem; padding: .2em .45em; vertical-align: middle; }
+    .contato-mobile .cm-chip-btn { cursor: pointer; }
+    .contato-mobile .cm-chip-btn:active { background: #f1f5f9; }
+
+    /* ---- TAREFAS DO CHECKLIST ---- */
+    /* ✏️ 🗑️ lado a lado na linha do prazo (antes empilhados ao lado do título,
+       que perdia largura e quebrava em várias linhas no celular). */
+    .tarefa-card .task-actions { flex-direction: row; gap: .3rem; }
+    .tarefa-card .task-actions .btn { width: 30px; height: 26px; padding: 0 !important; display: inline-flex; align-items: center; justify-content: center; }
+    @media (max-width: 767.98px) {
+      /* Campos de comentário mais baixos (a letra segue 16px por causa do zoom do iPhone) */
+      .form-ajax-tarefa .form-control, .form-ajax-etapa .form-control { height: 38px; padding: .3rem .7rem; }
+      .form-ajax-tarefa .btn, .form-ajax-etapa .btn { height: 38px; padding-top: 0; padding-bottom: 0; display: inline-flex; align-items: center; }
     }
 
     /* ---- PAGAMENTO FORNECEDOR (resumo financeiro) ---- */
@@ -1381,9 +1479,11 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
       background-size: 100% 24px;
     }
     .btn-notas-sidebar {
+      text-align: left; /* é um <button>: sem isso o título ficava centralizado, diferente dos outros atalhos */
       background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
       border: 1.5px solid #fcd34d; border-radius: var(--radius);
       transition: box-shadow .2s, transform .15s; display: block;
+      padding: 0; /* <button> tem padding padrão do navegador que <a> não tem — sem isso o "Abrir" ficava desalinhado dos outros atalhos */
     }
     .btn-notas-sidebar:hover { box-shadow: 0 6px 18px rgba(253,211,77,.35); transform: translateY(-1px); }
     #grid-notas .nota-card-wrap { animation: notaEntra .3s ease both; }
@@ -1398,6 +1498,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
       border: 1.5px solid #d9b997; border-radius: var(--radius);
       transition: box-shadow .2s, transform .15s;
       display: block; width: 100%; text-align: left; cursor: pointer;
+      padding: 0; /* <button> tem padding padrão do navegador que <a> não tem — sem isso o "Abrir" ficava desalinhado dos outros atalhos */
     }
     .btn-musicas-sidebar:hover { box-shadow: 0 6px 18px rgba(169,116,79,.3); transform: translateY(-1px); }
     .btn-musicas-sidebar.atalho-restrito:hover { box-shadow: none; transform: none; }
@@ -1547,7 +1648,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
       .fin-chip-val { font-size: .72rem; }
       .fin-chip-label { font-size: .5rem; }
 
-      .sidebar-sticky { position: static !important; top: auto !important; }
+      .sidebar-sticky { position: static !important; top: auto !important; gap: .35rem !important; }
 
       .etapa-hdr { flex-wrap: wrap; row-gap: .35rem; }
       .etapa-hdr .fw-bold { min-width: 0; }
@@ -1557,25 +1658,70 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
       .musica-item { flex-wrap: wrap; }
       .musica-item .musica-acoes { flex-basis: 100%; justify-content: flex-end; margin-top: .35rem; }
 
+      /* Card do título do Checklist ocupa a linha toda, sem sobrar espaço em branco do lado. */
+      .checklist-title-band { width: 100%; }
+
       .checklist-btns-row { gap: .4rem !important; overflow-x: auto; -webkit-overflow-scrolling: touch; }
       .checklist-btns-row .btn { font-size: .74rem; padding: .35rem .6rem; }
       .checklist-btns-row .btn i { font-size: .78rem; }
 
       .badges-info-evento { gap: .35rem !important; overflow-x: auto; -webkit-overflow-scrolling: touch; }
       .badges-info-evento .badge { font-size: .68rem; padding: .35rem .55rem !important; }
+
+      /* Atalhos dos módulos (Mural, Notas, Playlist, Fornecedores, Convidados): mais compactos. */
+      .card-inspiracoes .card-body,
+      .btn-notas-sidebar > div,
+      .btn-musicas-sidebar > div {
+        padding: .65rem !important;
+        gap: .5rem !important;
+      }
+      .card-inspiracoes h6,
+      .btn-notas-sidebar h6,
+      .btn-musicas-sidebar h6 { font-size: .82rem; }
+      .card-inspiracoes small,
+      .btn-notas-sidebar small,
+      .btn-musicas-sidebar small { font-size: .66rem !important; }
+      .card-inspiracoes [style*="44px"],
+      .btn-notas-sidebar [style*="44px"],
+      .btn-musicas-sidebar [style*="44px"] {
+        width: 34px !important; height: 34px !important;
+      }
+      .card-inspiracoes .fs-4,
+      .btn-notas-sidebar .fs-4,
+      .btn-musicas-sidebar .fs-4 { font-size: .95rem !important; }
+      .card-inspiracoes .btn,
+      .btn-notas-sidebar .btn,
+      .btn-musicas-sidebar .btn { padding: .28rem .5rem !important; font-size: .66rem !important; }
+
+      /* Checklist fica recolhido até tocar no botão; a bolinha vermelha avisa
+         que existe checklist pra ver. */
+      #checklist-corpo-mobile {
+        overflow: hidden;
+        max-height: 0;
+        opacity: 0;
+        transition: max-height .35s ease, opacity .3s ease;
+      }
+      #checklist-corpo-mobile.aberto { opacity: 1; }
+      #icone-toggle-checklist { transition: transform .25s ease; display: inline-block; }
+      #icone-toggle-checklist.girado { transform: rotate(90deg); }
+      .dot-aviso-checklist {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: #dc3545; display: inline-block;
+        box-shadow: 0 0 0 2px rgba(220,53,69,.25);
+      }
     }
   </style>
 </head>
 <body>
 
 <nav class="navbar navbar-dark shadow-sm" style="background-color: <?= htmlspecialchars($cor_modulo) ?>;">
-  <div class="container">
-    <span class="navbar-brand mb-0">
-      <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">
+  <div class="container flex-nowrap">
+    <span class="navbar-brand mb-0 flex-shrink-1" style="min-width:0;">
+      <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" class="logo-nav-evento" style="height:40px;">
     </span>
-    <div class="d-flex align-items-center gap-2">
-      <a href="painel_admin.php" class="btn btn-sm btn-outline-light rounded-3">
-        <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
+    <div class="d-flex align-items-center gap-2 flex-shrink-0">
+      <a href="painel_admin.php" class="btn btn-sm btn-outline-light rounded-3 text-nowrap">
+        <i class="bi bi-arrow-left me-1"></i> <span class="d-none d-sm-inline">Voltar ao </span>Painel
       </a>
     </div>
   </div>
@@ -1692,6 +1838,14 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
                 data-bs-toggle="modal" data-bs-target="#modalExportarPdf">
           <i class="bi bi-file-earmark-pdf-fill me-1"></i> Exportar PDF
         </button>
+        <!-- Celular: dias que faltam ao lado do Exportar PDF -->
+        <?php if ($dias > 0): ?>
+          <span class="dias-pill-mobile d-md-none"><i class="bi bi-calendar-check-fill me-1"></i>Faltam <?= $dias ?> dia<?= $dias > 1 ? 's' : '' ?></span>
+        <?php elseif ($dias === 0): ?>
+          <span class="dias-pill-mobile dias-pill-hoje d-md-none"><i class="bi bi-stars me-1"></i>É hoje!</span>
+        <?php else: ?>
+          <span class="dias-pill-mobile dias-pill-passado d-md-none">Há <?= abs($dias) ?> dia<?= abs($dias) > 1 ? 's' : '' ?></span>
+        <?php endif; ?>
 
         <div class="dropdown header-btn-sino" id="dropdown-notificacoes">
           <button class="btn btn-sm btn-outline-light rounded-circle position-relative" type="button" data-bs-toggle="dropdown" aria-expanded="false" style="width:40px;height:40px;">
@@ -1732,13 +1886,6 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
       <div class="header-hero-accent">
         <div class="d-flex align-items-center justify-content-between gap-2">
           <div class="header-hero-label mb-0"><?= htmlspecialchars($labels['header_hero_prefixo']) ?></div>
-          <?php if ($dias > 0): ?>
-            <span class="dias-pill-mobile d-md-none"><i class="bi bi-calendar-check-fill me-1"></i>Faltam <?= $dias ?> dia<?= $dias > 1 ? 's' : '' ?></span>
-          <?php elseif ($dias === 0): ?>
-            <span class="dias-pill-mobile dias-pill-hoje d-md-none"><i class="bi bi-stars me-1"></i>É hoje!</span>
-          <?php else: ?>
-            <span class="dias-pill-mobile dias-pill-passado d-md-none">Há <?= abs($dias) ?> dia<?= abs($dias) > 1 ? 's' : '' ?></span>
-          <?php endif; ?>
         </div>
         <?php [$titulo_evento_hero, $subtitulo_evento_hero] = titulo_subtitulo_evento($evento['tipo_evento'] ?? 'casamento', $evento['nome'], $evento['nome_secundario'] ?? null, 'Painel de controle do evento'); ?>
         <h2 class="mb-1 text-white nome-noivos-titulo">
@@ -1747,19 +1894,19 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
         <p class="header-hero-subtitle mb-0"><?= htmlspecialchars($subtitulo_evento_hero, ENT_QUOTES, 'UTF-8') ?></p>
 
         <div class="d-flex flex-wrap gap-2 info-tiles">
-          <div class="info-tile">
+          <div class="info-tile info-tile-data">
             <span class="info-tile-icon"><i class="bi bi-calendar-event"></i></span>
             <div>
               <div class="info-tile-val"><?= date('d/m/Y', strtotime($evento['data_evento'])) ?></div>
-              <div class="info-tile-lbl">Data do evento</div>
+              <div class="info-tile-lbl"><span class="d-none d-md-inline">Data do evento</span><span class="d-md-none">Data</span></div>
             </div>
           </div>
           <?php if (!empty($evento['hora_evento'])): ?>
-          <div class="info-tile">
+          <div class="info-tile info-tile-hora">
             <span class="info-tile-icon"><i class="bi bi-clock"></i></span>
             <div>
               <div class="info-tile-val"><?= date('H:i', strtotime($evento['hora_evento'])) ?></div>
-              <div class="info-tile-lbl">Horário do evento</div>
+              <div class="info-tile-lbl"><span class="d-none d-md-inline">Horário do evento</span><span class="d-md-none">Horário</span></div>
             </div>
           </div>
           <?php endif; ?>
@@ -1791,14 +1938,58 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
           <a href="convidados.php?id=<?= $evento_id ?>" class="info-tile text-decoration-none">
             <span class="info-tile-icon"><i class="bi bi-people-fill"></i></span>
             <div>
-              <div class="info-tile-val"><span id="cnt-badge-conf"><?= $total_conf ?></span> confirmados</div>
-              <div class="info-tile-lbl">Gerenciar Convidados</div>
+              <div class="info-tile-val"><span id="cnt-badge-conf"><?= $total_conf_pessoas ?></span>/<?= $total_pessoas_conv ?><span class="d-none d-md-inline"> confirmados</span></div>
+              <div class="info-tile-lbl"><span class="d-none d-md-inline">Gerenciar Convidados</span><span class="d-md-none">Confirmados</span></div>
             </div>
           </a>
         </div>
       </div>
     </div>
-    <div class="bg-white p-3 border-top d-flex flex-nowrap align-items-center gap-2 gap-md-3 linha-contato-uploads" style="border-radius: 0 0 var(--radius) var(--radius);">
+    <!-- CELULAR: contato em duas linhas (e-mail + WhatsApp / CPF, Contrato e
+         Uploads em quadradinhos). A linha de baixo é a versão do computador. -->
+    <?php
+      $whats_digitos_m = preg_replace('/\D+/', '', (string)($evento['telefone'] ?? ''));
+      if ($whats_digitos_m !== '' && strlen($whats_digitos_m) <= 11) { $whats_digitos_m = '55' . $whats_digitos_m; }
+      // Quantos quadradinhos na 2ª linha (CPF?, Contrato, Uploads?) — a 1ª linha
+      // usa as mesmas colunas pra o WhatsApp ficar alinhado com o último.
+      $cm_colunas = 1 + (!empty($evento['cpf']) ? 1 : 0) + ($is_admin ? 1 : 0);
+    ?>
+    <div class="bg-white p-3 border-top d-md-none contato-mobile" style="border-radius: 0 0 var(--radius) var(--radius); --cm-colunas: <?= $cm_colunas ?>;">
+      <div class="cm-linha">
+        <div class="cm-email">
+          <span class="cm-icone"><i class="bi bi-envelope-fill"></i></span>
+          <a class="cm-texto text-decoration-none" href="mailto:<?= htmlspecialchars($evento['email'], ENT_QUOTES, 'UTF-8') ?>">
+            <span class="cm-val"><?= htmlspecialchars($evento['email'], ENT_QUOTES, 'UTF-8') ?></span>
+            <span class="cm-lbl">E-mail do responsável</span>
+          </a>
+        </div>
+        <?php if ($whats_digitos_m !== ''): ?>
+        <a href="https://wa.me/<?= $whats_digitos_m ?>" target="_blank" rel="noopener" class="contato-whats cm-whats"
+           title="Abrir conversa no WhatsApp: <?= htmlspecialchars($evento['telefone'], ENT_QUOTES, 'UTF-8') ?>" aria-label="Abrir conversa no WhatsApp">
+          <span class="rounded-circle d-flex contato-whats-icone"><i class="bi bi-whatsapp"></i></span>
+        </a>
+        <?php endif; ?>
+      </div>
+      <div class="cm-grade">
+        <?php if (!empty($evento['cpf'])): ?>
+        <div class="cm-chip">
+          <span class="cm-chip-topo"><i class="bi bi-person-vcard"></i> CPF</span>
+          <span class="cm-chip-val"><?= htmlspecialchars($evento['cpf'], ENT_QUOTES, 'UTF-8') ?></span>
+        </div>
+        <?php endif; ?>
+        <div class="cm-chip">
+          <span class="cm-chip-topo"><i class="bi bi-file-earmark-text-fill"></i> Contrato</span>
+          <span class="cm-chip-val">#<?= str_pad($evento['id'], 4, '0', STR_PAD_LEFT) ?></span>
+        </div>
+        <?php if ($is_admin): ?>
+        <button type="button" class="cm-chip cm-chip-btn" data-bs-toggle="modal" data-bs-target="#modalDocumentos" title="Uploads do evento (contrato, RG, comprovantes...)">
+          <span class="cm-chip-topo"><i class="bi bi-paperclip"></i> Documentos</span>
+          <span class="cm-chip-val">Uploads<?php if ($total_documentos > 0): ?> <span class="badge rounded-pill bg-primary"><?= $total_documentos ?></span><?php endif; ?></span>
+        </button>
+        <?php endif; ?>
+      </div>
+    </div>
+    <div class="bg-white p-3 border-top d-none d-md-flex flex-nowrap align-items-center gap-2 gap-md-3 linha-contato-uploads" style="border-radius: 0 0 var(--radius) var(--radius);">
       <div class="d-flex flex-wrap row-gap-3 info-contato-evento">
         <div class="d-flex flex-nowrap info-contato-fixa">
           <div class="d-flex align-items-center gap-2 min-width-0">
@@ -1808,14 +1999,22 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
               <div class="text-muted text-truncate" style="font-size:.68rem;">E-mail do responsável</div>
             </div>
           </div>
-          <?php if (!empty($evento['telefone'])): ?>
-          <div class="d-flex align-items-center gap-2 flex-shrink-0">
-            <span class="bg-light rounded-circle p-2 d-flex flex-shrink-0"><i class="bi bi-whatsapp text-success"></i></span>
-            <div>
-              <div class="fw-bold small text-nowrap"><?= htmlspecialchars($evento['telefone'], ENT_QUOTES, 'UTF-8') ?></div>
+          <?php if (!empty($evento['telefone'])):
+            // Link direto pra conversa no WhatsApp: só dígitos, com o 55 do
+            // Brasil na frente quando o número foi salvo só com DDD + telefone.
+            $whats_digitos = preg_replace('/\D+/', '', $evento['telefone']);
+            if (strlen($whats_digitos) <= 11) { $whats_digitos = '55' . $whats_digitos; }
+          ?>
+          <a href="https://wa.me/<?= $whats_digitos ?>" target="_blank" rel="noopener"
+             class="d-flex align-items-center gap-2 flex-shrink-0 text-decoration-none contato-whats"
+             title="Abrir conversa no WhatsApp: <?= htmlspecialchars($evento['telefone'], ENT_QUOTES, 'UTF-8') ?>"
+             aria-label="Abrir conversa no WhatsApp">
+            <span class="rounded-circle d-flex flex-shrink-0 contato-whats-icone"><i class="bi bi-whatsapp"></i></span>
+            <div class="d-none d-md-block">
+              <div class="fw-bold small text-nowrap text-dark"><?= htmlspecialchars($evento['telefone'], ENT_QUOTES, 'UTF-8') ?></div>
               <div class="text-muted" style="font-size:.68rem;">WhatsApp</div>
             </div>
-          </div>
+          </a>
           <?php endif; ?>
         </div>
         <?php if (!empty($evento['cpf'])): ?>
@@ -1899,6 +2098,15 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
         </div>
       </div>
 
+      <button type="button" id="btn-toggle-checklist-mobile" class="btn btn-sm btn-outline-secondary rounded-3 w-100 d-md-none d-flex align-items-center justify-content-center gap-2 mb-3">
+        <i class="bi bi-chevron-right" id="icone-toggle-checklist"></i>
+        <span id="texto-toggle-checklist">Ver etapas do checklist</span>
+        <?php if ($total_g > 0): ?>
+          <span class="dot-aviso-checklist" title="Tem checklist para ver"></span>
+        <?php endif; ?>
+      </button>
+
+      <div id="checklist-corpo-mobile">
       <?php if (empty($passos)): ?>
         <div class="card border-0 shadow-sm text-center py-5 text-muted checklist-vazio" style="border-radius: var(--radius);">
           <i class="bi bi-info-circle fs-1 mb-2 checklist-vazio-icon"></i>
@@ -1941,7 +2149,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
                   </div>
                   <span class="text-white-50 pct-etapa" style="font-size:.72rem;min-width:30px;"><?= $pctE ?>%</span>
                 </div>
-                <span class="badge bg-white bg-opacity-20 text-white rounded-pill px-2">
+                <span class="badge text-white rounded-pill px-2" style="background: rgba(255,255,255,.2);">
                   <span class="conc-etapa"><?= $concE ?></span>/<?= $totE ?>
                 </span>
                 <i class="bi bi-chevron-down text-white small chevron-etapa"></i>
@@ -1958,7 +2166,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
                     <?php foreach ($coments_etapa[$etapa] ?? [] as $ce):
                       $cor = $ce['autor'] === 'Noivos' ? 'bg-danger' : 'bg-primary'; ?>
                       <div class="my-1 bg-white border p-2 rounded-3 shadow-sm" style="font-size:.82rem;">
-                        <span class="badge <?= $cor ?> rounded-pill me-2"><?= htmlspecialchars($ce['autor'], ENT_QUOTES, 'UTF-8') ?></span>
+                        <span class="badge <?= $cor ?> rounded-pill me-2"><?= htmlspecialchars($ce['autor'] ?: 'Assessoria', ENT_QUOTES, 'UTF-8') ?></span>
                         <?= htmlspecialchars($ce['comentario'], ENT_QUOTES, 'UTF-8') ?>
                       </div>
                     <?php endforeach; ?>
@@ -1992,7 +2200,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
                         <i class="bi <?= $done ? 'bi-check-circle-fill' : 'bi-circle' ?>"></i>
                       </button>
                       <div class="w-100">
-                        <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                        <div class="mb-2">
                           <div style="min-width:0;">
                             <h6 class="fw-bold mb-1 <?= $done ? 'text-muted text-decoration-line-through' : 'text-dark' ?>" style="line-height:1.4;">
                               <?= htmlspecialchars($t['tarefa'], ENT_QUOTES, 'UTF-8') ?>
@@ -2007,11 +2215,8 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
                                 <i class="bi bi-file-text"></i> Ler
                               </button>
                               <?php endif; ?>
-                            </div>
-                          </div>
-
                           <?php if ($is_admin): ?>
-                          <div class="task-actions">
+                          <div class="task-actions ms-auto">
                             <button type="button"
                                     class="btn btn-sm btn-outline-primary py-0 px-2 rounded"
                                     data-bs-toggle="modal"
@@ -2027,14 +2232,15 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
                             </button>
                           </div>
                           <?php endif; ?>
-
+                            </div>
+                          </div>
                         </div>
                         <div class="border-top pt-2">
                           <div class="lista-coment-tarefa mb-2">
                             <?php foreach ($coments_tarefa[$tid] ?? [] as $cm):
                               $corC = $cm['autor'] === 'Noivos' ? 'text-danger' : 'text-primary'; ?>
                               <div class="small my-1 bg-light p-2 rounded-3" style="font-size:.77rem;border:1px solid #f1f5f9;">
-                                <strong class="<?= $corC ?>"><?= htmlspecialchars($cm['autor'], ENT_QUOTES, 'UTF-8') ?>:</strong>
+                                <strong class="<?= $corC ?>"><?= htmlspecialchars($cm['autor'] ?: 'Assessoria', ENT_QUOTES, 'UTF-8') ?>:</strong>
                                 <?= htmlspecialchars($cm['comentario'], ENT_QUOTES, 'UTF-8') ?>
                               </div>
                             <?php endforeach; ?>
@@ -2069,6 +2275,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
         <?php endif; ?>
 
       <?php endif; ?>
+      </div>
     </div>
 
     <div class="col-md-5">
@@ -2085,7 +2292,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
                 <small class="text-white-50 text-truncate d-block" style="font-size:.78rem;">Referências, paletas e ideias</small>
               </div>
             </div>
-            <a href="inspiracoes.php?id=<?= $evento_id ?>" class="btn btn-light btn-sm fw-bold rounded-pill px-3 shadow-sm flex-shrink-0" style="color:var(--color-primary-dark);">
+            <a href="inspiracoes.php?id=<?= $evento_id ?>" class="btn btn-light btn-sm fw-bold rounded-pill px-3 shadow-sm flex-shrink-0" style="color:var(--color-primary-dark); border:none;">
               Abrir <i class="bi bi-arrow-right ms-1"></i>
             </a>
           </div>
@@ -2105,7 +2312,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
                 </small>
               </div>
             </div>
-            <span class="btn btn-warning btn-sm fw-bold rounded-pill px-3 shadow-sm flex-shrink-0" style="pointer-events:none;">
+            <span class="btn btn-warning btn-sm fw-bold rounded-pill px-3 shadow-sm flex-shrink-0" style="pointer-events:none; border:none;">
               Abrir <i class="bi bi-arrow-right ms-1"></i>
             </span>
           </div>
@@ -2180,7 +2387,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
               <div style="min-width:0;">
                 <h6 class="mb-0 fw-bold text-dark text-truncate">Gerenciar Convidados</h6>
                 <small class="text-dark text-truncate d-block" style="font-size:.78rem;opacity:.6;">
-                  <?= $total_conf ?> confirmado<?= $total_conf !== 1 ? 's' : '' ?>
+                  <?= $total_conf_pessoas ?>/<?= $total_pessoas_conv ?> confirmado<?= $total_conf_pessoas !== 1 ? 's' : '' ?>
                 </small>
               </div>
             </div>
@@ -3282,6 +3489,33 @@ document.querySelectorAll('.btn-import-padrao').forEach(btn => {
       { icon: 'bi bi-download text-primary fs-4', iconBg: 'bg-primary bg-opacity-10', btnClass: 'btn-primary', btnText: 'Importar' }
     );
   });
+});
+
+/* ---- MOSTRAR/OCULTAR CHECKLIST (mobile), com transição suave de altura ---- */
+document.getElementById('btn-toggle-checklist-mobile')?.addEventListener('click', function () {
+  const corpo    = document.getElementById('checklist-corpo-mobile');
+  const icone    = document.getElementById('icone-toggle-checklist');
+  const texto    = document.getElementById('texto-toggle-checklist');
+  const vaiAbrir = !corpo.classList.contains('aberto');
+
+  if (vaiAbrir) {
+    corpo.classList.add('aberto');
+    corpo.style.maxHeight = corpo.scrollHeight + 'px';
+    corpo.addEventListener('transitionend', function limpar(e) {
+      if (e.propertyName === 'max-height') {
+        corpo.style.maxHeight = 'none';
+        corpo.removeEventListener('transitionend', limpar);
+      }
+    });
+  } else {
+    corpo.style.maxHeight = corpo.scrollHeight + 'px';
+    corpo.offsetHeight; // força reflow pra travar o valor atual antes de animar pra 0
+    corpo.classList.remove('aberto');
+    corpo.style.maxHeight = '0px';
+  }
+
+  icone.classList.toggle('girado', vaiAbrir);
+  texto.textContent = vaiAbrir ? 'Ocultar etapas do checklist' : 'Ver etapas do checklist';
 });
 
 /* ---- LIMPAR CHECKLIST ---- */

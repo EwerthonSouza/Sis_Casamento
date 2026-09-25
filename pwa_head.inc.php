@@ -1,6 +1,8 @@
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
 <link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#6f4a2f">
+<!-- iPhone: não transformar números em link azul sozinho (os telefones já têm botão de WhatsApp próprio) -->
+<meta name="format-detection" content="telephone=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">

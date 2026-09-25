@@ -748,7 +748,7 @@ if ($is_admin) {
     <title>Painel da Assessoria - Meu Evento PRO</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=16">
+    <link rel="stylesheet" href="css/estilo.css?v=18">
     <?= estilo_tema_evento($cor_modulo) ?>
     <style>
         .btn-abrir-modal-data { transition: filter .15s, box-shadow .15s; }
@@ -784,7 +784,7 @@ if ($is_admin) {
         .nav-tabs .nav-link { color: #6c757d; font-weight: 500; border: none; transition: color .15s ease; }
         .nav-tabs .nav-link:hover { color: var(--color-primary-dark); }
         .nav-tabs .nav-link.active { color: var(--color-primary-dark); font-weight: bold; border-bottom: 3px solid var(--color-primary); background-color: transparent; }
-        .nav-tabs .nav-link .badge.bg-primary { background: var(--color-primary) !important; }
+        .nav-tabs .nav-link .badge.bg-primary { background: var(--color-primary) !important; color: #fff !important; }
         .celula-dia { cursor: pointer; transition: background 0.2s; }
         .celula-dia:hover { background-color: #f8f9fa; }
         .indicador-nota { position: absolute; bottom: 4px; right: 4px; width: 8px; height: 8px; background-color: #0d6efd; border-radius: 50%; }
@@ -851,6 +851,34 @@ if ($is_admin) {
             .badges-resumo-painel span { padding: .3rem .55rem !important; }
 
             .titulo-painel-wrap { width: 100%; text-align: center; }
+        }
+
+        /* ---- CELULAR: barra, título e chips numa linha só ---- */
+        @media (max-width: 767.98px) {
+            /* Barra do topo: todos os botões numa linha (antes quebrava e o
+               "Sair" descia sozinho pra uma segunda linha). */
+            .navbar .barra-icones-admin { flex-wrap: nowrap !important; gap: .3rem !important; }
+            .barra-icones-admin > .btn,
+            .barra-icones-admin > .dropdown > .btn {
+                width: 34px; height: 34px; padding: 0 !important; flex-shrink: 0;
+                display: inline-flex; align-items: center; justify-content: center;
+                font-size: .85rem;
+            }
+            .logo-nav-admin { height: 24px !important; }
+
+            /* Título: o bloco de texto não encolhia por causa da fileira de
+               chips e empurrava tudo pra fora da tela pela direita. */
+            .hero-painel-admin { padding: 1rem !important; }
+            .titulo-painel-wrap > div { min-width: 0; width: 100%; }
+            .hero-painel-admin h2 { font-size: 1.05rem; }
+            .hero-painel-admin p { font-size: .74rem; margin-bottom: .55rem !important; }
+            .badges-resumo-painel { overflow-x: visible; font-size: .64rem !important; gap: .3rem !important; }
+            .badges-resumo-painel > span,
+            .badges-resumo-painel > .btn { padding: .25rem .45rem !important; font-size: inherit !important; }
+            .badges-resumo-painel i { margin-right: .15rem !important; }
+
+            /* Calendário: "Setembro 2026" numa linha só */
+            #calendario-wrapper h5 { font-size: 1rem; white-space: nowrap; }
         }
 
         /* Estilos do modal de anotações por horário */
@@ -936,6 +964,28 @@ if ($is_admin) {
            AJUSTES MOBILE
            ================================================================== */
         @media (max-width: 767.98px) {
+            /* Data/horário do evento nos cards da aba Próximos: linha única, mais limpa */
+            .btn-data-evento-card {
+                display: inline-flex;
+                align-items: center;
+                gap: .3rem;
+                width: auto;
+                max-width: 100%;
+                background: rgba(13,110,253,.06);
+                border: 1px solid rgba(13,110,253,.18);
+                color: #0d6efd;
+                font-weight: 600;
+                font-size: .74rem;
+                line-height: 1;
+                padding: .3rem .55rem;
+                border-radius: 8px;
+                margin-bottom: .4rem;
+                text-align: left;
+            }
+            .btn-data-evento-card:active { background: rgba(13,110,253,.12); }
+            .btn-data-evento-sep { opacity: .4; }
+            .btn-data-evento-edit { margin-left: .2rem; opacity: .5; font-size: .68rem; }
+
             /* Navbar: logo menor e botões podem quebrar linha sem estourar a tela */
             .navbar .container {
                 flex-wrap: wrap;
@@ -1215,22 +1265,22 @@ if ($is_admin) {
                                 <?php else: ?>
                                     <?php foreach ($casamentos_futuros as $i => $cas): ?>
                                     <div class="border rounded-3 p-3 mb-2<?= $i >= 5 ? ' d-none casamento-extra-futuros' : '' ?>">
-                                        <span class="text-dark fw-bold fs-6 d-block mb-1"><?= htmlspecialchars($cas['nome_noivos']) ?></span>
-                                        <div class="d-flex justify-content-between align-items-start gap-2">
-                                            <div class="text-muted" style="font-size: 0.8rem; min-width:0; overflow-wrap:anywhere;">
-                                                <i class="bi bi-envelope"></i> <?= htmlspecialchars($cas['email_noivos']) ?><br>
-                                                <?php if (!empty($cas['telefone_noivos'])): ?>
-                                                    <i class="bi bi-whatsapp text-success"></i> <?= htmlspecialchars($cas['telefone_noivos']) ?>
-                                                <?php endif; ?>
-                                            </div>
-                                            <div class="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 rounded-3 text-start flex-shrink-0 btn-abrir-modal-data" style="min-width: 110px; padding:8px; cursor:pointer;"
-                                                 data-evento-id="<?= (int)$cas['evento_id'] ?>" data-data="<?= htmlspecialchars($cas['data_evento']) ?>" data-hora="<?= htmlspecialchars($cas['hora_evento'] ?? '') ?>"
-                                                 data-bs-toggle="modal" data-bs-target="#modalEditarData" role="button" title="Editar data/horário">
-                                                <i class="bi bi-calendar3 me-1"></i> <?= date('d/m/Y', strtotime($cas['data_evento'])) ?>
-                                                <?php if (!empty($cas['hora_evento'])): ?>
-                                                    <br><i class="bi bi-clock me-1"></i> <?= date('H:i', strtotime($cas['hora_evento'])) ?>
-                                                <?php endif; ?>
-                                            </div>
+                                        <span class="text-dark fw-bold fs-6 d-block mb-2"><?= htmlspecialchars($cas['nome_noivos']) ?></span>
+                                        <button type="button" class="btn-data-evento-card btn-abrir-modal-data"
+                                                data-evento-id="<?= (int)$cas['evento_id'] ?>" data-data="<?= htmlspecialchars($cas['data_evento']) ?>" data-hora="<?= htmlspecialchars($cas['hora_evento'] ?? '') ?>"
+                                                data-bs-toggle="modal" data-bs-target="#modalEditarData" title="Editar data/horário">
+                                            <i class="bi bi-calendar3"></i> <?= date('d/m/Y', strtotime($cas['data_evento'])) ?>
+                                            <?php if (!empty($cas['hora_evento'])): ?>
+                                                <span class="btn-data-evento-sep">•</span>
+                                                <i class="bi bi-clock"></i> <?= date('H:i', strtotime($cas['hora_evento'])) ?>
+                                            <?php endif; ?>
+                                            <i class="bi bi-pencil-fill btn-data-evento-edit"></i>
+                                        </button>
+                                        <div class="text-muted mb-1" style="font-size: 0.8rem; overflow-wrap:anywhere;">
+                                            <i class="bi bi-envelope"></i> <?= htmlspecialchars($cas['email_noivos']) ?><br>
+                                            <?php if (!empty($cas['telefone_noivos'])): ?>
+                                                <i class="bi bi-whatsapp text-success"></i> <?= htmlspecialchars($cas['telefone_noivos']) ?>
+                                            <?php endif; ?>
                                         </div>
                                         <div class="d-flex justify-content-center flex-wrap gap-1 mt-2">
                                             <button type="button" class="btn btn-sm btn-light border fw-bold text-warning btn-abrir-modal-senha" data-cliente-id="<?= (int)$cas['cliente_id'] ?>" data-bs-toggle="modal" data-bs-target="#modalResetSenha" title="Resetar Senha"><i class="bi bi-key"></i></button>

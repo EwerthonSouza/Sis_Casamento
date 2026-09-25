@@ -323,14 +323,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: $url_pagina"); exit;
     }
 
-    // 4. Alternar manualmente o status de confirmação de um acompanhante — a
-    // assessoria pode marcar presença direto, sem depender do link do convidado.
+    // 4. Alternar manualmente o status de confirmação — titular ou acompanhante,
+    // a assessoria/noivos podem marcar presença direto, sem abrir o modal de
+    // editar nem depender do link do convidado. Responde em JSON (clique via
+    // JS, sem recarregar a página — antes isso jogava a rolagem pro topo).
     if (isset($_POST['alternar_status_acompanhante'])) {
         $cid = (int)($_POST['convidado_id'] ?? 0);
         $confirmar = ($_POST['confirmar'] ?? '0') === '1';
-        $pdo->prepare("UPDATE convidados SET confirmado = ?, resposta_rsvp = ? WHERE id = ? AND evento_id = ? AND convidado_principal_id IS NOT NULL")
-            ->execute([$confirmar ? 1 : 0, $confirmar ? 'confirmado' : null, $cid, $evento_id]);
-        header("Location: $url_pagina"); exit;
+        $upd = $pdo->prepare("UPDATE convidados SET confirmado = ?, resposta_rsvp = ? WHERE id = ? AND evento_id = ?");
+        $upd->execute([$confirmar ? 1 : 0, $confirmar ? 'confirmado' : null, $cid, $evento_id]);
+        if ($upd->rowCount() === 0) {
+            json_out(['ok' => false, 'msg' => 'Convidado não encontrado.']);
+        }
+        json_out([
+            'ok'         => true,
+            'id'         => $cid,
+            'confirmado' => $confirmar ? 1 : 0,
+            'status'     => $confirmar ? 'confirmado' : 'pendente',
+            'label'      => $confirmar ? 'Confirmado' : 'Pendente',
+        ]);
     }
 
     // 5. Personalizar convite: ativar/desativar e enviar a foto do casal
@@ -507,7 +518,7 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
   <title>Gerenciar Convidados — <?= htmlspecialchars($evento['nome']) ?> - Meu Evento PRO</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css?v=16">
+  <link rel="stylesheet" href="css/estilo.css?v=18">
   <?= estilo_tema_evento($cor_modulo) ?>
 
   <style>
@@ -531,9 +542,30 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
     @media (max-width: 767.98px) {
       .hdr-actions-row { width: 100%; flex-wrap: wrap !important; }
       .hdr-actions-row .btn {
-        flex: 1 1 calc(50% - .5rem); min-width: 0; white-space: normal; line-height: 1.2;
-        font-size: .72rem; padding: .5rem .35rem;
+        flex: 1 1 calc(50% - .5rem); min-width: 0; white-space: nowrap; line-height: 1.2;
+        font-size: .7rem; padding: .5rem .3rem; overflow: hidden; text-overflow: ellipsis;
       }
+      .hdr-actions-row .btn i { margin-right: .25rem !important; }
+
+      /* Barra do topo: logo menor pra "Painel" caber na mesma linha */
+      .logo-nav-conv { height: 30px !important; }
+
+      /* Cards de contagem: ícone e setinha menores, texto sem quebrar,
+         setinha dentro do card (antes vazava pra fora no "Confirmados"). */
+      body .stat-card { padding: .65rem .5rem; gap: .45rem; min-width: 0; }
+      body .stat-card > div { min-width: 0; }
+      body .stat-card .stat-icon { width: 32px; height: 32px; border-radius: 10px; font-size: .9rem; }
+      /* Número e nome (Convites/Confirmados/Pendentes/Recusaram) lado a lado
+         em vez de um embaixo do outro — ganha altura pro card ficar mais baixo. */
+      body .stat-card .val-lbl-row { display: flex; align-items: baseline; gap: .3rem; min-width: 0; }
+      body .stat-card .val { font-size: 1.1rem; flex-shrink: 0; }
+      body .stat-card .lbl { font-size: .6rem; letter-spacing: -.01em; margin-top: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      body .stat-card .stat-chevron { display: none; } /* o card inteiro já é clicável */
+      body #cnt-pessoas { white-space: nowrap; }
+
+      /* Filtros (Todos/Confirmados/Pendentes/Recusaram) cabendo na linha */
+      #filtros-wrap { flex-wrap: nowrap; }
+      #filtros-wrap .btn { flex: 1 1 auto; min-width: 0; padding: .3rem .35rem !important; font-size: .66rem !important; white-space: nowrap; }
     }
 
     .stat-card {
@@ -721,13 +753,13 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
 <body>
 
 <nav class="navbar navbar-dark shadow-sm" style="background-color: <?= htmlspecialchars($cor_modulo) ?>;">
-  <div class="container-fluid px-3 px-lg-4">
-    <span class="navbar-brand mb-0">
-      <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">
+  <div class="container-fluid px-3 px-lg-4 flex-nowrap">
+    <span class="navbar-brand mb-0 flex-shrink-1" style="min-width:0;">
+      <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" class="logo-nav-conv" style="height:40px;">
     </span>
-    <div class="d-flex align-items-center gap-2">
-      <a href="<?= $eh_noivos ? 'noivos.php' : 'gerenciar.php?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-3">
-        <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
+    <div class="d-flex align-items-center gap-2 flex-shrink-0">
+      <a href="<?= $eh_noivos ? 'noivos.php' : 'gerenciar.php?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-3 text-nowrap">
+        <i class="bi bi-arrow-left me-1"></i> <span class="d-none d-sm-inline">Voltar ao </span>Painel
       </a>
     </div>
   </div>
@@ -767,13 +799,13 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
       </div>
       <div class="d-flex flex-wrap gap-2 hdr-actions-row">
         <button class="btn btn-sm btn-outline-light rounded-pill fw-semibold px-3 btn-chama-atencao" data-bs-toggle="modal" data-bs-target="#modalPersonalizarConvite">
-          <i class="bi bi-palette-fill me-1 icone-arco-iris"></i> Personalizar Convite
+          <i class="bi bi-palette-fill me-1 icone-arco-iris"></i> Personalizar<span class="d-none d-md-inline"> Convite</span>
         </button>
         <button class="btn btn-sm btn-outline-light rounded-pill fw-semibold px-3" data-bs-toggle="modal" data-bs-target="#modalLinkGeral">
           <i class="bi bi-link-45deg me-1"></i> Link Geral
         </button>
         <a href="organizar_mesas.php<?= $eh_noivos ? '' : '?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-pill fw-semibold px-3">
-          <i class="bi bi-grid-3x3-gap-fill me-1"></i> Organizar Mesas
+          <i class="bi bi-grid-3x3-gap-fill me-1"></i> <span class="d-none d-md-inline">Organizar </span>Mesas
         </a>
         <button class="btn btn-sm btn-info rounded-pill text-dark fw-semibold shadow-sm px-3" data-bs-toggle="modal" data-bs-target="#modalAddConvidado">
           <i class="bi bi-person-plus-fill me-1"></i> Criar Convite
@@ -787,9 +819,11 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
       <div class="stat-card stat-total" data-filtro="todos">
         <span class="stat-icon"><i class="bi bi-envelope-fill"></i></span>
         <div>
-          <div class="val" id="cnt-total"><?= $total_conv ?></div>
-          <div class="lbl">Convites</div>
-          <div class="text-muted" style="font-size:.62rem;margin-top:.15rem;" id="cnt-pessoas"><?= $total_pessoas ?> convidado<?= $total_pessoas === 1 ? '' : 's' ?> ao todo</div>
+          <div class="val-lbl-row">
+            <div class="val" id="cnt-total"><?= $total_conv ?></div>
+            <div class="lbl">Convites</div>
+          </div>
+          <div class="text-muted" style="font-size:.62rem;margin-top:.15rem;" id="cnt-pessoas"><?= $total_pessoas ?> <span class="d-none d-md-inline">convidado<?= $total_pessoas === 1 ? '' : 's' ?> ao todo</span><span class="d-md-none">pessoa<?= $total_pessoas === 1 ? '' : 's' ?></span></div>
         </div>
         <i class="bi bi-chevron-right stat-chevron"></i>
       </div>
@@ -797,21 +831,21 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
     <div class="col">
       <div class="stat-card stat-confirmado" data-filtro="confirmado">
         <span class="stat-icon"><i class="bi bi-check-circle-fill"></i></span>
-        <div><div class="val" id="cnt-conf"><?= $total_conf ?></div><div class="lbl">Confirmados</div></div>
+        <div><div class="val-lbl-row"><div class="val" id="cnt-conf"><?= $total_conf ?></div><div class="lbl">Confirmados</div></div></div>
         <i class="bi bi-chevron-right stat-chevron"></i>
       </div>
     </div>
     <div class="col">
       <div class="stat-card stat-pendente" data-filtro="pendente">
         <span class="stat-icon"><i class="bi bi-hourglass-split"></i></span>
-        <div><div class="val" id="cnt-pend"><?= $total_pend ?></div><div class="lbl">Pendentes</div></div>
+        <div><div class="val-lbl-row"><div class="val" id="cnt-pend"><?= $total_pend ?></div><div class="lbl">Pendentes</div></div></div>
         <i class="bi bi-chevron-right stat-chevron"></i>
       </div>
     </div>
     <div class="col">
       <div class="stat-card stat-recusado" data-filtro="recusado">
         <span class="stat-icon"><i class="bi bi-x-circle-fill"></i></span>
-        <div><div class="val" id="cnt-recusado"><?= $total_recusado ?></div><div class="lbl">Recusaram</div></div>
+        <div><div class="val-lbl-row"><div class="val" id="cnt-recusado"><?= $total_recusado ?></div><div class="lbl">Recusaram</div></div></div>
         <i class="bi bi-chevron-right stat-chevron"></i>
       </div>
     </div>
@@ -890,7 +924,12 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
           <div class="family-titular p-3 flex-grow-1 d-flex flex-column">
             <div class="d-flex justify-content-between align-items-start gap-1">
               <span class="fw-bold text-dark text-truncate" style="font-size:.85rem;" title="<?= htmlspecialchars($c['nome'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($c['nome'], ENT_QUOTES, 'UTF-8') ?></span>
-              <span class="status-pill status-<?= $status ?> flex-shrink-0"><span class="status-dot"></span><?= $statusLabel ?></span>
+              <button type="button" class="status-pill status-<?= $status ?> flex-shrink-0 btn-status-convidado btn-status-titular"
+                      data-id="<?= $c['id'] ?>"
+                      data-status="<?= $status ?>"
+                      title="<?= $status === 'confirmado' ? 'Clique para desmarcar a confirmação' : 'Clique para confirmar presença manualmente' ?>">
+                <span class="status-dot"></span><span class="status-label"><?= $statusLabel ?></span>
+              </button>
             </div>
             <div class="d-flex align-items-center gap-1 flex-wrap mt-1">
               <span class="badge bg-light text-dark border" style="font-size:.6rem;"><?= htmlspecialchars($c['categoria'], ENT_QUOTES, 'UTF-8') ?></span>
@@ -950,16 +989,12 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
             <div class="family-acomp-item">
               <span class="text-truncate fw-semibold min-w-0" style="font-size:.72rem;color:#334155;" title="<?= htmlspecialchars($am['nome'] . ' — ' . $am['rotulo'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($am['nome'], ENT_QUOTES, 'UTF-8') ?></span>
               <div class="d-flex align-items-center gap-1 flex-shrink-0">
-                <form method="POST" class="m-0">
-                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
-                  <input type="hidden" name="alternar_status_acompanhante" value="1">
-                  <input type="hidden" name="convidado_id" value="<?= $am['id'] ?>">
-                  <input type="hidden" name="confirmar" value="<?= $am['status'] === 'confirmado' ? '0' : '1' ?>">
-                  <button type="submit" class="status-pill status-pill-mini status-<?= $am['status'] ?> btn-status-convidado"
-                          title="<?= $am['status'] === 'confirmado' ? 'Clique para desmarcar a confirmação' : 'Clique para confirmar presença manualmente' ?>">
-                    <span class="status-dot"></span><?= $amLabel ?>
-                  </button>
-                </form>
+                <button type="button" class="status-pill status-pill-mini status-<?= $am['status'] ?> btn-status-convidado"
+                        data-id="<?= $am['id'] ?>"
+                        data-status="<?= $am['status'] ?>"
+                        title="<?= $am['status'] === 'confirmado' ? 'Clique para desmarcar a confirmação' : 'Clique para confirmar presença manualmente' ?>">
+                  <span class="status-dot"></span><span class="status-label"><?= $amLabel ?></span>
+                </button>
               </div>
             </div>
             <?php endforeach; ?>
@@ -1261,7 +1296,7 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
         <div class="modal-body py-3">
           <div class="row g-3 mb-3">
             <div class="col-6">
-              <label class="form-label small fw-semibold text-secondary">Nome / Família</label>
+              <label class="form-label small fw-semibold text-secondary">Nome</label>
               <input type="text" name="nome_convidado" id="add-nome" class="form-control rounded-3" required>
               <div class="invalid-feedback aviso-nome-duplicado-add"></div>
             </div>
@@ -1542,6 +1577,77 @@ document.querySelectorAll('.btn-copiar-link-convidado').forEach(btn => {
     this.innerHTML = orig;
   });
 });
+
+/* ---- Status (Confirmado/Pendente) do titular e de cada acompanhante: clique
+   confirma/desmarca na hora, sem abrir o modal de editar e sem recarregar a
+   página (antes era um <form> comum — o POST recarregava e jogava a rolagem
+   pro topo). Vale tanto pro titular (borda do card inteiro muda de cor)
+   quanto pra cada acompanhante (só o próprio selo muda). ---- */
+document.querySelectorAll('.btn-status-convidado').forEach(btn => {
+  btn.addEventListener('click', async function () {
+    if (this.disabled) return;
+    const confirmarNovo = this.dataset.status === 'confirmado' ? '0' : '1';
+    this.disabled = true;
+
+    try {
+      const fd = new FormData();
+      fd.append('alternar_status_acompanhante', '1');
+      fd.append('convidado_id', this.dataset.id);
+      fd.append('confirmar', confirmarNovo);
+      fd.append('csrf_token', CSRF_TOKEN);
+      const r = await fetch(window.location.href, { method: 'POST', body: fd }).then(res => res.json());
+
+      if (!r.ok) {
+        alert(r.msg || 'Não foi possível atualizar o status.');
+      } else {
+        this.dataset.status = r.status;
+        this.classList.remove('status-confirmado', 'status-pendente', 'status-recusado');
+        this.classList.add('status-' + r.status);
+        this.title = r.status === 'confirmado' ? 'Clique para desmarcar a confirmação' : 'Clique para confirmar presença manualmente';
+        const label = this.querySelector('.status-label');
+        if (label) label.textContent = r.label;
+
+        const row = this.closest('.conv-row');
+        if (row) {
+          // Titular: a cor da borda do card inteiro segue o status dele.
+          if (this.classList.contains('btn-status-titular')) {
+            row.classList.remove('confirmado', 'pendente', 'recusado');
+            row.classList.add(r.status);
+          }
+          // Busca/filtro consideram qualquer pessoa da família — reconstrói
+          // a partir do status atual de cada selo (titular + acompanhantes).
+          const statuses = new Set();
+          row.querySelectorAll('.btn-status-convidado').forEach(b => statuses.add(b.dataset.status));
+          row.dataset.statuses = Array.from(statuses).join(' ');
+        }
+
+        atualizarContadoresEstatisticas();
+      }
+    } catch {
+      alert('Erro de conexão.');
+    }
+
+    this.disabled = false;
+  });
+});
+
+// Recalcula os cards "Convites/Confirmados/Pendentes/Recusaram" do topo a
+// partir do que está na tela — evita precisar recarregar a página só pra
+// atualizar os números depois de confirmar/desmarcar alguém.
+function atualizarContadoresEstatisticas() {
+  let conf = 0, pend = 0, recusado = 0;
+  document.querySelectorAll('#lista-convidados .btn-status-convidado').forEach(b => {
+    if (b.dataset.status === 'confirmado') conf++;
+    else if (b.dataset.status === 'recusado') recusado++;
+    else pend++;
+  });
+  const elConf = document.getElementById('cnt-conf');
+  const elPend = document.getElementById('cnt-pend');
+  const elRecusado = document.getElementById('cnt-recusado');
+  if (elConf) elConf.textContent = conf;
+  if (elPend) elPend.textContent = pend;
+  if (elRecusado) elRecusado.textContent = recusado;
+}
 
 /* ---- Botão de copiar o link geral (sem token, o mesmo pra todo mundo) ---- */
 document.getElementById('btn-copiar-link-geral')?.addEventListener('click', async function () {

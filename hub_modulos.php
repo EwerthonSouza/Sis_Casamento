@@ -144,7 +144,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/estilo.css?v=16">
+    <link rel="stylesheet" href="css/estilo.css?v=18">
     <style>
         body {
             font-family: 'Poppins', 'Inter', system-ui, sans-serif;
@@ -187,7 +187,10 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
             top: 0; bottom: 0; left: 0;
             width: 300%;
             z-index: -1;
+            /* Herda o degradê com as cores pastel dos módulos, que vem no
+               style="" do próprio painel (fallback: tons neutros). */
             background: linear-gradient(120deg, #ffffff, #f3ecff, #e6f0ff, #fdecf7, #eef0fd, #ffffff);
+            background-image: inherit;
             animation: gradienteFluidoHub 18s ease-in-out infinite alternate;
             pointer-events: none;
         }
@@ -279,6 +282,27 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
         }
         .stat-valor-hub { font-size: 1.3rem; font-weight: 800; color: #16181d; line-height: 1.1; }
         .stat-rotulo-hub { font-size: .74rem; color: #8b8e9a; font-weight: 600; }
+
+        /* ---- CELULAR: boas-vindas mais compacto e os 4 chips numa linha só ---- */
+        @media (max-width: 767.98px) {
+            .painel-boas-vindas { padding: .85rem 1rem; border-radius: 18px; margin-bottom: 1rem; }
+            .saudacao-hub { font-size: .7rem; }
+            .nome-hub { font-size: 1.15rem; }
+            .divisor-hero { width: 34px; margin: .45rem auto; }
+            .hero-hub h2 { font-size: .98rem; margin-bottom: .2rem; }
+            .hero-hub p { font-size: .72rem; line-height: 1.35; }
+            .decor-blob-1 { width: 140px; height: 140px; top: -60px; left: -50px; }
+            .decor-blob-2 { width: 160px; height: 160px; bottom: -70px; right: -60px; }
+
+            .stat-chip-hub {
+                flex-direction: column; justify-content: center;
+                gap: .3rem; padding: .55rem .2rem;
+                border-radius: 14px; text-align: center;
+            }
+            .stat-icone-hub { width: 28px; height: 28px; border-radius: 9px; font-size: .8rem; }
+            .stat-valor-hub { font-size: .95rem; }
+            .stat-rotulo-hub { font-size: .56rem; line-height: 1.15; }
+        }
 
         .cabecalho-secao-hub {
             display: flex;
@@ -380,61 +404,48 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
         .overlay-transicao-modulo.ativa {
             pointer-events: all;
         }
-        /* Só transform/opacity são animados aqui (rodam na GPU, sem repintar a
-           tela a cada quadro). O degradê "fluindo" é uma camada 2x maior que
-           desliza com translate, em vez de animar background-position. */
+        /* O movimento em si é feito pela Web Animations API (JS, no toque),
+           com as posições já calculadas em pixels. Antes eram @keyframes com
+           var(--origem-x...) dentro — o Safari do iPhone não acelera na GPU
+           animação com variável CSS nos keyframes, então ela rodava no
+           processador principal (ocupado carregando a próxima página) e
+           travava/pulava direto pro fim. Aqui fica só o estado inicial. */
         .overlay-transicao-fundo {
             position: absolute; inset: 0; z-index: 0;
             overflow: hidden;
             opacity: 0;
+            background: var(--cor-transicao-escura, #3730a3);
+            will-change: opacity;
         }
-        .overlay-transicao-fundo::before {
-            content: '';
+        /* Degradê que "flui": camada só ~1,4x a tela (antes 2x em cada lado =
+           4x a área — no iPhone, com tela de alta densidade, virava uma textura
+           enorme) e deslizada só com transform. */
+        .overlay-transicao-camada {
             position: absolute;
-            top: -50%; left: -50%;
-            width: 200%; height: 200%;
+            top: -20%; left: -20%;
+            width: 140%; height: 140%;
             background-image: linear-gradient(135deg, var(--cor-transicao, #6366f1), var(--cor-transicao-escura, #3730a3), var(--cor-transicao, #6366f1));
-        }
-        .overlay-transicao-modulo.ativa .overlay-transicao-fundo {
-            animation: aparecerFundoTransicao .8s cubic-bezier(.4, 0, .2, 1) 1s forwards;
-        }
-        .overlay-transicao-modulo.ativa .overlay-transicao-fundo::before {
-            animation: fluirGradienteTransicao 3s ease-in-out infinite alternate;
-        }
-        @keyframes fluirGradienteTransicao {
-            from { transform: translate3d(0, 0, 0); }
-            to   { transform: translate3d(25%, 25%, 0); }
-        }
-        @keyframes aparecerFundoTransicao {
-            from { opacity: 0; }
-            to   { opacity: 1; }
+            will-change: transform;
         }
         /* O ícone já nasce no tamanho FINAL (21rem = 3.5rem x 6) e é reduzido
            pela escala; ao crescer ele só volta pro tamanho natural (scale 1).
            Assim nunca é ampliado além do que foi desenhado — fica nítido do
-           começo ao fim, sem serrilhar. O centro dele fica sempre no ponto
-           (--origem-x/--origem-y) → (--destino-x/--destino-y). */
+           começo ao fim, sem serrilhar. */
         .overlay-transicao-conteudo {
             position: fixed;
             left: 0; top: 0;
             z-index: 2;
             color: rgba(255,255,255,.95);
-            text-shadow: 0 12px 90px rgba(0,0,0,.3);
+            text-shadow: 0 8px 40px rgba(0,0,0,.25);
             font-size: 21rem;
             line-height: 1;
             opacity: 0;
-            transform: translate3d(var(--origem-x, 50vw), var(--origem-y, 50vh), 0) translate(-50%, -50%) scale(.067);
+            transform: translate3d(50vw, 50vh, 0) translate(-50%, -50%) scale(.067);
             backface-visibility: hidden;
+            -webkit-backface-visibility: hidden;
+            will-change: transform, opacity;
         }
         .overlay-transicao-conteudo i { display: block; }
-        .overlay-transicao-modulo.ativa .overlay-transicao-conteudo {
-            animation: crescerIconeTransicao 1.8s cubic-bezier(.16, 1, .3, 1) forwards;
-        }
-        @keyframes crescerIconeTransicao {
-            0%   { opacity: 0; transform: translate3d(var(--origem-x, 50vw), var(--origem-y, 50vh), 0) translate(-50%, -50%) scale(.067); }
-            15%  { opacity: 1; }
-            100% { opacity: 1; transform: translate3d(var(--destino-x, 50vw), var(--destino-y, 50vh), 0) translate(-50%, -50%) scale(1); }
-        }
         /* Durante a transição, pausa as animações contínuas da página de trás
            (degradê do painel, blobs com blur, ícones pulsando) — elas repintam
            a cada quadro e roubam fluidez do efeito. */
@@ -444,8 +455,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
             animation-play-state: paused;
         }
         /* Vários ícones menores subindo pela tela atrás do ícone principal,
-           tipo "vários balões soltos", pra dar mais vida ao efeito, surgindo
-           junto com o fundo (depois que o ícone principal já se aproximou). */
+           tipo "vários balões soltos", surgindo junto com o fundo. */
         .overlay-transicao-extra {
             position: absolute;
             inset: 0;
@@ -459,22 +469,6 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
             color: rgba(255,255,255,.55);
             opacity: 0;
             will-change: transform, opacity;
-            animation-name: flutuarIconeExtra;
-            animation-timing-function: ease-in;
-            animation-iteration-count: 1;
-            animation-fill-mode: forwards;
-        }
-        @keyframes flutuarIconeExtra {
-            0%   { opacity: 0; transform: translate3d(0, 0, 0) rotate(0deg); }
-            12%  { opacity: .8; }
-            80%  { opacity: .6; }
-            100% { opacity: 0; transform: translate3d(0, -115vh, 0) rotate(var(--giro-extra, 15deg)); }
-        }
-        @media (prefers-reduced-motion: reduce) {
-            .overlay-transicao-fundo, .overlay-transicao-fundo::before { animation: none !important; }
-            .overlay-transicao-modulo.ativa .overlay-transicao-fundo { opacity: 1; }
-            .overlay-transicao-modulo.ativa .overlay-transicao-conteudo { animation: none !important; opacity: 1; transform: translate3d(var(--destino-x, 50vw), var(--destino-y, 50vh), 0) translate(-50%, -50%) scale(.2); }
-            .overlay-transicao-extra { display: none !important; }
         }
 
         .badge-contagem {
@@ -670,7 +664,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
 </nav>
 
 <?php $primeiro_acesso = !empty($_SESSION['primeiro_acesso']); ?>
-<div class="container my-5">
+<div class="container mt-3 mb-4 my-md-5">
     <div class="painel-boas-vindas" style="background-image: linear-gradient(120deg, #ffffff, <?= htmlspecialchars($pastel_casamento) ?>, <?= htmlspecialchars($pastel_aniversario) ?>, <?= htmlspecialchars($pastel_corporativo) ?>, <?= htmlspecialchars($pastel_academico) ?>, #ffffff);">
         <div class="decor-blob decor-blob-1" style="background: <?= htmlspecialchars($blob_casamento) ?>;"></div>
         <div class="decor-blob decor-blob-2" style="background: <?= htmlspecialchars($blob_corporativo) ?>;"></div>
@@ -692,8 +686,8 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
     <div class="alert alert-success text-center rounded-4 mb-4"><i class="bi bi-check-circle-fill me-2"></i><?= htmlspecialchars($msg_sucesso) ?></div>
     <?php endif; ?>
 
-    <div class="row g-3 mb-4 stats-hub-atraso">
-        <div class="col-6 col-md-3">
+    <div class="row g-2 g-md-3 mb-3 mb-md-4 stats-hub-atraso">
+        <div class="col-3">
             <div class="stat-chip-hub">
                 <div class="stat-icone-hub" style="background: linear-gradient(135deg, #6366f1, #a855f7);"><i class="bi bi-unlock-fill"></i></div>
                 <div>
@@ -702,7 +696,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
                 </div>
             </div>
         </div>
-        <div class="col-6 col-md-3">
+        <div class="col-3">
             <div class="stat-chip-hub">
                 <div class="stat-icone-hub" style="background: linear-gradient(135deg, #16a34a, #22c55e);"><i class="bi bi-calendar-event-fill"></i></div>
                 <div>
@@ -711,7 +705,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
                 </div>
             </div>
         </div>
-        <div class="col-6 col-md-3">
+        <div class="col-3">
             <div class="stat-chip-hub">
                 <div class="stat-icone-hub" style="background: linear-gradient(135deg, #f59e0b, #f97316);"><i class="bi bi-stars"></i></div>
                 <div>
@@ -720,7 +714,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
                 </div>
             </div>
         </div>
-        <div class="col-6 col-md-3">
+        <div class="col-3">
             <div class="stat-chip-hub">
                 <div class="stat-icone-hub" style="background: linear-gradient(135deg, #0ea5e9, #38bdf8);"><i class="bi bi-hourglass-split"></i></div>
                 <div>
@@ -882,7 +876,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
 <?php endforeach; ?>
 
 <div class="overlay-transicao-modulo" id="overlay-transicao-modulo">
-    <div class="overlay-transicao-fundo"></div>
+    <div class="overlay-transicao-fundo"><div class="overlay-transicao-camada"></div></div>
     <div class="overlay-transicao-extra" id="overlay-transicao-extra"></div>
     <div class="overlay-transicao-conteudo" id="overlay-transicao-conteudo">
         <i class="bi" id="overlay-transicao-icone"></i>
@@ -893,7 +887,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
 <script>
 // Efeito ao entrar num módulo: nasce exatamente do ponto onde o card foi
 // clicado, cobre a tela com um degradê animado na cor daquele módulo, e o
-// ícone clicado cresce continuamente por 2,5s — dando tempo da página de trás
+// ícone clicado cresce até o centro (~2,5s no total) — dando tempo da página de trás
 // carregar antes de trocar de fato pra painel_admin.php.
 function escurecerCorHex(hex, percentual) {
     hex = hex.replace('#', '');
@@ -911,59 +905,104 @@ document.querySelectorAll('.card-modulo:not(.bloqueado) > a[href*="modulo="]').f
         const destino = this.getAttribute('href');
         const card = this.closest('.card-modulo');
         const overlay = document.getElementById('overlay-transicao-modulo');
+        const overlayConteudo = document.getElementById('overlay-transicao-conteudo');
         const overlayIcone = document.getElementById('overlay-transicao-icone');
         const overlayExtra = document.getElementById('overlay-transicao-extra');
-        if (!overlay || !card) { window.location.href = destino; return; }
+        const fundo = overlay ? overlay.querySelector('.overlay-transicao-fundo') : null;
+        const camada = overlay ? overlay.querySelector('.overlay-transicao-camada') : null;
+        // Sem Web Animations API (navegador muito antigo) ou sem o overlay: só navega.
+        if (!overlay || !card || !overlayConteudo || !fundo || typeof overlayConteudo.animate !== 'function') {
+            window.location.href = destino;
+            return;
+        }
+        if (overlay.dataset.emAndamento === '1') return; // toque duplo
+        overlay.dataset.emAndamento = '1';
 
         const cor = getComputedStyle(card).getPropertyValue('--cor-solida-modulo').trim() || '#6366f1';
         const iconeCard = card.querySelector('.icone-modulo i');
         const classesIcone = iconeCard ? Array.from(iconeCard.classList).filter(c => c.startsWith('bi-') && !c.startsWith('icone-anim')) : ['bi-grid-3x3-gap-fill'];
-        const elementoOrigem = iconeCard || card;
-        const rectOrigem = elementoOrigem.getBoundingClientRect();
-        const centroOrigemX = rectOrigem.left + rectOrigem.width / 2;
-        const centroOrigemY = rectOrigem.top + rectOrigem.height / 2;
+        const rectOrigem = (iconeCard || card).getBoundingClientRect();
+        const ox = rectOrigem.left + rectOrigem.width / 2;
+        const oy = rectOrigem.top + rectOrigem.height / 2;
+        const dx = window.innerWidth / 2;
+        const dy = window.innerHeight / 2;
 
         overlayIcone.className = 'bi ' + classesIcone.join(' ');
-
-        // O CSS centraliza o ícone no ponto informado (translate -50%), então
-        // basta passar o centro do ícone do card (origem) e o centro da tela
-        // (destino) — ele sai de cima do card e viaja até o meio enquanto cresce.
-        overlay.style.setProperty('--origem-x', centroOrigemX + 'px');
-        overlay.style.setProperty('--origem-y', centroOrigemY + 'px');
-        overlay.style.setProperty('--destino-x', (window.innerWidth / 2) + 'px');
-        overlay.style.setProperty('--destino-y', (window.innerHeight / 2) + 'px');
         overlay.style.setProperty('--cor-transicao', cor);
         overlay.style.setProperty('--cor-transicao-escura', escurecerCorHex(cor, -0.4));
 
-        // Um bando de ícones menores subindo atrás, tipo vários balões soltos,
-        // cada um com posição, tamanho, duração e atraso diferentes — surgindo
-        // só depois que o ícone principal já cresceu e o fundo começou a aparecer.
-        if (overlayExtra) {
-            overlayExtra.innerHTML = '';
-            const reduzMovimento = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-            if (!reduzMovimento) {
-                const total = 14;
+        const reduzMovimento = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const celular = window.innerWidth < 768;
+        // Posições em pixels, calculadas agora (nada de var() nos keyframes).
+        const pos = (x, y, escala) => `translate3d(${x}px, ${y}px, 0) translate(-50%, -50%) scale(${escala})`;
+
+        document.body.classList.add('transicao-modulo-ativa');
+        overlay.classList.add('ativa');
+        overlayExtra && (overlayExtra.innerHTML = '');
+
+        const animacoes = [];
+        if (reduzMovimento) {
+            // "Reduzir movimento" ligado: sem deslocamento pela tela — só o
+            // fundo aparecendo e o ícone surgindo no centro, curto e suave.
+            animacoes.push(fundo.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 350, easing: 'ease-out', fill: 'forwards' }));
+            animacoes.push(overlayConteudo.animate(
+                [{ opacity: 0, transform: pos(dx, dy, .25) }, { opacity: 1, transform: pos(dx, dy, .3) }],
+                { duration: 450, easing: 'ease-out', fill: 'forwards' }));
+        } else {
+            // Ícone sai de cima do card e viaja até o meio crescendo.
+            animacoes.push(overlayConteudo.animate(
+                [{ transform: pos(ox, oy, .067) }, { transform: pos(dx, dy, 1) }],
+                { duration: 1800, easing: 'cubic-bezier(.16, 1, .3, 1)', fill: 'forwards' }));
+            animacoes.push(overlayConteudo.animate(
+                [{ opacity: 0 }, { opacity: 1 }],
+                { duration: 270, easing: 'ease-out', fill: 'forwards' }));
+            // Fundo na cor do módulo aparece depois que o ícone já se aproximou.
+            animacoes.push(fundo.animate([{ opacity: 0 }, { opacity: 1 }],
+                { duration: 800, delay: 1000, easing: 'cubic-bezier(.4, 0, .2, 1)', fill: 'forwards' }));
+            if (camada) {
+                camada.animate([{ transform: 'translate3d(0,0,0)' }, { transform: 'translate3d(12%, 12%, 0)' }],
+                    { duration: 3000, easing: 'ease-in-out', iterations: Infinity, direction: 'alternate' });
+            }
+            // Ícones menores subindo atrás, tipo balões soltos (menos no celular).
+            if (overlayExtra) {
+                const total = celular ? 8 : 14;
+                const subida = -(window.innerHeight * 1.15);
                 for (let i = 0; i < total; i++) {
                     const icone = document.createElement('i');
                     icone.className = 'bi ' + classesIcone.join(' ');
-                    const tamanho = 1.1 + Math.random() * 2.2;
-                    const atraso = 1.0 + Math.random() * 1.1;
-                    const duracao = 2.2 + Math.random() * 1.4;
-                    const giro = (Math.random() > 0.5 ? 1 : -1) * (10 + Math.random() * 30);
                     icone.style.left = (Math.random() * 92) + '%';
-                    icone.style.fontSize = tamanho + 'rem';
-                    icone.style.animationDelay = atraso + 's';
-                    icone.style.animationDuration = duracao + 's';
-                    icone.style.setProperty('--giro-extra', giro + 'deg');
+                    icone.style.fontSize = (1.1 + Math.random() * (celular ? 1.6 : 2.2)) + 'rem';
                     overlayExtra.appendChild(icone);
+                    const giro = (Math.random() > 0.5 ? 1 : -1) * (10 + Math.random() * 30);
+                    icone.animate([
+                        { opacity: 0,  transform: 'translate3d(0, 0, 0) rotate(0deg)' },
+                        { opacity: .8, offset: .12, transform: `translate3d(0, ${subida * .12}px, 0) rotate(${giro * .12}deg)` },
+                        { opacity: .6, offset: .8,  transform: `translate3d(0, ${subida * .8}px, 0) rotate(${giro * .8}deg)` },
+                        { opacity: 0,  transform: `translate3d(0, ${subida}px, 0) rotate(${giro}deg)` },
+                    ], { duration: 2200 + Math.random() * 1400, delay: 1000 + Math.random() * 1100, easing: 'ease-in', fill: 'forwards' });
                 }
             }
         }
 
-        document.body.classList.add('transicao-modulo-ativa');
-        requestAnimationFrame(() => overlay.classList.add('ativa'));
-        setTimeout(() => { window.location.href = destino; }, 2500);
+        // Troca de página quando o ícone e o fundo terminam (não num tempo
+        // fixo), com um limite de segurança caso algum .finished não resolva.
+        let foi = false;
+        const irParaDestino = () => { if (!foi) { foi = true; window.location.href = destino; } };
+        Promise.all(animacoes.map(a => a.finished)).then(() => setTimeout(irParaDestino, reduzMovimento ? 150 : 350), irParaDestino);
+        setTimeout(irParaDestino, reduzMovimento ? 1200 : 2900);
     });
+});
+
+// Voltando pelo botão "voltar" do navegador (página restaurada do cache),
+// não deixa o overlay da transição preso cobrindo a tela.
+window.addEventListener('pageshow', function (e) {
+    if (!e.persisted) return;
+    const overlay = document.getElementById('overlay-transicao-modulo');
+    if (!overlay) return;
+    overlay.getAnimations ? overlay.getAnimations({ subtree: true }).forEach(a => a.cancel()) : null;
+    overlay.classList.remove('ativa');
+    overlay.dataset.emAndamento = '';
+    document.body.classList.remove('transicao-modulo-ativa');
 });
 </script>
 </body>
