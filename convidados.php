@@ -10,6 +10,7 @@ if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['
 $eh_noivos = ($_SESSION['usuario_tipo'] === 'noivos');
 
 require_once 'conexao.php';
+require_once 'tenant.php';
 require_once 'modulos_evento.inc.php';
 garantir_coluna_tipo_evento($pdo);
 garantir_coluna_sobrenome_convidado($pdo);
@@ -47,14 +48,17 @@ if ($eh_noivos) {
 $url_pagina = 'convidados.php' . ($eh_noivos ? '' : "?id=$evento_id");
 
 // Impede a equipe de acessar/manipular (inclusive via AJAX) convidados de um
-// evento de outro módulo — checado aqui, antes do bloco de handlers POST logo
-// abaixo, para também cobrir as ações AJAX (não só a renderização da página).
+// evento de outro módulo OU de outra assessoria (multi-tenant, 2026-09-28) —
+// checado aqui, antes do bloco de handlers POST logo abaixo, para também
+// cobrir as ações AJAX (não só a renderização da página).
 if (!$eh_noivos) {
     $modulo_ativo = $_SESSION['modulo_ativo'] ?? null;
-    $stmt_tipo_evento = $pdo->prepare("SELECT tipo_evento FROM eventos WHERE id = ?");
+    $stmt_tipo_evento = $pdo->prepare("SELECT tipo_evento, assessoria_id FROM eventos WHERE id = ?");
     $stmt_tipo_evento->execute([$evento_id]);
-    $tipo_evento_alvo = $stmt_tipo_evento->fetchColumn();
-    if (!$modulo_ativo || $tipo_evento_alvo === false || $tipo_evento_alvo !== $modulo_ativo) {
+    $evento_alvo_row  = $stmt_tipo_evento->fetch();
+    $tipo_evento_alvo = $evento_alvo_row['tipo_evento'] ?? false;
+    if (!$modulo_ativo || $tipo_evento_alvo === false || $tipo_evento_alvo !== $modulo_ativo
+        || !eh_registro_da_assessoria_atual($evento_alvo_row['assessoria_id'] ?? null)) {
         header("Location: painel_admin.php");
         exit;
     }
@@ -143,8 +147,8 @@ function sincronizar_acompanhantes(PDO $pdo, int $evento_id, int $principal_id, 
             }
         }
 
-        $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, categoria, confirmado, convidado_principal_id) VALUES (?, ?, ?, 'Outros', 0, ?)")
-            ->execute([$evento_id, $nome, $faixa, $principal_id]);
+        $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, categoria, confirmado, convidado_principal_id, assessoria_id) VALUES (?, ?, ?, 'Outros', 0, ?, ?)")
+            ->execute([$evento_id, $nome, $faixa, $principal_id, assessoria_atual()]);
         $mantidos[] = (int)$pdo->lastInsertId();
     }
 
@@ -272,8 +276,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif (convidado_nome_duplicado($pdo, $evento_id, $nome_completo)) {
             $_SESSION['msg_erro'] = "Já existe um convite com o nome <strong>" . htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8') . "</strong>. Informe um sobrenome diferente pra identificar cada um.";
         } else {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, sobrenome, telefone, categoria, confirmado) VALUES (?, ?, ?, ?, ?, 0)")
-                ->execute([$evento_id, $nome_completo, $sobrenome ?: null, $fone, $cat]);
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, sobrenome, telefone, categoria, confirmado, assessoria_id) VALUES (?, ?, ?, ?, ?, 0, ?)")
+                ->execute([$evento_id, $nome_completo, $sobrenome ?: null, $fone, $cat, assessoria_atual()]);
             $novo_id = (int)$pdo->lastInsertId();
             sincronizar_acompanhantes($pdo, $evento_id, $novo_id, [], $nomes_acomp, $faixas_acomp);
             $_SESSION['msg_sucesso'] = "Convite <strong>" . htmlspecialchars($nome_completo) . "</strong> criado!";

@@ -86,10 +86,19 @@ if (!schema_ja_verificado('checklist_criado_em')) {
  * $incluir_financeiro = false tira os avisos de arquivos/comprovantes de
  * fornecedores (têm valores) — o assistente não vê dados financeiros.
  */
-function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?string $tipo_evento = null, ?int $avisos_central_admin_id = null, bool $incluir_financeiro = true): array
+function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?string $tipo_evento = null, ?int $avisos_central_admin_id = null, bool $incluir_financeiro = true, ?int $assessoria_id_filtro = null): array
 {
     $itens = [];
-    $filtro_modulo = ($tipo_evento && !$evento_id) ? " AND e.tipo_evento = ?" : "";
+    // No modo "todos os eventos" (evento_id null), sem isso o sino global
+    // misturava notificações de TODAS as assessorias — cada admin só pode
+    // ver a atividade da própria (multi-tenant, 2026-09-28). No modo de um
+    // evento só, a página que chama já validou a posse do evento antes.
+    $filtro_modulo = '';
+    $params_modulo = [];
+    if (!$evento_id) {
+        if ($tipo_evento) { $filtro_modulo .= " AND e.tipo_evento = ?"; $params_modulo[] = $tipo_evento; }
+        if ($assessoria_id_filtro !== null) { $filtro_modulo .= " AND e.assessoria_id = ?"; $params_modulo[] = $assessoria_id_filtro; }
+    }
 
     // 1. Tarefas concluídas pelos noivos
     $sql1 = "
@@ -101,7 +110,7 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?strin
     " . ($evento_id ? " AND c.evento_id = ?" : $filtro_modulo) . "
         ORDER BY c.concluido_em DESC LIMIT " . (int)$limite;
     $stmt1 = $pdo->prepare($sql1);
-    $stmt1->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
+    $stmt1->execute($evento_id ? [$evento_id] : $params_modulo);
     foreach ($stmt1->fetchAll() as $r) {
         $itens[] = [
             'tipo'        => 'checklist',
@@ -128,7 +137,7 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?strin
     " . ($evento_id ? " AND COALESCE(ch.evento_id, cc.evento_id) = ?" : $filtro_modulo) . "
         ORDER BY cc.criado_em DESC LIMIT " . (int)$limite;
     $stmt2 = $pdo->prepare($sql2);
-    $stmt2->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
+    $stmt2->execute($evento_id ? [$evento_id] : $params_modulo);
     foreach ($stmt2->fetchAll() as $r) {
         $itens[] = [
             'tipo'        => 'comentario',
@@ -152,7 +161,7 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?strin
     " . ($evento_id ? " AND co.evento_id = ?" : $filtro_modulo) . "
         ORDER BY co.data_confirmacao DESC LIMIT " . (int)$limite;
     $stmt3 = $pdo->prepare($sql3);
-    $stmt3->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
+    $stmt3->execute($evento_id ? [$evento_id] : $params_modulo);
     foreach ($stmt3->fetchAll() as $r) {
         $recusou = ($r['resposta_rsvp'] === 'recusado');
         $itens[] = [
@@ -212,7 +221,7 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?strin
         " . ($evento_id ? " AND n.evento_id = ?" : $filtro_modulo) . "
             ORDER BY n.criado_em DESC LIMIT " . (int)$limite;
         $stmt6 = $pdo->prepare($sql6);
-        $stmt6->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
+        $stmt6->execute($evento_id ? [$evento_id] : $params_modulo);
         foreach ($stmt6->fetchAll() as $r) {
             $itens[] = [
                 'tipo'        => 'nota',
@@ -240,7 +249,7 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?strin
         " . ($evento_id ? " AND n.evento_id = ?" : $filtro_modulo) . "
             ORDER BY nc.criado_em DESC LIMIT " . (int)$limite;
         $stmt7 = $pdo->prepare($sql7);
-        $stmt7->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
+        $stmt7->execute($evento_id ? [$evento_id] : $params_modulo);
         foreach ($stmt7->fetchAll() as $r) {
             // Comentário do casal: mostra "Noivos" (papel), não o nome real
             // registrado do casal — é sempre o mesmo texto pra qualquer um
@@ -274,7 +283,7 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?strin
         " . ($evento_id ? " AND f.evento_id = ?" : $filtro_modulo) . "
             ORDER BY p.comprovante_enviado_em DESC LIMIT " . (int)$limite;
         $stmt9 = $pdo->prepare($sql9);
-        $stmt9->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
+        $stmt9->execute($evento_id ? [$evento_id] : $params_modulo);
         foreach ($stmt9->fetchAll() as $r) {
             // "O casal" / "O aniversariante" / "O responsável pela empresa"... conforme o módulo
             $contratante = function_exists('labels_modulo_evento')

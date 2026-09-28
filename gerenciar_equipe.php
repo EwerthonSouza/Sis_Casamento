@@ -3,6 +3,7 @@ session_start();
 require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 require_once 'conexao.php';
+require_once 'tenant.php';
 require_once 'modulos_evento.inc.php';
 require_once __DIR__ . '/config/central.php';
 
@@ -78,8 +79,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adicionar_usuario']))
     if (!empty($nome) && !empty($email) && !empty($senha)) {
         $senha_hash = password_hash($senha, PASSWORD_BCRYPT);
         try {
-            $stmt = $pdo->prepare("INSERT INTO usuarios (nome, email, senha, tipo, criado_por) VALUES (?, ?, ?, ?, ?)");
-            $stmt->execute([$nome, $email, $senha_hash, $tipo, (int)$_SESSION['usuario_id']]);
+            // Novo usuário entra sempre na mesma assessoria de quem está cadastrando
+            // (multi-tenant, 2026-09-28) — nunca sem tenant, nunca de outra assessoria.
+            $stmt = $pdo->prepare("INSERT INTO usuarios (nome, email, senha, tipo, criado_por, assessoria_id) VALUES (?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$nome, $email, $senha_hash, $tipo, (int)$_SESSION['usuario_id'], assessoria_atual()]);
             $novo_usuario_id = (int)$pdo->lastInsertId();
 
             // O novo usuário entra com os mesmos módulos já liberados pra quem está
@@ -114,9 +117,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['alterar_senha'])) {
 
     if ($id_usuario > 0 && strlen($nova_senha) >= 6) {
         $senha_hash = password_hash($nova_senha, PASSWORD_BCRYPT);
-        // Nunca mexe numa conta de desenvolvedor por aqui, mesmo que alguém forje o id_usuario
-        $stmt = $pdo->prepare("UPDATE usuarios SET senha = ? WHERE id = ? AND tipo IN ('admin', 'assistente')");
-        $stmt->execute([$senha_hash, $id_usuario]);
+        // Nunca mexe numa conta de desenvolvedor, nem de outra assessoria
+        // (multi-tenant, 2026-09-28), por aqui, mesmo que alguém forje o id_usuario
+        $stmt = $pdo->prepare("UPDATE usuarios SET senha = ? WHERE id = ? AND tipo IN ('admin', 'assistente') AND assessoria_id = ?");
+        $stmt->execute([$senha_hash, $id_usuario, assessoria_atual()]);
         $msg_sucesso = "Senha atualizada com sucesso!";
     } else {
         $msg_erro = "A senha precisa ter pelo menos 6 caracteres.";
@@ -131,8 +135,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['excluir_usuario'])) {
     $id_excluir = (int)$_POST['id_usuario'];
 
     try {
-        // Nunca exclui uma conta de desenvolvedor por aqui, mesmo que alguém forje o id_usuario
-        $pdo->prepare("DELETE FROM usuarios WHERE id = ? AND tipo IN ('admin', 'assistente')")->execute([$id_excluir]);
+        // Nunca exclui uma conta de desenvolvedor, nem de outra assessoria
+        // (multi-tenant, 2026-09-28), por aqui, mesmo que alguém forje o id_usuario
+        $pdo->prepare("DELETE FROM usuarios WHERE id = ? AND tipo IN ('admin', 'assistente') AND assessoria_id = ?")->execute([$id_excluir, assessoria_atual()]);
         $msg_sucesso = "Usuário removido do sistema!";
     } catch (Exception $e) {
         $msg_erro = "Erro ao excluir o usuário.";
@@ -142,7 +147,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['excluir_usuario'])) {
 // ============================================================
 // BUSCAR LISTA DE USUÁRIOS
 // ============================================================
-$lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios WHERE tipo IN ('admin', 'assistente') ORDER BY nome ASC")->fetchAll();
+$stmt_lista_usuarios = $pdo->prepare("SELECT id, nome, email, tipo FROM usuarios WHERE tipo IN ('admin', 'assistente') AND assessoria_id = ? ORDER BY nome ASC");
+$stmt_lista_usuarios->execute([assessoria_atual()]);
+$lista_usuarios = $stmt_lista_usuarios->fetchAll();
 ?>
 <!DOCTYPE html>
 <html lang="pt-br">

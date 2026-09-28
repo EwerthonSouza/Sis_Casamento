@@ -272,7 +272,7 @@ function garantir_coluna_assessoria_id(PDO $pdo): void {
         'fornecedores_evento', 'fornecedores_pagamentos', 'inspiracoes_fotos',
         'mapa_elementos', 'mesas', 'musicas_evento', 'notas_evento',
         'notas_comentarios', 'referencias_fornecedores', 'servicos_assessoria',
-        'calendario_anotacoes',
+        'calendario_anotacoes', 'notas_gerais_painel',
     ];
 
     foreach ($tabelas as $tabela) {

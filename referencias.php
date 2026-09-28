@@ -3,6 +3,7 @@ session_start();
 require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 require_once 'conexao.php';
+require_once 'tenant.php';
 
 // ============================================================
 // TRAVA DE SEGURANÇA: Admin e assistente (sem dado financeiro nesta página)
@@ -71,8 +72,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $obs       = trim($_POST['observacoes'] ?? '');
 
         if ($categoria !== '' && $nome !== '') {
-            $pdo->prepare("INSERT INTO referencias_fornecedores (categoria, nome, contato, email, redes_sociais, endereco, observacoes) VALUES (?, ?, ?, ?, ?, ?, ?)")
-                ->execute([$categoria, $nome, $contato, $email, $redes, $endereco, $obs]);
+            $pdo->prepare("INSERT INTO referencias_fornecedores (categoria, nome, contato, email, redes_sociais, endereco, observacoes, assessoria_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                ->execute([$categoria, $nome, $contato, $email, $redes, $endereco, $obs, assessoria_atual()]);
             $_SESSION['msg_sucesso'] = "Referência adicionada com sucesso!";
         } else {
             $_SESSION['msg_erro'] = "Preencha ao menos a categoria e o nome.";
@@ -91,8 +92,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $obs       = trim($_POST['observacoes_edit'] ?? '');
 
         if ($id > 0 && $categoria !== '' && $nome !== '') {
-            $pdo->prepare("UPDATE referencias_fornecedores SET categoria = ?, nome = ?, contato = ?, email = ?, redes_sociais = ?, endereco = ?, observacoes = ? WHERE id = ?")
-                ->execute([$categoria, $nome, $contato, $email, $redes, $endereco, $obs, $id]);
+            $pdo->prepare("UPDATE referencias_fornecedores SET categoria = ?, nome = ?, contato = ?, email = ?, redes_sociais = ?, endereco = ?, observacoes = ? WHERE id = ? AND assessoria_id = ?")
+                ->execute([$categoria, $nome, $contato, $email, $redes, $endereco, $obs, $id, assessoria_atual()]);
             $_SESSION['msg_sucesso'] = "Referência atualizada com sucesso!";
         } else {
             $_SESSION['msg_erro'] = "Preencha ao menos a categoria e o nome.";
@@ -103,7 +104,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['excluir_referencia'])) {
         $id = (int)($_POST['id_referencia'] ?? 0);
         if ($id > 0) {
-            $pdo->prepare("DELETE FROM referencias_fornecedores WHERE id = ?")->execute([$id]);
+            $pdo->prepare("DELETE FROM referencias_fornecedores WHERE id = ? AND assessoria_id = ?")->execute([$id, assessoria_atual()]);
             $_SESSION['msg_sucesso'] = "Referência removida.";
         }
         header("Location: referencias.php"); exit;
@@ -113,7 +114,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // ============================================================
 // CARREGAR DADOS
 // ============================================================
-$lista = $pdo->query("SELECT * FROM referencias_fornecedores ORDER BY categoria ASC, nome ASC")->fetchAll();
+$stmt_lista = $pdo->prepare("SELECT * FROM referencias_fornecedores WHERE assessoria_id = ? ORDER BY categoria ASC, nome ASC");
+$stmt_lista->execute([assessoria_atual()]);
+$lista = $stmt_lista->fetchAll();
 
 $grupos = [];
 foreach ($lista as $r) {

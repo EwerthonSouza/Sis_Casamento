@@ -9,6 +9,7 @@ if (!isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'noivos')
 }
 
 require_once 'conexao.php';
+require_once 'tenant.php';
 require_once 'modulos_evento.inc.php';
 require_once 'notificacoes.inc.php';
 
@@ -209,8 +210,8 @@ function sincronizar_acompanhantes(PDO $pdo, int $evento_id, int $principal_id, 
             }
         }
 
-        $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, categoria, confirmado, convidado_principal_id) VALUES (?, ?, ?, 'Outros', 0, ?)")
-            ->execute([$evento_id, $nome, $faixa, $principal_id]);
+        $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, categoria, confirmado, convidado_principal_id, assessoria_id) VALUES (?, ?, ?, 'Outros', 0, ?, ?)")
+            ->execute([$evento_id, $nome, $faixa, $principal_id, assessoria_atual()]);
         $mantidos[] = (int)$pdo->lastInsertId();
     }
 
@@ -327,8 +328,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $id    = (int)$_POST['check_id'];
         $texto = trim($_POST['novo_comentario'] ?? '');
         if ($texto !== '') {
-            $pdo->prepare("INSERT INTO checklist_comentarios (checklist_id, autor, comentario) VALUES (?, 'Noivos', ?)")
-                ->execute([$id, $texto]);
+            $pdo->prepare("INSERT INTO checklist_comentarios (checklist_id, autor, comentario, assessoria_id) VALUES (?, 'Noivos', ?, ?)")
+                ->execute([$id, $texto, assessoria_atual()]);
             if ($ajax) json_out(['ok' => true, 'autor' => 'Noivos', 'texto' => htmlspecialchars($texto)]);
         }
         if (!$ajax) { header("Location: noivos.php"); exit; }
@@ -340,8 +341,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $etapa = trim($_POST['etapa_nome'] ?? '');
         $texto = trim($_POST['novo_comentario_etapa'] ?? '');
         if ($etapa !== '' && $texto !== '') {
-            $pdo->prepare("INSERT INTO checklist_comentarios (evento_id, etapa_nome, autor, comentario) VALUES (?, ?, 'Noivos', ?)")
-                ->execute([$evento_id, $etapa, $texto]);
+            $pdo->prepare("INSERT INTO checklist_comentarios (evento_id, etapa_nome, autor, comentario, assessoria_id) VALUES (?, ?, 'Noivos', ?, ?)")
+                ->execute([$evento_id, $etapa, $texto, assessoria_atual()]);
             if ($ajax) json_out(['ok' => true, 'autor' => 'Noivos', 'texto' => htmlspecialchars($texto)]);
         }
         if (!$ajax) { header("Location: noivos.php"); exit; }
@@ -390,8 +391,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif (convidado_nome_duplicado($pdo, $evento_id, $nome_completo)) {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Já existe um convite com o nome ' . htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8') . '. Informe um sobrenome diferente pra identificar cada um.']);
         } else {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, sobrenome, telefone, categoria, confirmado) VALUES (?, ?, ?, ?, ?, 0)")
-                ->execute([$evento_id, $nome_completo, $sobrenome ?: null, $fone, $cat]);
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, sobrenome, telefone, categoria, confirmado, assessoria_id) VALUES (?, ?, ?, ?, ?, 0, ?)")
+                ->execute([$evento_id, $nome_completo, $sobrenome ?: null, $fone, $cat, assessoria_atual()]);
             $novo_id = (int)$pdo->lastInsertId();
             sincronizar_acompanhantes($pdo, $evento_id, $novo_id, [], $nomes_acomp, $faixas_acomp);
             if ($ajax) {
@@ -520,8 +521,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         if ($momento !== '' && $titulo !== '') {
-            $pdo->prepare("INSERT INTO musicas_evento (evento_id, momento, titulo, link, status) VALUES (?, ?, ?, ?, 'sugestao')")
-                ->execute([$evento_id, $momento, $titulo, $link]);
+            $pdo->prepare("INSERT INTO musicas_evento (evento_id, momento, titulo, link, status, assessoria_id) VALUES (?, ?, ?, ?, 'sugestao', ?)")
+                ->execute([$evento_id, $momento, $titulo, $link, assessoria_atual()]);
             $ret_id = (int)$pdo->lastInsertId();
             if ($ajax) json_out([
                 'ok'      => true,
@@ -643,18 +644,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $chk->execute([$token_link]);
         } while ($chk->fetch());
 
-        $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, confirmado, token_convite) VALUES (?, ?, ?, 'Outros', 0, ?)")
-            ->execute([$evento_id, $nome_link, $tel_link, $token_link]);
+        $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, confirmado, token_convite, assessoria_id) VALUES (?, ?, ?, 'Outros', 0, ?, ?)")
+            ->execute([$evento_id, $nome_link, $tel_link, $token_link, assessoria_atual()]);
         $novo_convidado_id = (int)$pdo->lastInsertId();
 
         $acompanhantes_criados = [];
-        $insAcomp = $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, categoria, confirmado, convidado_principal_id) VALUES (?, ?, ?, 'Outros', 0, ?)");
+        $insAcomp = $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, categoria, confirmado, convidado_principal_id, assessoria_id) VALUES (?, ?, ?, 'Outros', 0, ?, ?)");
         for ($i = 0; $i < count($nomes_acomp); $i++) {
             $nome_acomp = trim($nomes_acomp[$i]);
             if ($nome_acomp === '') continue;
             $faixa_acomp = in_array($faixas_acomp[$i] ?? '', ['Criança de Colo (0-5 anos)', 'Criança (6-10 anos)', 'Adulto (11+ anos)'], true)
                 ? $faixas_acomp[$i] : 'Adulto (11+ anos)';
-            $insAcomp->execute([$evento_id, $nome_acomp, $faixa_acomp, $novo_convidado_id]);
+            $insAcomp->execute([$evento_id, $nome_acomp, $faixa_acomp, $novo_convidado_id, assessoria_atual()]);
             $acompanhantes_criados[] = ['id' => (int)$pdo->lastInsertId(), 'nome' => $nome_acomp];
         }
 
@@ -734,8 +735,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $nomeOriginal = mb_substr($arquivo['name'], 0, 255);
-        $pdo->prepare("INSERT INTO documentos_evento (evento_id, categoria, nome_original, nome_arquivo, extensao, tamanho) VALUES (?, ?, ?, ?, ?, ?)")
-            ->execute([$evento_id, $categoria, $nomeOriginal, $nomeArquivo, $extensao, (int)$arquivo['size']]);
+        $pdo->prepare("INSERT INTO documentos_evento (evento_id, categoria, nome_original, nome_arquivo, extensao, tamanho, assessoria_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            ->execute([$evento_id, $categoria, $nomeOriginal, $nomeArquivo, $extensao, (int)$arquivo['size'], assessoria_atual()]);
 
         json_out([
             'ok' => true,
@@ -789,8 +790,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $ret_autor  = $origRow['autor']  ?? ($_SESSION['usuario_nome'] ?? 'Casal');
             } else {
                 $autor_nome = $_SESSION['usuario_nome'] ?? 'Casal';
-                $pdo->prepare("INSERT INTO notas_evento (evento_id, titulo, conteudo, cor, autor, origem) VALUES (?,?,?,?,?,'Noivos')")
-                    ->execute([$evento_id, $titulo, $conteudo, $cor, $autor_nome]);
+                $pdo->prepare("INSERT INTO notas_evento (evento_id, titulo, conteudo, cor, autor, origem, assessoria_id) VALUES (?,?,?,?,?,'Noivos',?)")
+                    ->execute([$evento_id, $titulo, $conteudo, $cor, $autor_nome, assessoria_atual()]);
                 $ret_id     = (int)$pdo->lastInsertId();
                 $ret_origem = 'Noivos';
                 $ret_autor  = $autor_nome;
@@ -833,8 +834,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $chk = $pdo->prepare("SELECT id FROM notas_evento WHERE id=? AND evento_id=?");
             $chk->execute([$nota_id, $evento_id]);
             if ($chk->fetch()) {
-                $pdo->prepare("INSERT INTO notas_comentarios (nota_id, autor, autor_nome, comentario) VALUES (?, ?, ?, ?)")
-                    ->execute([$nota_id, $autor_nome, $autor_real, $texto]);
+                $pdo->prepare("INSERT INTO notas_comentarios (nota_id, autor, autor_nome, comentario, assessoria_id) VALUES (?, ?, ?, ?, ?)")
+                    ->execute([$nota_id, $autor_nome, $autor_real, $texto, assessoria_atual()]);
                 if ($ajax) json_out([
                     'ok'         => true,
                     'autor'      => htmlspecialchars($autor_nome, ENT_QUOTES, 'UTF-8'),

@@ -4,6 +4,7 @@ require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 
 require_once 'conexao.php';
+require_once 'tenant.php';
 require_once 'modulos_evento.inc.php';
 require_once __DIR__ . '/vendor/autoload.php';
 
@@ -51,9 +52,11 @@ $s->execute([$evento_id]);
 $evento = $s->fetch();
 if (!$evento) { die("Evento não encontrado."); }
 
-// Impede exportar o relatório de um evento de outro módulo
+// Impede exportar o relatório de um evento de outro módulo OU de outra
+// assessoria (multi-tenant, 2026-09-28)
 $modulo_ativo = $_SESSION['modulo_ativo'] ?? null;
-if (!$modulo_ativo || $evento['tipo_evento'] !== $modulo_ativo) {
+if (!$modulo_ativo || $evento['tipo_evento'] !== $modulo_ativo
+    || !eh_registro_da_assessoria_atual($evento['assessoria_id'] ?? null)) {
     header("Location: painel_admin.php");
     exit;
 }

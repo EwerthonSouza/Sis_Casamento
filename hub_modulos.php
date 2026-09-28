@@ -4,6 +4,7 @@ require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 
 require_once 'conexao.php';
+require_once 'tenant.php';
 require_once 'modulos_evento.inc.php';
 require_once 'notificacoes.inc.php';
 
@@ -70,7 +71,11 @@ if (isset($_GET['modulo']) && modulo_evento_valido($_GET['modulo']) && in_array(
 
 $eh_desenvolvedor = ($_SESSION['usuario_tipo'] === 'desenvolvedor');
 
-$stmt_contagem = $pdo->query("SELECT tipo_evento, COUNT(*) AS total FROM eventos GROUP BY tipo_evento");
+// Contagem só da assessoria atual (multi-tenant, 2026-09-28) — nunca mostra
+// quantos eventos as outras assessorias têm.
+[$clausula_ass_hub, $param_ass_hub] = clausula_assessoria();
+$stmt_contagem = $pdo->prepare("SELECT tipo_evento, COUNT(*) AS total FROM eventos WHERE 1=1$clausula_ass_hub GROUP BY tipo_evento");
+$stmt_contagem->execute($param_ass_hub);
 $contagem_por_modulo = array_fill_keys(MODULOS_EVENTO_VALIDOS, 0);
 foreach ($stmt_contagem->fetchAll() as $linha) {
     if (isset($contagem_por_modulo[$linha['tipo_evento']])) {

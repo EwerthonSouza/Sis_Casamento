@@ -67,6 +67,43 @@ function assessoria_id_do_cliente(PDO $pdo, int $cliente_id): ?int {
 }
 
 /**
+ * Verdadeiro se $assessoria_do_registro (ex.: eventos.assessoria_id de um
+ * evento específico) pertence à assessoria da sessão atual — usada nas
+ * páginas que recebem um evento_id pela URL (gerenciar.php, convidados.php,
+ * organizar_mesas.php, fornecedores_evento.php, inspiracoes.php,
+ * relatorio_pdf.php), no MESMO bloco que já existe em cada uma pra checar o
+ * módulo (tipo_evento) — ver "guarda de módulo" nessas páginas. Sessão
+ * 'desenvolvedor' sempre passa (cross-tenant, de propósito).
+ */
+function eh_registro_da_assessoria_atual(?int $assessoria_do_registro): bool {
+    if (eh_sessao_cross_tenant()) return true;
+    $atual = assessoria_atual();
+    return $atual !== null && $assessoria_do_registro !== null && $assessoria_do_registro === $atual;
+}
+
+/**
+ * Par (fragmento SQL, parâmetro) pra filtrar consultas que LISTAM vários
+ * registros (ao contrário de eh_registro_da_assessoria_atual(), que confere
+ * um registro já carregado) — usado em painel_admin.php, gerenciar_equipe.php,
+ * modelos_checklist.php, referencias.php etc.
+ *
+ * Uso típico:
+ *   [$clausula, $parametro] = clausula_assessoria('e.assessoria_id');
+ *   $sql = "SELECT ... FROM eventos e WHERE e.tipo_evento = ?$clausula";
+ *   $stmt->execute([$modulo_ativo, ...$parametro]);
+ *
+ * Sessão 'desenvolvedor' não filtra (cross-tenant, vê todas as assessorias:
+ * $clausula fica vazio). Sessão sem assessoria definida (não deveria
+ * acontecer, mas por segurança) filtra por um id impossível (-1) em vez de
+ * cair pro "sem filtro" — melhor não mostrar nada do que vazar tudo.
+ */
+function clausula_assessoria(string $coluna = 'assessoria_id'): array {
+    if (eh_sessao_cross_tenant()) return ['', []];
+    $atual = assessoria_atual();
+    return [" AND $coluna = ?", [$atual ?? -1]];
+}
+
+/**
  * PRÓXIMOS PASSOS:
  *
  * 1. [FEITO 2026-09-28] index.php grava $_SESSION['assessoria_id'] no login,

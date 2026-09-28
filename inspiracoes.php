@@ -51,6 +51,7 @@ if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['
 }
 
 require_once 'conexao.php';
+require_once 'tenant.php';
 require_once 'modulos_evento.inc.php';
 garantir_coluna_tipo_evento($pdo);
 
@@ -79,10 +80,12 @@ if (!$evento) { die("Casamento não encontrado."); }
 garantir_tabela_modulos_config($pdo);
 $cor_modulo = cor_painel_evento($pdo, $evento);
 
-// Impede a equipe de acessar o mural de inspirações de um evento de outro módulo
+// Impede a equipe de acessar o mural de inspirações de um evento de outro
+// módulo OU de outra assessoria (multi-tenant, 2026-09-28)
 if ($_SESSION['usuario_tipo'] !== 'noivos') {
     $modulo_ativo = $_SESSION['modulo_ativo'] ?? null;
-    if (!$modulo_ativo || $evento['tipo_evento'] !== $modulo_ativo) {
+    if (!$modulo_ativo || $evento['tipo_evento'] !== $modulo_ativo
+        || !eh_registro_da_assessoria_atual($evento['assessoria_id'] ?? null)) {
         header("Location: painel_admin.php");
         exit;
     }
@@ -237,8 +240,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload_foto'])) {
         $novo_nome_imagem = "insp_" . $evento_id . "_" . time() . "_" . $i . "." . $fileExtension;
 
         if (move_uploaded_file($fileTmpPath, './uploads/' . $novo_nome_imagem)) {
-            $stmt = $pdo->prepare("INSERT INTO inspiracoes_fotos (evento_id, categoria, titulo, nome_imagem) VALUES (?, ?, ?, ?)");
-            $stmt->execute([$evento_id, $categoria, $titulo, $novo_nome_imagem]);
+            $stmt = $pdo->prepare("INSERT INTO inspiracoes_fotos (evento_id, categoria, titulo, nome_imagem, assessoria_id) VALUES (?, ?, ?, ?, ?)");
+            $stmt->execute([$evento_id, $categoria, $titulo, $novo_nome_imagem, assessoria_atual()]);
             $sucesso++;
         } else {
             $erros[] = "$fileName: não foi possível salvar no servidor.";

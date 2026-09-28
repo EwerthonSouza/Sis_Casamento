@@ -10,6 +10,7 @@ if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['
 $eh_noivos = ($_SESSION['usuario_tipo'] === 'noivos');
 
 require_once 'conexao.php';
+require_once 'tenant.php';
 require_once 'modulos_evento.inc.php';
 garantir_coluna_tipo_evento($pdo);
 garantir_coluna_sobrenome_convidado($pdo);
@@ -46,14 +47,17 @@ if ($eh_noivos) {
 }
 
 // Impede a equipe de acessar/manipular (inclusive via AJAX) o mapa de mesas de
-// um evento de outro módulo — checado antes do bloco de handlers POST logo
-// abaixo, para também cobrir as ações AJAX (não só a renderização da página).
+// um evento de outro módulo OU de outra assessoria (multi-tenant, 2026-09-28)
+// — checado antes do bloco de handlers POST logo abaixo, para também cobrir
+// as ações AJAX (não só a renderização da página).
 if (!$eh_noivos) {
     $modulo_ativo = $_SESSION['modulo_ativo'] ?? null;
-    $stmt_tipo_evento = $pdo->prepare("SELECT tipo_evento FROM eventos WHERE id = ?");
+    $stmt_tipo_evento = $pdo->prepare("SELECT tipo_evento, assessoria_id FROM eventos WHERE id = ?");
     $stmt_tipo_evento->execute([$evento_id]);
-    $tipo_evento_alvo = $stmt_tipo_evento->fetchColumn();
-    if (!$modulo_ativo || $tipo_evento_alvo === false || $tipo_evento_alvo !== $modulo_ativo) {
+    $evento_alvo_row  = $stmt_tipo_evento->fetch();
+    $tipo_evento_alvo = $evento_alvo_row['tipo_evento'] ?? false;
+    if (!$modulo_ativo || $tipo_evento_alvo === false || $tipo_evento_alvo !== $modulo_ativo
+        || !eh_registro_da_assessoria_atual($evento_alvo_row['assessoria_id'] ?? null)) {
         header("Location: painel_admin.php");
         exit;
     }
@@ -158,8 +162,8 @@ function sincronizar_acompanhantes(PDO $pdo, int $evento_id, int $principal_id, 
             }
         }
 
-        $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, categoria, confirmado, convidado_principal_id) VALUES (?, ?, ?, 'Outros', 0, ?)")
-            ->execute([$evento_id, $nome, $faixa, $principal_id]);
+        $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, categoria, confirmado, convidado_principal_id, assessoria_id) VALUES (?, ?, ?, 'Outros', 0, ?, ?)")
+            ->execute([$evento_id, $nome, $faixa, $principal_id, assessoria_atual()]);
         $mantidos[] = (int)$pdo->lastInsertId();
     }
 
@@ -324,8 +328,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['adicionar_elemento_mapa'])) {
         $tipo = trim($_POST['tipo_elemento'] ?? 'palco') ?: 'palco';
         $rotulo = $tipo === 'palco' ? 'Palco' : ucfirst($tipo);
-        $pdo->prepare("INSERT INTO mapa_elementos (evento_id, tipo, rotulo, pos_x, pos_y, largura, altura, rotacao) VALUES (?, ?, ?, 50, 15, 28, 16, 0)")
-            ->execute([$evento_id, $tipo, $rotulo]);
+        $pdo->prepare("INSERT INTO mapa_elementos (evento_id, tipo, rotulo, pos_x, pos_y, largura, altura, rotacao, assessoria_id) VALUES (?, ?, ?, 50, 15, 28, 16, 0, ?)")
+            ->execute([$evento_id, $tipo, $rotulo, assessoria_atual()]);
         json_out([
             'ok' => true,
             'elemento' => ['id' => (int)$pdo->lastInsertId(), 'tipo' => $tipo, 'rotulo' => $rotulo, 'pos_x' => 50, 'pos_y' => 15, 'largura' => 28, 'altura' => 16, 'rotacao' => 0],
@@ -387,8 +391,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($nome !== '' && $cap > 0) {
             $st = $pdo->prepare("SELECT COALESCE(MAX(ordem), 0) FROM mesas WHERE evento_id = ?");
             $st->execute([$evento_id]);
-            $pdo->prepare("INSERT INTO mesas (evento_id, nome, capacidade, ordem) VALUES (?, ?, ?, ?)")
-                ->execute([$evento_id, $nome, $cap, (int)$st->fetchColumn() + 1]);
+            $pdo->prepare("INSERT INTO mesas (evento_id, nome, capacidade, ordem, assessoria_id) VALUES (?, ?, ?, ?, ?)")
+                ->execute([$evento_id, $nome, $cap, (int)$st->fetchColumn() + 1, assessoria_atual()]);
             $_SESSION['msg_sucesso'] = "Mesa <strong>" . htmlspecialchars($nome) . "</strong> criada com sucesso!";
         } else {
             $_SESSION['msg_erro'] = "Informe um nome e uma capacidade válida (maior que zero) para a mesa.";
@@ -421,9 +425,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $st = $pdo->prepare("SELECT COALESCE(MAX(ordem), 0) FROM mesas WHERE evento_id = ?");
             $st->execute([$evento_id]);
             $maxO = (int)$st->fetchColumn();
-            $ins  = $pdo->prepare("INSERT INTO mesas (evento_id, nome, capacidade, ordem) VALUES (?, ?, ?, ?)");
+            $ins  = $pdo->prepare("INSERT INTO mesas (evento_id, nome, capacidade, ordem, assessoria_id) VALUES (?, ?, ?, ?, ?)");
             for ($i = 0; $i < $qtd; $i++)
-                $ins->execute([$evento_id, $pfx . ' ' . str_pad($ini + $i, 2, '0', STR_PAD_LEFT), $cap, ++$maxO]);
+                $ins->execute([$evento_id, $pfx . ' ' . str_pad($ini + $i, 2, '0', STR_PAD_LEFT), $cap, ++$maxO, assessoria_atual()]);
             $_SESSION['msg_sucesso'] = "<strong>$qtd mesa(s)</strong> criada(s) com sucesso!";
         } else {
             $_SESSION['msg_erro'] = "Preencha o prefixo, a quantidade e a capacidade corretamente.";
@@ -516,8 +520,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif (convidado_nome_duplicado($pdo, $evento_id, $nome_completo)) {
             $_SESSION['msg_erro'] = "Já existe um convite com o nome <strong>" . htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8') . "</strong>. Informe um sobrenome diferente pra identificar cada um.";
         } else {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, sobrenome, telefone, categoria, confirmado, mesa_id) VALUES (?, ?, ?, ?, ?, 0, ?)")
-                ->execute([$evento_id, $nome_completo, $sobrenome ?: null, $fone, $cat, $mesa_destino]);
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, sobrenome, telefone, categoria, confirmado, mesa_id, assessoria_id) VALUES (?, ?, ?, ?, ?, 0, ?, ?)")
+                ->execute([$evento_id, $nome_completo, $sobrenome ?: null, $fone, $cat, $mesa_destino, assessoria_atual()]);
             $novo_id = (int)$pdo->lastInsertId();
             sincronizar_acompanhantes($pdo, $evento_id, $novo_id, [], $nomes_acomp, $faixas_acomp);
             $_SESSION['msg_sucesso'] = $mesa_destino
@@ -624,8 +628,8 @@ foreach ($lista_elementos_mapa as $el) {
     else $lista_elementos_palco[] = $el;
 }
 if (!$elemento_entrada) {
-    $pdo->prepare("INSERT INTO mapa_elementos (evento_id, tipo, rotulo, pos_x, pos_y, largura, altura) VALUES (?, 'entrada', 'Entrada', 50, 94, 0, 0)")
-        ->execute([$evento_id]);
+    $pdo->prepare("INSERT INTO mapa_elementos (evento_id, tipo, rotulo, pos_x, pos_y, largura, altura, assessoria_id) VALUES (?, 'entrada', 'Entrada', 50, 94, 0, 0, ?)")
+        ->execute([$evento_id, assessoria_atual()]);
     $elemento_entrada = ['id' => (int)$pdo->lastInsertId(), 'tipo' => 'entrada', 'rotulo' => 'Entrada', 'pos_x' => 50, 'pos_y' => 94, 'largura' => 0, 'altura' => 0, 'rotacao' => 0, 'escala' => 1.0];
 }
 

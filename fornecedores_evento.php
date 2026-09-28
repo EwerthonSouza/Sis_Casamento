@@ -3,6 +3,7 @@ session_start();
 require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 require_once 'conexao.php';
+require_once 'tenant.php';
 require_once 'modulos_evento.inc.php';
 garantir_coluna_tipo_evento($pdo);
 
@@ -51,10 +52,12 @@ $cor_modulo = cor_painel_evento($pdo, $evento);
 $rotulo_cliente = labels_modulo_evento($evento['tipo_evento'] ?? 'casamento')['singular_contratante'] ?? 'cliente';
 $rotulo_cliente = mb_strtoupper(mb_substr($rotulo_cliente, 0, 1, 'UTF-8'), 'UTF-8') . mb_substr($rotulo_cliente, 1, null, 'UTF-8');
 
-// Impede a equipe de acessar fornecedores de um evento de outro módulo
+// Impede a equipe de acessar fornecedores de um evento de outro módulo OU de
+// outra assessoria (multi-tenant, 2026-09-28)
 if (!$eh_noivos) {
     $modulo_ativo = $_SESSION['modulo_ativo'] ?? null;
-    if (!$modulo_ativo || $evento['tipo_evento'] !== $modulo_ativo) {
+    if (!$modulo_ativo || $evento['tipo_evento'] !== $modulo_ativo
+        || !eh_registro_da_assessoria_atual($evento['assessoria_id'] ?? null)) {
         header("Location: painel_admin.php");
         exit;
     }
@@ -250,14 +253,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($comprovante !== null && !$comprovante['ok']) {
             $_SESSION['msg_erro'] = $comprovante['msg'];
         } elseif (!empty($nome) && !empty($servico)) {
-            $pdo->prepare("INSERT INTO fornecedores_evento (evento_id, nome, servico, contato, status, valor, valor_pago, categoria, data_limite_pagamento) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                ->execute([$evento_id, $nome, $servico, $contato, $status, $valor, $valor_entrada, $categoria, $data_limite]);
+            $pdo->prepare("INSERT INTO fornecedores_evento (evento_id, nome, servico, contato, status, valor, valor_pago, categoria, data_limite_pagamento, assessoria_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                ->execute([$evento_id, $nome, $servico, $contato, $status, $valor, $valor_entrada, $categoria, $data_limite, assessoria_atual()]);
             // A entrada já conta como o primeiro registro no histórico de pagamentos.
             if ($valor_entrada > 0) {
                 $novo_id = (int)$pdo->lastInsertId();
-                $pdo->prepare("INSERT INTO fornecedores_pagamentos (fornecedor_id, valor, criado_em, comprovante_arquivo, comprovante_nome_original, comprovante_extensao, comprovante_enviado_por, comprovante_enviado_por_nome, comprovante_enviado_em) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                $pdo->prepare("INSERT INTO fornecedores_pagamentos (fornecedor_id, valor, criado_em, comprovante_arquivo, comprovante_nome_original, comprovante_extensao, comprovante_enviado_por, comprovante_enviado_por_nome, comprovante_enviado_em, assessoria_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                     ->execute([$novo_id, $valor_entrada, $data_entrada, $comprovante['arquivo'] ?? null, $comprovante['nome_original'] ?? null, $comprovante['extensao'] ?? null,
-                               $comprovante ? $papel_usuario : null, $comprovante ? $nome_usuario : null, $comprovante ? date('Y-m-d H:i:s') : null]);
+                               $comprovante ? $papel_usuario : null, $comprovante ? $nome_usuario : null, $comprovante ? date('Y-m-d H:i:s') : null, assessoria_atual()]);
             }
             $_SESSION['msg_sucesso'] = "Fornecedor adicionado com sucesso!";
         } else {
@@ -315,9 +318,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $novo_pago = (float)$forn['valor_pago'] + $valor_add_real;
                 $pdo->prepare("UPDATE fornecedores_evento SET valor_pago = ? WHERE id = ? AND evento_id = ?")->execute([$novo_pago, $id_forn, $evento_id]);
                 if ($valor_add_real > 0) {
-                    $pdo->prepare("INSERT INTO fornecedores_pagamentos (fornecedor_id, valor, criado_em, comprovante_arquivo, comprovante_nome_original, comprovante_extensao, comprovante_enviado_por, comprovante_enviado_por_nome, comprovante_enviado_em) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                    $pdo->prepare("INSERT INTO fornecedores_pagamentos (fornecedor_id, valor, criado_em, comprovante_arquivo, comprovante_nome_original, comprovante_extensao, comprovante_enviado_por, comprovante_enviado_por_nome, comprovante_enviado_em, assessoria_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                         ->execute([$id_forn, $valor_add_real, $data_pgto, $comprovante['arquivo'] ?? null, $comprovante['nome_original'] ?? null, $comprovante['extensao'] ?? null,
-                                   $comprovante ? $papel_usuario : null, $comprovante ? $nome_usuario : null, $comprovante ? date('Y-m-d H:i:s') : null]);
+                                   $comprovante ? $papel_usuario : null, $comprovante ? $nome_usuario : null, $comprovante ? date('Y-m-d H:i:s') : null, assessoria_atual()]);
                 }
                 if ($valor_add > $restante) {
                     $_SESSION['msg_erro'] = "O valor informado (R$ " . number_format($valor_add, 2, ',', '.')

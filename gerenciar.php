@@ -4,6 +4,7 @@ require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 
 require_once 'conexao.php';
+require_once 'tenant.php';
 require_once 'modulos_evento.inc.php';
 
 if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'desenvolvedor'])) {
@@ -262,14 +263,17 @@ if (!$evento_id) {
     exit;
 }
 
-// Impede acessar/manipular (inclusive via AJAX) um evento de outro módulo —
-// checado aqui, antes do bloco de handlers POST logo abaixo, para também
-// cobrir as ações AJAX (não só a renderização da página).
+// Impede acessar/manipular (inclusive via AJAX) um evento de outro módulo OU
+// de outra assessoria (multi-tenant, 2026-09-28) — checado aqui, antes do
+// bloco de handlers POST logo abaixo, para também cobrir as ações AJAX (não
+// só a renderização da página).
 $modulo_ativo = $_SESSION['modulo_ativo'] ?? null;
-$stmt_tipo_evento = $pdo->prepare("SELECT tipo_evento FROM eventos WHERE id = ?");
+$stmt_tipo_evento = $pdo->prepare("SELECT tipo_evento, assessoria_id FROM eventos WHERE id = ?");
 $stmt_tipo_evento->execute([$evento_id]);
-$tipo_evento_alvo = $stmt_tipo_evento->fetchColumn();
-if (!$modulo_ativo || $tipo_evento_alvo === false || $tipo_evento_alvo !== $modulo_ativo) {
+$evento_alvo_row  = $stmt_tipo_evento->fetch();
+$tipo_evento_alvo = $evento_alvo_row['tipo_evento'] ?? false;
+if (!$modulo_ativo || $tipo_evento_alvo === false || $tipo_evento_alvo !== $modulo_ativo
+    || !eh_registro_da_assessoria_atual($evento_alvo_row['assessoria_id'] ?? null)) {
     header("Location: painel_admin.php");
     exit;
 }
@@ -315,8 +319,8 @@ function sincronizar_acompanhantes(PDO $pdo, int $evento_id, int $principal_id, 
             }
         }
 
-        $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, categoria, confirmado, convidado_principal_id) VALUES (?, ?, ?, 'Outros', 0, ?)")
-            ->execute([$evento_id, $nome, $faixa, $principal_id]);
+        $pdo->prepare("INSERT INTO convidados (evento_id, nome, faixa_etaria, categoria, confirmado, convidado_principal_id, assessoria_id) VALUES (?, ?, ?, 'Outros', 0, ?, ?)")
+            ->execute([$evento_id, $nome, $faixa, $principal_id, assessoria_atual()]);
         $mantidos[] = (int)$pdo->lastInsertId();
     }
 
@@ -411,12 +415,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$is_admin) { $_SESSION['msg_erro'] = "Acesso negado."; header("Location: gerenciar.php?id=$evento_id"); exit; }
 
         $tipo    = trim($_POST['tipo_padrao'] ?? '');
-        $stmt    = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ? AND tipo_evento = ?");
-        $stmt->execute([$tipo, $modulo_ativo]);
+        // Só modelos da própria assessoria (multi-tenant, 2026-09-28) — nunca
+        // importa o cronograma padrão cadastrado por outra assessoria.
+        $stmt    = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ? AND tipo_evento = ? AND assessoria_id = ?");
+        $stmt->execute([$tipo, $modulo_ativo, assessoria_atual()]);
         $modelos = $stmt->fetchAll(PDO::FETCH_ASSOC);
         if (!empty($modelos)) {
-            $ins = $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado, criado_em) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0, NOW())");
-            foreach ($modelos as $m) { $ins->execute([$evento_id, $m['etapa'], $m['tarefa'], $m['descricao']]); }
+            $ins = $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado, criado_em, assessoria_id) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0, NOW(), ?)");
+            foreach ($modelos as $m) { $ins->execute([$evento_id, $m['etapa'], $m['tarefa'], $m['descricao'], assessoria_atual()]); }
             $_SESSION['msg_sucesso'] = "Cronograma importado com sucesso!";
         } else {
             $_SESSION['msg_erro'] = "Nenhum modelo encontrado para o tipo: " . htmlspecialchars($tipo);
@@ -434,8 +440,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $data_prazo = trim($_POST['data_prazo'] ?? '');
         $data_prazo = preg_match('/^\d{4}-\d{2}-\d{2}$/', $data_prazo) ? $data_prazo : null;
         if ($etapa !== '' && $tarefa !== '') {
-            $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado, data_prazo, criado_em) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0, ?, NOW())")
-                ->execute([$evento_id, $etapa, $tarefa, $descricao, $data_prazo]);
+            $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado, data_prazo, criado_em, assessoria_id) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0, ?, NOW(), ?)")
+                ->execute([$evento_id, $etapa, $tarefa, $descricao, $data_prazo, assessoria_atual()]);
             $_SESSION['msg_sucesso'] = "Tarefa adicionada!";
         }
         header("Location: gerenciar.php?id=$evento_id"); exit;
@@ -508,8 +514,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // A coluna `autor` é ENUM('Assessoria','Noivos') — grava o papel, não o nome da pessoa.
         $autor_nome = 'Assessoria';
         if ($id > 0 && $texto !== '') {
-            $pdo->prepare("INSERT INTO checklist_comentarios (checklist_id, autor, comentario) VALUES (?, ?, ?)")
-                ->execute([$id, $autor_nome, $texto]);
+            $pdo->prepare("INSERT INTO checklist_comentarios (checklist_id, autor, comentario, assessoria_id) VALUES (?, ?, ?, ?)")
+                ->execute([$id, $autor_nome, $texto, assessoria_atual()]);
             if ($ajax) json_out([
                 'ok'    => true,
                 'autor' => htmlspecialchars($autor_nome, ENT_QUOTES, 'UTF-8'),
@@ -528,8 +534,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // A coluna `autor` é ENUM('Assessoria','Noivos') — grava o papel, não o nome da pessoa.
         $autor_nome = 'Assessoria';
         if ($etapa !== '' && $texto !== '') {
-            $pdo->prepare("INSERT INTO checklist_comentarios (evento_id, etapa_nome, autor, comentario) VALUES (?, ?, ?, ?)")
-                ->execute([$evento_id, $etapa, $autor_nome, $texto]);
+            $pdo->prepare("INSERT INTO checklist_comentarios (evento_id, etapa_nome, autor, comentario, assessoria_id) VALUES (?, ?, ?, ?, ?)")
+                ->execute([$evento_id, $etapa, $autor_nome, $texto, assessoria_atual()]);
             if ($ajax) json_out([
                 'ok'    => true,
                 'autor' => htmlspecialchars($autor_nome, ENT_QUOTES, 'UTF-8'),
@@ -566,8 +572,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif (convidado_nome_duplicado($pdo, $evento_id, $nome_completo)) {
             $_SESSION['msg_erro'] = "Já existe um convite com o nome <strong>" . htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8') . "</strong>. Informe um sobrenome diferente pra identificar cada um.";
         } else {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, sobrenome, telefone, categoria, confirmado) VALUES (?, ?, ?, ?, ?, 0)")
-                ->execute([$evento_id, $nome_completo, $sobrenome ?: null, $fone, $cat]);
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, sobrenome, telefone, categoria, confirmado, assessoria_id) VALUES (?, ?, ?, ?, ?, 0, ?)")
+                ->execute([$evento_id, $nome_completo, $sobrenome ?: null, $fone, $cat, assessoria_atual()]);
             $novo_id = (int)$pdo->lastInsertId();
             sincronizar_acompanhantes($pdo, $evento_id, $novo_id, [], $nomes_acomp, $faixas_acomp);
             $_SESSION['msg_sucesso'] = "Convite criado!";
@@ -739,8 +745,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $ret_autor  = $origRow['autor']  ?? ($_SESSION['usuario_nome'] ?? 'Assessoria');
             } else {
                 $autor_nome = $_SESSION['usuario_nome'] ?? 'Assessoria';
-                $pdo->prepare("INSERT INTO notas_evento (evento_id, titulo, conteudo, cor, autor, origem) VALUES (?,?,?,?,?,'Assessoria')")
-                    ->execute([$evento_id, $titulo, $conteudo, $cor, $autor_nome]);
+                $pdo->prepare("INSERT INTO notas_evento (evento_id, titulo, conteudo, cor, autor, origem, assessoria_id) VALUES (?,?,?,?,?,'Assessoria',?)")
+                    ->execute([$evento_id, $titulo, $conteudo, $cor, $autor_nome, assessoria_atual()]);
                 $ret_id     = (int)$pdo->lastInsertId();
                 $ret_origem = 'Assessoria';
                 $ret_autor  = $autor_nome;
@@ -784,8 +790,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $chk = $pdo->prepare("SELECT id FROM notas_evento WHERE id=? AND evento_id=?");
             $chk->execute([$nota_id, $evento_id]);
             if ($chk->fetch()) {
-                $pdo->prepare("INSERT INTO notas_comentarios (nota_id, autor, autor_nome, comentario) VALUES (?, ?, ?, ?)")
-                    ->execute([$nota_id, $autor_nome, $autor_real, $texto]);
+                $pdo->prepare("INSERT INTO notas_comentarios (nota_id, autor, autor_nome, comentario, assessoria_id) VALUES (?, ?, ?, ?, ?)")
+                    ->execute([$nota_id, $autor_nome, $autor_real, $texto, assessoria_atual()]);
                 if ($ajax) json_out([
                     'ok'         => true,
                     'autor'      => htmlspecialchars($autor_nome, ENT_QUOTES, 'UTF-8'),
@@ -814,8 +820,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         if ($titulo !== '') {
-            $pdo->prepare("INSERT INTO musicas_evento (evento_id, titulo, artista, link, momento, status) VALUES (?, ?, ?, ?, ?, 'sugestao')")
-                ->execute([$evento_id, $titulo, $artista, $link, $momento]);
+            $pdo->prepare("INSERT INTO musicas_evento (evento_id, titulo, artista, link, momento, status, assessoria_id) VALUES (?, ?, ?, ?, ?, 'sugestao', ?)")
+                ->execute([$evento_id, $titulo, $artista, $link, $momento, assessoria_atual()]);
             $new_id = (int)$pdo->lastInsertId();
 
             if ($ajax) {
@@ -910,8 +916,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $nomeOriginal = mb_substr($arquivo['name'], 0, 255);
-        $pdo->prepare("INSERT INTO documentos_evento (evento_id, categoria, nome_original, nome_arquivo, extensao, tamanho) VALUES (?, ?, ?, ?, ?, ?)")
-            ->execute([$evento_id, $categoria, $nomeOriginal, $nomeArquivo, $extensao, (int)$arquivo['size']]);
+        $pdo->prepare("INSERT INTO documentos_evento (evento_id, categoria, nome_original, nome_arquivo, extensao, tamanho, assessoria_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            ->execute([$evento_id, $categoria, $nomeOriginal, $nomeArquivo, $extensao, (int)$arquivo['size'], assessoria_atual()]);
 
         json_out([
             'ok' => true,

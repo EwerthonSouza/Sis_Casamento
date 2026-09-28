@@ -5,6 +5,7 @@ verificar_sessao_ativa();
 
 // Importa a conexão com o banco de dados
 require_once 'conexao.php';
+require_once 'tenant.php';
 require_once 'modulos_evento.inc.php';
 require_once __DIR__ . '/config/central.php';
 
@@ -179,6 +180,10 @@ if ($mes_seguinte == 13) { $mes_seguinte = 1; $ano_seguinte++; }
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $is_ajax = isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
+    // Usado em todo handler abaixo que grava/edita calendário e notas gerais
+    // do painel — nunca deixa criar/editar/excluir um registro de outra
+    // assessoria (multi-tenant, 2026-09-28).
+    $assessoria_id_sessao = assessoria_atual();
 
     // 2. SALVAR ANOTAÇÃO DIÁRIA (AJUSTADO PARA AJAX)
     if (isset($_POST['salvar_anotacao'])) {
@@ -195,8 +200,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (empty($anotacao)) {
                 // Se a anotação foi apagada (texto vazio), exclui o registro
                 if ($nota_id > 0) {
-                    $stmt = $pdo->prepare("DELETE FROM calendario_anotacoes WHERE id = ?");
-                    $stmt->execute([$nota_id]);
+                    $stmt = $pdo->prepare("DELETE FROM calendario_anotacoes WHERE id = ? AND assessoria_id = ?");
+                    $stmt->execute([$nota_id, $assessoria_id_sessao]);
                     
                     if ($is_ajax) {
                         header('Content-Type: application/json');
@@ -210,22 +215,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     // Atualiza anotação existente. Se o horário foi removido, desliga
                     // a notificação junto — não faz sentido notificar sem hora marcada.
                     if ($hora_nota === null) {
-                        $pdo->prepare("UPDATE calendario_anotacoes SET hora_nota = ?, anotacao = ?, notificar = 0 WHERE id = ?")
-                            ->execute([$hora_nota, $anotacao, $nota_id]);
+                        $pdo->prepare("UPDATE calendario_anotacoes SET hora_nota = ?, anotacao = ?, notificar = 0 WHERE id = ? AND assessoria_id = ?")
+                            ->execute([$hora_nota, $anotacao, $nota_id, $assessoria_id_sessao]);
                         $notificar_final = 0;
                     } else {
-                        $pdo->prepare("UPDATE calendario_anotacoes SET hora_nota = ?, anotacao = ? WHERE id = ?")
-                            ->execute([$hora_nota, $anotacao, $nota_id]);
-                        $stChk = $pdo->prepare("SELECT notificar FROM calendario_anotacoes WHERE id = ?");
-                        $stChk->execute([$nota_id]);
+                        $pdo->prepare("UPDATE calendario_anotacoes SET hora_nota = ?, anotacao = ? WHERE id = ? AND assessoria_id = ?")
+                            ->execute([$hora_nota, $anotacao, $nota_id, $assessoria_id_sessao]);
+                        $stChk = $pdo->prepare("SELECT notificar FROM calendario_anotacoes WHERE id = ? AND assessoria_id = ?");
+                        $stChk->execute([$nota_id, $assessoria_id_sessao]);
                         $notificar_final = (int)$stChk->fetchColumn();
                     }
                     $id_final = $nota_id;
                     $acao = 'atualizada';
                 } else {
                     // Insere nova anotação para aquela data
-                    $stmt = $pdo->prepare("INSERT INTO calendario_anotacoes (data_nota, hora_nota, anotacao) VALUES (?, ?, ?)");
-                    $stmt->execute([$data_nota, $hora_nota, $anotacao]);
+                    $stmt = $pdo->prepare("INSERT INTO calendario_anotacoes (data_nota, hora_nota, anotacao, assessoria_id) VALUES (?, ?, ?, ?)");
+                    $stmt->execute([$data_nota, $hora_nota, $anotacao, $assessoria_id_sessao]);
                     $id_final = $pdo->lastInsertId();
                     $acao = 'criada';
                     $notificar_final = 0;
@@ -264,8 +269,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $ano_ret = (int)($_POST['ano'] ?? $ano_atual);
 
         if ($nota_id > 0) {
-            $pdo->prepare("DELETE FROM calendario_anotacoes WHERE id = ?")->execute([$nota_id]);
-            
+            $pdo->prepare("DELETE FROM calendario_anotacoes WHERE id = ? AND assessoria_id = ?")->execute([$nota_id, $assessoria_id_sessao]);
+
             if ($is_ajax) {
                 header('Content-Type: application/json');
                 echo json_encode(['sucesso' => true]);
@@ -288,8 +293,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nota_id = (int)($_POST['nota_id'] ?? 0);
         $ativar  = ($_POST['ativar'] ?? '0') === '1';
 
-        $stChk = $pdo->prepare("SELECT hora_nota FROM calendario_anotacoes WHERE id = ?");
-        $stChk->execute([$nota_id]);
+        $stChk = $pdo->prepare("SELECT hora_nota FROM calendario_anotacoes WHERE id = ? AND assessoria_id = ?");
+        $stChk->execute([$nota_id, $assessoria_id_sessao]);
         $horaAtual = $stChk->fetchColumn();
 
         header('Content-Type: application/json');
@@ -302,7 +307,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        $pdo->prepare("UPDATE calendario_anotacoes SET notificar = ? WHERE id = ?")->execute([$ativar ? 1 : 0, $nota_id]);
+        $pdo->prepare("UPDATE calendario_anotacoes SET notificar = ? WHERE id = ? AND assessoria_id = ?")->execute([$ativar ? 1 : 0, $nota_id, $assessoria_id_sessao]);
         echo json_encode(['sucesso' => true, 'notificar' => $ativar ? 1 : 0]);
         exit;
     }
@@ -322,11 +327,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($titulo !== '') {
             $novo = $nota_id === 0;
             if ($nota_id > 0) {
-                $pdo->prepare("UPDATE notas_gerais_painel SET titulo=?, conteudo=?, cor=? WHERE id=? AND tipo_evento=?")
-                    ->execute([$titulo, $conteudo, $cor, $nota_id, $modulo_ativo]);
+                $pdo->prepare("UPDATE notas_gerais_painel SET titulo=?, conteudo=?, cor=? WHERE id=? AND tipo_evento=? AND assessoria_id=?")
+                    ->execute([$titulo, $conteudo, $cor, $nota_id, $modulo_ativo, $assessoria_id_sessao]);
             } else {
-                $pdo->prepare("INSERT INTO notas_gerais_painel (titulo, conteudo, cor, autor, tipo_evento) VALUES (?,?,?,?,?)")
-                    ->execute([$titulo, $conteudo, $cor, $autor, $modulo_ativo]);
+                $pdo->prepare("INSERT INTO notas_gerais_painel (titulo, conteudo, cor, autor, tipo_evento, assessoria_id) VALUES (?,?,?,?,?,?)")
+                    ->execute([$titulo, $conteudo, $cor, $autor, $modulo_ativo, $assessoria_id_sessao]);
                 $nota_id = (int)$pdo->lastInsertId();
             }
             if ($is_ajax) {
@@ -363,7 +368,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         validar_csrf();
         $nota_id = (int)($_POST['nota_id'] ?? 0);
         if ($nota_id > 0) {
-            $pdo->prepare("DELETE FROM notas_gerais_painel WHERE id = ? AND tipo_evento = ?")->execute([$nota_id, $modulo_ativo]);
+            $pdo->prepare("DELETE FROM notas_gerais_painel WHERE id = ? AND tipo_evento = ? AND assessoria_id = ?")->execute([$nota_id, $modulo_ativo, $assessoria_id_sessao]);
         }
         if ($is_ajax) {
             header('Content-Type: application/json');
@@ -380,10 +385,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         validar_csrf();
         $evento_id = (int)($_POST['evento_id'] ?? 0);
 
-        // Impede excluir um evento de outro módulo adulterando o evento_id no POST
-        $stmt_tipo_check = $pdo->prepare("SELECT tipo_evento FROM eventos WHERE id = ?");
+        // Impede excluir um evento de outro módulo OU de outra assessoria
+        // (multi-tenant, 2026-09-28) adulterando o evento_id no POST
+        $stmt_tipo_check = $pdo->prepare("SELECT tipo_evento, assessoria_id FROM eventos WHERE id = ?");
         $stmt_tipo_check->execute([$evento_id]);
-        if ($stmt_tipo_check->fetchColumn() !== $modulo_ativo) {
+        $evento_check_row = $stmt_tipo_check->fetch();
+        if (!$evento_check_row || $evento_check_row['tipo_evento'] !== $modulo_ativo
+            || !eh_registro_da_assessoria_atual($evento_check_row['assessoria_id'] ?? null)) {
             $evento_id = 0;
         }
 
@@ -480,64 +488,82 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $senha_raw = empty($senha_raw) ? '123456' : $senha_raw;
             $senha_hash = password_hash($senha_raw, PASSWORD_BCRYPT);
 
+            // E-mail já usado por um cliente de OUTRA assessoria (multi-tenant,
+            // 2026-09-28): clientes.email é único pro sistema inteiro, então não
+            // dá pra reaproveitar nem criar de novo — bloqueia e para por aqui,
+            // antes mesmo da checagem de duplicidade abaixo. Sem isso, o cadastro
+            // reaproveitaria (e sobrescreveria!) o cliente de outra assessoria.
+            $stmt_email_outra = $pdo->prepare("SELECT id FROM clientes WHERE email = ? AND assessoria_id <> ?");
+            $stmt_email_outra->execute([$email_cliente, $assessoria_id_sessao]);
+            $email_de_outra_assessoria = (bool)$stmt_email_outra->fetch();
+
             // Bloqueia duplicidade se o e-mail (sempre) ou o CPF (quando informado)
-            // já tiver um evento futuro cadastrado NO MESMO MÓDULO — um mesmo cliente
-            // pode ter, por exemplo, um casamento e um evento corporativo em paralelo,
-            // então a checagem não pode barrar módulos diferentes.
+            // já tiver um evento futuro cadastrado NO MESMO MÓDULO, pro MESMO
+            // cliente desta assessoria — um mesmo cliente pode ter, por exemplo,
+            // um casamento e um evento corporativo em paralelo, então a checagem
+            // não pode barrar módulos diferentes.
             $cadastro_liberado = true;
-            $stmt_check = $pdo->prepare("
-                SELECT e.data_evento
-                FROM clientes c
-                INNER JOIN eventos e ON c.id = e.cliente_id
-                WHERE (c.email = ? OR (c.cpf IS NOT NULL AND c.cpf = ?)) AND e.tipo_evento = ?
-            ");
-            $stmt_check->execute([$email_cliente, $cpf_cliente, $modulo_ativo]);
-            foreach ($stmt_check->fetchAll(PDO::FETCH_ASSOC) as $ev) {
-                if ($ev['data_evento'] >= $data_hoje) {
-                    $cadastro_liberado = false;
-                    break;
+            if (!$email_de_outra_assessoria) {
+                $stmt_check = $pdo->prepare("
+                    SELECT e.data_evento
+                    FROM clientes c
+                    INNER JOIN eventos e ON c.id = e.cliente_id
+                    WHERE (c.email = ? OR (c.cpf IS NOT NULL AND c.cpf = ?)) AND e.tipo_evento = ? AND c.assessoria_id = ?
+                ");
+                $stmt_check->execute([$email_cliente, $cpf_cliente, $modulo_ativo, $assessoria_id_sessao]);
+                foreach ($stmt_check->fetchAll(PDO::FETCH_ASSOC) as $ev) {
+                    if ($ev['data_evento'] >= $data_hoje) {
+                        $cadastro_liberado = false;
+                        break;
+                    }
                 }
             }
 
-            if (!$cadastro_liberado) {
+            if ($email_de_outra_assessoria) {
+                $_SESSION['msg_erro'] = "Este e-mail já está cadastrado no sistema por outra assessoria. Use outro e-mail.";
+            } elseif (!$cadastro_liberado) {
                 $_SESSION['msg_erro'] = "Atenção: Este e-mail (ou CPF) já possui um evento futuro cadastrado neste módulo ({$labels['nome_modulo']}).";
             } else {
                 try {
                     $pdo->beginTransaction();
 
-                    $stmt_cli_check = $pdo->prepare("SELECT id FROM clientes WHERE email = ? LIMIT 1");
-                    $stmt_cli_check->execute([$email_cliente]);
+                    // Escopado pela assessoria atual — nunca reaproveita/sobrescreve
+                    // um cliente de outra assessoria (o bloqueio acima já cobriu esse
+                    // caso, mas o filtro aqui é a segunda camada de proteção).
+                    $stmt_cli_check = $pdo->prepare("SELECT id FROM clientes WHERE email = ? AND assessoria_id = ? LIMIT 1");
+                    $stmt_cli_check->execute([$email_cliente, $assessoria_id_sessao]);
                     $cliente_existente = $stmt_cli_check->fetch(PDO::FETCH_ASSOC);
 
                     if ($cliente_existente) {
                         $cliente_id = $cliente_existente['id'];
-                        $stmt_cli_up = $pdo->prepare("UPDATE clientes SET nome = ?, nome_secundario = ?, cpf = ?, telefone = ? WHERE id = ?");
-                        $stmt_cli_up->execute([$nome_cliente, $nome_secundario, $cpf_cliente, $telefone_cliente, $cliente_id]);
+                        $stmt_cli_up = $pdo->prepare("UPDATE clientes SET nome = ?, nome_secundario = ?, cpf = ?, telefone = ? WHERE id = ? AND assessoria_id = ?");
+                        $stmt_cli_up->execute([$nome_cliente, $nome_secundario, $cpf_cliente, $telefone_cliente, $cliente_id, $assessoria_id_sessao]);
                     } else {
-                        $stmt_cli = $pdo->prepare("INSERT INTO clientes (nome, nome_secundario, email, cpf, telefone, senha) VALUES (?, ?, ?, ?, ?, ?)");
-                        $stmt_cli->execute([$nome_cliente, $nome_secundario, $email_cliente, $cpf_cliente, $telefone_cliente, $senha_hash]);
+                        $stmt_cli = $pdo->prepare("INSERT INTO clientes (nome, nome_secundario, email, cpf, telefone, senha, assessoria_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                        $stmt_cli->execute([$nome_cliente, $nome_secundario, $email_cliente, $cpf_cliente, $telefone_cliente, $senha_hash, $assessoria_id_sessao]);
                         $cliente_id = $pdo->lastInsertId();
                     }
 
                     $stmt_eve = $pdo->prepare("
-                        INSERT INTO eventos (cliente_id, data_evento, hora_evento, tipo_ceremonia, local_ceremonia, tipo_assessoria, tipo_evento)
-                        VALUES (?, ?, ?, 'Igreja', '', 'Básica', ?)
+                        INSERT INTO eventos (cliente_id, data_evento, hora_evento, tipo_ceremonia, local_ceremonia, tipo_assessoria, tipo_evento, assessoria_id)
+                        VALUES (?, ?, ?, 'Igreja', '', 'Básica', ?, ?)
                     ");
-                    $stmt_eve->execute([$cliente_id, $data_evento, $hora_evento, $modulo_ativo]);
+                    $stmt_eve->execute([$cliente_id, $data_evento, $hora_evento, $modulo_ativo, $assessoria_id_sessao]);
                     $evento_id = $pdo->lastInsertId();
 
                     if (!empty($modelo_checklist)) {
-                        $stmt_mod = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ?");
-                        $stmt_mod->execute([$modelo_checklist]);
+                        // Só modelos da própria assessoria (multi-tenant, 2026-09-28)
+                        $stmt_mod = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ? AND assessoria_id = ?");
+                        $stmt_mod->execute([$modelo_checklist, $assessoria_id_sessao]);
                         $modelos = $stmt_mod->fetchAll(PDO::FETCH_ASSOC);
 
                         if (!empty($modelos)) {
                             $stmt_ins_task = $pdo->prepare("
-                                INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status)
-                                VALUES (?, ?, ?, ?, 'Assessoria', 'pendente')
+                                INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, assessoria_id)
+                                VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', ?)
                             ");
                             foreach ($modelos as $m) {
-                                $stmt_ins_task->execute([$evento_id, $m['etapa'], $m['tarefa'], $m['descricao']]);
+                                $stmt_ins_task->execute([$evento_id, $m['etapa'], $m['tarefa'], $m['descricao'], $assessoria_id_sessao]);
                             }
                         }
                     }
@@ -564,9 +590,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $cliente_id = (int)($_POST['cliente_id'] ?? 0);
         $nova_senha = trim($_POST['nova_senha'] ?? '');
 
-        // Impede resetar a senha de um cliente que não tem nenhum evento no módulo ativo
-        $stmt_tipo_check = $pdo->prepare("SELECT 1 FROM eventos WHERE cliente_id = ? AND tipo_evento = ? LIMIT 1");
-        $stmt_tipo_check->execute([$cliente_id, $modulo_ativo]);
+        // Impede resetar a senha de um cliente que não tem nenhum evento no
+        // módulo ativo OU que não é da assessoria atual (multi-tenant, 2026-09-28)
+        [$clausula_ass, $param_ass] = clausula_assessoria();
+        $stmt_tipo_check = $pdo->prepare("SELECT 1 FROM eventos WHERE cliente_id = ? AND tipo_evento = ?$clausula_ass LIMIT 1");
+        $stmt_tipo_check->execute([$cliente_id, $modulo_ativo, ...$param_ass]);
         if (!$stmt_tipo_check->fetchColumn()) {
             $cliente_id = 0;
         }
@@ -589,10 +617,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nova_data = $_POST['nova_data'] ?? '';
         $nova_hora = !empty($_POST['nova_hora']) ? $_POST['nova_hora'] : null;
 
-        // Impede editar a data de um evento de outro módulo adulterando o evento_id_data no POST
-        $stmt_tipo_check = $pdo->prepare("SELECT tipo_evento FROM eventos WHERE id = ?");
+        // Impede editar a data de um evento de outro módulo OU de outra
+        // assessoria (multi-tenant, 2026-09-28) adulterando o evento_id_data no POST
+        $stmt_tipo_check = $pdo->prepare("SELECT tipo_evento, assessoria_id FROM eventos WHERE id = ?");
         $stmt_tipo_check->execute([$evento_id]);
-        if ($stmt_tipo_check->fetchColumn() !== $modulo_ativo) {
+        $evento_check_row = $stmt_tipo_check->fetch();
+        if (!$evento_check_row || $evento_check_row['tipo_evento'] !== $modulo_ativo
+            || !eh_registro_da_assessoria_atual($evento_check_row['assessoria_id'] ?? null)) {
             $evento_id = 0;
         }
 
@@ -614,9 +645,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $email_cliente    = trim($_POST['email_cadastro'] ?? '');
         $telefone_cliente = trim($_POST['telefone_cadastro'] ?? '');
 
-        // Impede editar o cadastro de um cliente que não tem nenhum evento no módulo ativo
-        $stmt_tipo_check = $pdo->prepare("SELECT 1 FROM eventos WHERE cliente_id = ? AND tipo_evento = ? LIMIT 1");
-        $stmt_tipo_check->execute([$cliente_id, $modulo_ativo]);
+        // Impede editar o cadastro de um cliente que não tem nenhum evento no
+        // módulo ativo OU que não é da assessoria atual (multi-tenant, 2026-09-28)
+        [$clausula_ass, $param_ass] = clausula_assessoria();
+        $stmt_tipo_check = $pdo->prepare("SELECT 1 FROM eventos WHERE cliente_id = ? AND tipo_evento = ?$clausula_ass LIMIT 1");
+        $stmt_tipo_check->execute([$cliente_id, $modulo_ativo, ...$param_ass]);
         if (!$stmt_tipo_check->fetchColumn()) {
             $cliente_id = 0;
         }
@@ -636,15 +669,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // ============================================================
 // 8. CARREGAMENTO DE DADOS PARA A ESTRUTURA VISUAL
 // ============================================================
+[$clausula_ass_lista, $param_ass_lista] = clausula_assessoria('e.assessoria_id');
 $stmt_lista_casamentos = $pdo->prepare("
     SELECT e.id AS evento_id, e.data_evento, e.hora_evento,
            c.id AS cliente_id, c.nome AS nome_noivos, c.email AS email_noivos, c.telefone AS telefone_noivos
     FROM eventos e
     INNER JOIN clientes c ON e.cliente_id = c.id
-    WHERE e.tipo_evento = ?
+    WHERE e.tipo_evento = ?$clausula_ass_lista
     ORDER BY e.data_evento ASC, e.hora_evento ASC
 ");
-$stmt_lista_casamentos->execute([$modulo_ativo]);
+$stmt_lista_casamentos->execute([$modulo_ativo, ...$param_ass_lista]);
 $lista_casamentos = $stmt_lista_casamentos->fetchAll();
 
 $eventos_por_data = [];
@@ -661,13 +695,14 @@ foreach ($lista_casamentos as $cas) {
 }
 
 // Carrega TODAS as anotações do mês (múltiplas por dia, ordenadas por horário)
+[$clausula_ass_cal, $param_ass_cal] = clausula_assessoria();
 $stmt_notas = $pdo->prepare("
     SELECT id, data_nota, hora_nota, anotacao, notificar
     FROM calendario_anotacoes
-    WHERE data_nota LIKE ?
+    WHERE data_nota LIKE ?$clausula_ass_cal
     ORDER BY data_nota ASC, hora_nota ASC
 ");
-$stmt_notas->execute(["$ano_atual-$mes_atual_str-%"]);
+$stmt_notas->execute(["$ano_atual-$mes_atual_str-%", ...$param_ass_cal]);
 $notas_do_mes_raw = $stmt_notas->fetchAll(PDO::FETCH_ASSOC);
 
 // Agrupa as anotações por data (pode ter múltiplas por dia)
@@ -676,11 +711,13 @@ foreach ($notas_do_mes_raw as $nota) {
     $anotacoes_do_mes[$nota['data_nota']][] = $nota;
 }
 
-// Bloco de notas geral do painel — só as notas do módulo ativo (cada módulo tem o seu).
+// Bloco de notas geral do painel — só as notas do módulo ativo E da
+// assessoria atual (cada módulo/assessoria tem o seu, 2026-09-28).
 $lista_notas_gerais = [];
 try {
-    $stmt_notas_gerais = $pdo->prepare("SELECT * FROM notas_gerais_painel WHERE tipo_evento = ? ORDER BY atualizado_em DESC, id DESC");
-    $stmt_notas_gerais->execute([$modulo_ativo]);
+    [$clausula_ass_ng, $param_ass_ng] = clausula_assessoria();
+    $stmt_notas_gerais = $pdo->prepare("SELECT * FROM notas_gerais_painel WHERE tipo_evento = ?$clausula_ass_ng ORDER BY atualizado_em DESC, id DESC");
+    $stmt_notas_gerais->execute([$modulo_ativo, ...$param_ass_ng]);
     $lista_notas_gerais = $stmt_notas_gerais->fetchAll();
 } catch (Exception $e) {}
 
@@ -708,7 +745,7 @@ unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
 // módulo — sem isso, quem tá administrando Aniversários via notificação de
 // um Casamento e vice-versa, o que confunde) + avisos da Central em modo
 // sino, quando quem está logado é admin.
-$notificacoes = buscar_notificacoes($pdo, null, 15, $modulo_ativo, $is_admin ? (int)$_SESSION['usuario_id'] : null, $is_admin);
+$notificacoes = buscar_notificacoes($pdo, null, 15, $modulo_ativo, $is_admin ? (int)$_SESSION['usuario_id'] : null, $is_admin, assessoria_atual());
 $vistas_notif = chaves_vistas_usuario($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
 $nao_lidas    = contar_nao_vistas($notificacoes, $vistas_notif);
 $notificacoes = array_values(array_filter($notificacoes, fn($item) => !isset($vistas_notif[$item['chave']])));
