@@ -3,6 +3,7 @@ session_start();
 require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 require_once 'conexao.php';
+require_once 'modulos_evento.inc.php';
 require_once __DIR__ . '/config/central.php';
 
 // ============================================================
@@ -30,6 +31,12 @@ if (!isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'admin') 
     header("Location: painel_admin.php");
     exit;
 }
+
+garantir_tabela_modulos_liberados($pdo);
+garantir_coluna_criado_por($pdo);
+garantir_coluna_tipo_evento($pdo);
+garantir_tabela_modulos_config($pdo);
+$cor_modulo = cor_modulo_evento($pdo, $_SESSION['modulo_ativo'] ?? null);
 
 $msg_sucesso = '';
 $msg_erro = '';
@@ -62,18 +69,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adicionar_usuario']))
     $email = trim($_POST['email'] ?? '');
     $senha = trim($_POST['senha'] ?? '');
     $tipo  = $_POST['tipo'] ?? 'assistente';
+    // Nunca confia no valor de "tipo" vindo do POST além de admin/assistente — o <select>
+    // só oferece essas duas opções; sem isso um admin poderia forjar tipo=desenvolvedor.
+    if (!in_array($tipo, ['admin', 'assistente'], true)) {
+        $tipo = 'assistente';
+    }
 
     if (!empty($nome) && !empty($email) && !empty($senha)) {
         $senha_hash = password_hash($senha, PASSWORD_BCRYPT);
         try {
-            $stmt = $pdo->prepare("INSERT INTO usuarios (nome, email, senha, tipo) VALUES (?, ?, ?, ?)");
-            $stmt->execute([$nome, $email, $senha_hash, $tipo]);
-            $novo_usuario_id = $pdo->lastInsertId();
+            $stmt = $pdo->prepare("INSERT INTO usuarios (nome, email, senha, tipo, criado_por) VALUES (?, ?, ?, ?, ?)");
+            $stmt->execute([$nome, $email, $senha_hash, $tipo, (int)$_SESSION['usuario_id']]);
+            $novo_usuario_id = (int)$pdo->lastInsertId();
+
+            // O novo usuário entra com os mesmos módulos já liberados pra quem está
+            // cadastrando (o admin da assessoria) — sem isso, todo usuário novo cairia
+            // no padrão de só Casamentos, mesmo que a assessoria já tenha outros módulos
+            // liberados pelo desenvolvedor. O desenvolvedor ainda pode ajustar depois.
+            $modulos_do_admin = modulos_liberados_usuario($pdo, (int)$_SESSION['usuario_id']);
+            salvar_modulos_liberados_usuario($pdo, $novo_usuario_id, $modulos_do_admin);
+
             centralQueueEvent($pdo, 'user.created', [
                 'external_id' => (string) $novo_usuario_id,
                 'name' => $nome,
                 'email' => $email,
             ]);
+
             $msg_sucesso = "Usuário '$nome' cadastrado com sucesso!";
         } catch (Exception $e) {
             $msg_erro = "Erro ao cadastrar. O e-mail '$email' já pode estar em uso.";
@@ -93,7 +114,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['alterar_senha'])) {
 
     if ($id_usuario > 0 && strlen($nova_senha) >= 6) {
         $senha_hash = password_hash($nova_senha, PASSWORD_BCRYPT);
-        $stmt = $pdo->prepare("UPDATE usuarios SET senha = ? WHERE id = ?");
+        // Nunca mexe numa conta de desenvolvedor por aqui, mesmo que alguém forje o id_usuario
+        $stmt = $pdo->prepare("UPDATE usuarios SET senha = ? WHERE id = ? AND tipo IN ('admin', 'assistente')");
         $stmt->execute([$senha_hash, $id_usuario]);
         $msg_sucesso = "Senha atualizada com sucesso!";
     } else {
@@ -107,9 +129,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['alterar_senha'])) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['excluir_usuario'])) {
     verificar_csrf();
     $id_excluir = (int)$_POST['id_usuario'];
-    
+
     try {
-        $pdo->prepare("DELETE FROM usuarios WHERE id = ?")->execute([$id_excluir]);
+        // Nunca exclui uma conta de desenvolvedor por aqui, mesmo que alguém forje o id_usuario
+        $pdo->prepare("DELETE FROM usuarios WHERE id = ? AND tipo IN ('admin', 'assistente')")->execute([$id_excluir]);
         $msg_sucesso = "Usuário removido do sistema!";
     } catch (Exception $e) {
         $msg_erro = "Erro ao excluir o usuário.";
@@ -119,7 +142,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['excluir_usuario'])) {
 // ============================================================
 // BUSCAR LISTA DE USUÁRIOS
 // ============================================================
-$lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER BY nome ASC")->fetchAll();
+$lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios WHERE tipo IN ('admin', 'assistente') ORDER BY nome ASC")->fetchAll();
 ?>
 <!DOCTYPE html>
 <html lang="pt-br">
@@ -128,9 +151,9 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER 
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <?php include __DIR__ . '/pwa_head.inc.php'; ?>
     <title>Gerenciar Equipe - Meu Evento PRO</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=15">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="css/estilo.css?v=18">
     <style>
         @media (max-width: 767.98px) {
             .navbar-brand img { height: 26px !important; }
@@ -150,7 +173,7 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER 
 </head>
 <body class="bg-light">
 
-<nav class="navbar navbar-dark bg-dark shadow-sm">
+<nav class="navbar navbar-dark shadow-sm" style="background-color: <?= htmlspecialchars($cor_modulo) ?>;">
     <div class="container">
         <span class="navbar-brand mb-0">
             <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">
@@ -342,6 +365,6 @@ $lista_usuarios = $pdo->query("SELECT id, nome, email, tipo FROM usuarios ORDER 
     </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

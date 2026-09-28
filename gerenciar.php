@@ -4,12 +4,18 @@ require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 
 require_once 'conexao.php';
+require_once 'modulos_evento.inc.php';
 
-if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente'])) {
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'desenvolvedor'])) {
     header("Location: index.php?sessao_expirada=1");
     exit;
 }
-$is_admin = ($_SESSION['usuario_tipo'] === 'admin');
+$is_admin = in_array($_SESSION['usuario_tipo'], ['admin', 'desenvolvedor'], true);
+
+garantir_coluna_tipo_evento($pdo);
+garantir_coluna_nome_secundario_cliente($pdo);
+garantir_coluna_tipo_evento_checklist_modelos($pdo);
+garantir_coluna_sobrenome_convidado($pdo);
 
 // Evita que o navegador guarde esta página (dados financeiros/de convidados) em cache,
 // o que já causou telas desatualizadas aparecerem depois de mudanças no sistema.
@@ -228,6 +234,14 @@ if (!schema_ja_verificado('notas_comentarios_v1')) {
 // especificamente comentou (pode ter mais de uma pessoa na assessoria).
 // Marcador separado do bloco acima porque esse já pode ter rodado antes
 // dessa coluna existir.
+// Comentários de checklist gravados por uma versão antiga com o autor em
+// branco (ela tentava salvar o nome da pessoa numa coluna ENUM que só aceita
+// 'Assessoria'/'Noivos' — o banco guardava vazio e a tela mostrava ": texto").
+// Os noivos sempre gravaram 'Noivos', então os vazios são da equipe. Roda uma vez.
+if (!schema_ja_verificado('comentarios_autor_vazio_v1')) {
+    try { $pdo->exec("UPDATE checklist_comentarios SET autor = 'Assessoria' WHERE autor = '' OR autor IS NULL"); } catch (Exception $e) {}
+    marcar_schema_verificado('comentarios_autor_vazio_v1');
+}
 if (!schema_ja_verificado('notas_comentarios_autor_nome_v1')) {
     try {
         $pdo->query("SELECT autor_nome FROM notas_comentarios LIMIT 1");
@@ -244,6 +258,18 @@ require_once 'notificacoes.inc.php';
    ============================================================ */
 $evento_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
 if (!$evento_id) {
+    header("Location: painel_admin.php");
+    exit;
+}
+
+// Impede acessar/manipular (inclusive via AJAX) um evento de outro módulo —
+// checado aqui, antes do bloco de handlers POST logo abaixo, para também
+// cobrir as ações AJAX (não só a renderização da página).
+$modulo_ativo = $_SESSION['modulo_ativo'] ?? null;
+$stmt_tipo_evento = $pdo->prepare("SELECT tipo_evento FROM eventos WHERE id = ?");
+$stmt_tipo_evento->execute([$evento_id]);
+$tipo_evento_alvo = $stmt_tipo_evento->fetchColumn();
+if (!$modulo_ativo || $tipo_evento_alvo === false || $tipo_evento_alvo !== $modulo_ativo) {
     header("Location: painel_admin.php");
     exit;
 }
@@ -304,6 +330,56 @@ function sincronizar_acompanhantes(PDO $pdo, int $evento_id, int $principal_id, 
     }
 }
 
+/** Verifica se já existe outro convidado titular deste evento com o mesmo
+ *  telefone (comparando só os dígitos, já que a formatação pode variar).
+ *  Cada convidado precisa de um número próprio, pois é o que identifica o
+ *  link de convite individual. Retorna o nome do convidado conflitante, ou
+ *  null se não houver. */
+function convidado_telefone_duplicado(PDO $pdo, int $evento_id, string $fone, int $ignorar_id = 0): ?string {
+    $digitosNovo = preg_replace('/\D+/', '', $fone);
+    if ($digitosNovo === '') return null;
+    $stmt = $pdo->prepare("SELECT id, nome, telefone FROM convidados WHERE evento_id = ? AND convidado_principal_id IS NULL AND telefone IS NOT NULL AND telefone <> ''");
+    $stmt->execute([$evento_id]);
+    foreach ($stmt->fetchAll() as $c) {
+        if ((int)$c['id'] === $ignorar_id) continue;
+        if (preg_replace('/\D+/', '', $c['telefone']) === $digitosNovo) {
+            return $c['nome'];
+        }
+    }
+    return null;
+}
+
+/** Verifica se já existe outro convidado titular deste evento com o mesmo
+ *  primeiro nome E sem sobrenome cadastrado (ambíguo — dois "Marcos" sem
+ *  como diferenciar). Só é considerado conflito quando o convidado NOVO
+ *  também está sem sobrenome — se ele já informou um, a ambiguidade dessa
+ *  criação/edição específica já foi resolvida. */
+function convidado_nome_duplicado(PDO $pdo, int $evento_id, string $nomeCompleto, int $ignorar_id = 0): bool {
+    $alvo = trim($nomeCompleto);
+    if ($alvo === '') return false;
+    // Compara o nome final (já com sobrenome concatenado, se houver) contra o
+    // de todo mundo — não só contra quem também está sem sobrenome. Dar um
+    // sobrenome só resolve a ambiguidade se o resultado for um nome diferente;
+    // repetir "Rick" + "Bruno" três vezes tem que continuar batendo.
+    $stmt = $pdo->prepare("SELECT id FROM convidados WHERE evento_id = ? AND convidado_principal_id IS NULL AND LOWER(TRIM(nome)) = LOWER(TRIM(?)) AND id != ?");
+    $stmt->execute([$evento_id, $alvo, $ignorar_id]);
+    return (bool)$stmt->fetchColumn();
+}
+
+/** Pra repopular o campo "Nome" do modal de edição sem duplicar o sobrenome:
+ *  como "nome" guarda o nome completo já concatenado ("Marcos Vinícius"),
+ *  remove o sufixo " + sobrenome" pra voltar só o primeiro nome digitado.
+ *  Registros antigos (sem sobrenome próprio) retornam o nome como está. */
+function nome_convidado_sem_sobrenome(string $nome, ?string $sobrenome): string {
+    $sobrenome = trim((string)$sobrenome);
+    if ($sobrenome === '') return $nome;
+    $sufixo = ' ' . $sobrenome;
+    if (str_ends_with($nome, $sufixo)) {
+        return substr($nome, 0, -strlen($sufixo));
+    }
+    return $nome;
+}
+
 /* Formata um tamanho em bytes pra "KB"/"MB" legível */
 function tamanho_arquivo_fmt(int $bytes): string {
     if ($bytes >= 1024 * 1024) return number_format($bytes / (1024 * 1024), 1, ',', '.') . ' MB';
@@ -322,26 +398,6 @@ function badge_prazo(?string $data_prazo, bool $done): array {
 }
 
 /* ============================================================
-   MOMENTOS DA CELEBRAÇÃO
-   ============================================================ */
-$momentos_casamento = [
-    'Cerimônia · Entrada dos Padrinhos',
-    'Cerimônia · Entrada das Madrinhas',
-    'Cerimônia · Entrada dos Pajens / Floristas',
-    'Cerimônia · Entrada da Noiva',
-    'Cerimônia · Assinatura do Registro',
-    'Cerimônia · Saída dos Noivos',
-    'Recepção · Primeira Dança (Valsa)',
-    'Recepção · Valsa com os Pais',
-    'Recepção · Corte do Bolo',
-    'Recepção · Entrada na Festa',
-    'Recepção · Jantar / Coquetel',
-    'Festa · Hora da Dança',
-    'Festa · Encerramento',
-    'Livre / Sem Momento Definido',
-];
-
-/* ============================================================
    POST HANDLERS
    ============================================================ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -350,33 +406,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $ajax = isset($_POST['is_ajax']);
 
-    // 1. Adicionar fornecedor
-    if (isset($_POST['adicionar_fornecedor'])) {
-        $nome    = trim($_POST['nome_fornecedor']    ?? '');
-        $servico = trim($_POST['servico_fornecedor'] ?? '');
-        $contato = trim($_POST['contato_fornecedor'] ?? '');
-        $status  = trim($_POST['status_fornecedor']  ?? 'Orçamento');
-        $valor   = ($is_admin && !empty($_POST['valor_fornecedor']))
-                    ? (float)str_replace(['.', ','], ['', '.'], $_POST['valor_fornecedor'])
-                    : 0.00;
-        if ($nome !== '' && $servico !== '') {
-            $pdo->prepare("INSERT INTO fornecedores_evento (evento_id, nome, servico, contato, status, valor, valor_pago) VALUES (?, ?, ?, ?, ?, ?, 0)")
-                ->execute([$evento_id, $nome, $servico, $contato, $status, $valor]);
-            $_SESSION['msg_sucesso'] = "Fornecedor adicionado com sucesso!";
-        }
-        header("Location: gerenciar.php?id=$evento_id"); exit;
-    }
-
     // 2. Importar padrão (Apenas Admin)
     if (isset($_POST['gerar_padrao'])) {
         if (!$is_admin) { $_SESSION['msg_erro'] = "Acesso negado."; header("Location: gerenciar.php?id=$evento_id"); exit; }
 
         $tipo    = trim($_POST['tipo_padrao'] ?? '');
-        $stmt    = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ?");
-        $stmt->execute([$tipo]);
+        $stmt    = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ? AND tipo_evento = ?");
+        $stmt->execute([$tipo, $modulo_ativo]);
         $modelos = $stmt->fetchAll(PDO::FETCH_ASSOC);
         if (!empty($modelos)) {
-            $ins = $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0)");
+            $ins = $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado, criado_em) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0, NOW())");
             foreach ($modelos as $m) { $ins->execute([$evento_id, $m['etapa'], $m['tarefa'], $m['descricao']]); }
             $_SESSION['msg_sucesso'] = "Cronograma importado com sucesso!";
         } else {
@@ -395,7 +434,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $data_prazo = trim($_POST['data_prazo'] ?? '');
         $data_prazo = preg_match('/^\d{4}-\d{2}-\d{2}$/', $data_prazo) ? $data_prazo : null;
         if ($etapa !== '' && $tarefa !== '') {
-            $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado, data_prazo) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0, ?)")
+            $pdo->prepare("INSERT INTO checklist (evento_id, etapa, tarefa, descricao, origem, status, checado, data_prazo, criado_em) VALUES (?, ?, ?, ?, 'Assessoria', 'pendente', 0, ?, NOW())")
                 ->execute([$evento_id, $etapa, $tarefa, $descricao, $data_prazo]);
             $_SESSION['msg_sucesso'] = "Tarefa adicionada!";
         }
@@ -512,17 +551,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // 10. Criar convite (titular + acompanhantes) — sempre entra como "pendente"
     if (isset($_POST['adicionar_convidado_admin'])) {
         $nome       = trim($_POST['nome_convidado']       ?? '');
+        $sobrenome  = trim($_POST['sobrenome_convidado']  ?? '');
         $fone       = trim($_POST['telefone_convidado']   ?? '');
         $cat        = trim($_POST['categoria_convidado']  ?? 'Outros');
         $nomes_acomp  = $_POST['nome_acompanhante_novo']  ?? [];
         $faixas_acomp = $_POST['faixa_acompanhante_novo'] ?? [];
+        $nome_completo = trim($nome . ($sobrenome !== '' ? ' ' . $sobrenome : ''));
         if ($nome === '') {
             $_SESSION['msg_erro'] = "Informe o nome do convidado.";
         } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
             $_SESSION['msg_erro'] = "Informe um telefone/WhatsApp válido (com DDD) para o convidado.";
+        } elseif (($dup_nome = convidado_telefone_duplicado($pdo, $evento_id, $fone)) !== null) {
+            $_SESSION['msg_erro'] = "Esse telefone já está cadastrado para <strong>" . htmlspecialchars($dup_nome, ENT_QUOTES, 'UTF-8') . "</strong>. Cada convidado precisa de um número diferente.";
+        } elseif (convidado_nome_duplicado($pdo, $evento_id, $nome_completo)) {
+            $_SESSION['msg_erro'] = "Já existe um convite com o nome <strong>" . htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8') . "</strong>. Informe um sobrenome diferente pra identificar cada um.";
         } else {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, confirmado) VALUES (?, ?, ?, ?, 0)")
-                ->execute([$evento_id, $nome, $fone, $cat]);
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, sobrenome, telefone, categoria, confirmado) VALUES (?, ?, ?, ?, ?, 0)")
+                ->execute([$evento_id, $nome_completo, $sobrenome ?: null, $fone, $cat]);
             $novo_id = (int)$pdo->lastInsertId();
             sincronizar_acompanhantes($pdo, $evento_id, $novo_id, [], $nomes_acomp, $faixas_acomp);
             $_SESSION['msg_sucesso'] = "Convite criado!";
@@ -546,18 +591,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['editar_convidado'])) {
         $id         = (int)($_POST['convidado_id'] ?? 0);
         $nome       = trim($_POST['nome_convidado']      ?? '');
+        $sobrenome  = trim($_POST['sobrenome_convidado']  ?? '');
         $fone       = trim($_POST['telefone_convidado']  ?? '');
         $cat        = trim($_POST['categoria_convidado'] ?? '') ?: 'Outros';
         $ids_acomp    = $_POST['id_acompanhante_edit']    ?? [];
         $nomes_acomp  = $_POST['nome_acompanhante_edit']  ?? [];
         $faixas_acomp = $_POST['faixa_acompanhante_edit'] ?? [];
+        $nome_completo = trim($nome . ($sobrenome !== '' ? ' ' . $sobrenome : ''));
         if ($id <= 0 || $nome === '') {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Informe o nome do convidado.']);
         } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
             if ($ajax) json_out(['ok' => false, 'msg' => 'Informe um telefone/WhatsApp válido (com DDD) para o convidado.']);
+        } elseif (($dup_nome = convidado_telefone_duplicado($pdo, $evento_id, $fone, $id)) !== null) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Esse telefone já está cadastrado para ' . $dup_nome . '. Cada convidado precisa de um número diferente.']);
+        } elseif (convidado_nome_duplicado($pdo, $evento_id, $nome_completo, $id)) {
+            if ($ajax) json_out(['ok' => false, 'msg' => 'Já existe um convite com o nome ' . htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8') . '. Informe um sobrenome diferente pra identificar cada um.']);
         } else {
-            $pdo->prepare("UPDATE convidados SET nome = ?, telefone = ?, categoria = ? WHERE id = ? AND evento_id = ?")
-                ->execute([$nome, $fone, $cat, $id, $evento_id]);
+            $pdo->prepare("UPDATE convidados SET nome = ?, sobrenome = ?, telefone = ?, categoria = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$nome_completo, $sobrenome ?: null, $fone, $cat, $id, $evento_id]);
             sincronizar_acompanhantes($pdo, $evento_id, $id, $ids_acomp, $nomes_acomp, $faixas_acomp);
             if ($ajax) {
                 $stAc = $pdo->prepare("SELECT id, nome, faixa_etaria FROM convidados WHERE convidado_principal_id = ? AND evento_id = ?");
@@ -566,7 +617,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 json_out([
                     'ok'             => true,
                     'id'             => $id,
-                    'nome'           => htmlspecialchars($nome, ENT_QUOTES, 'UTF-8'),
+                    'nome'           => htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8'),
+                    'sobrenome'      => htmlspecialchars($sobrenome, ENT_QUOTES, 'UTF-8'),
+                    'nome_sem_sobrenome' => htmlspecialchars($nome, ENT_QUOTES, 'UTF-8'),
                     'categoria'      => htmlspecialchars($cat, ENT_QUOTES, 'UTF-8'),
                     'telefone'       => htmlspecialchars($fone, ENT_QUOTES, 'UTF-8'),
                     'acompanhantes'  => $acompanhantes_atuais,
@@ -946,10 +999,14 @@ if ($is_admin) {
 }
 
 // Evento
-$s = $pdo->prepare("SELECT e.*, c.nome, c.email, c.telefone, c.cpf FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
+$s = $pdo->prepare("SELECT e.*, c.nome, c.nome_secundario, c.email, c.telefone, c.cpf FROM eventos e INNER JOIN clientes c ON e.cliente_id = c.id WHERE e.id = ?");
 $s->execute([$evento_id]);
 $evento = $s->fetch();
 if (!$evento) { die("Evento não encontrado."); }
+
+$labels = labels_modulo_evento($evento['tipo_evento']);
+garantir_tabela_modulos_config($pdo);
+$cor_modulo = cor_painel_evento($pdo, $evento);
 
 // Fornecedores contratados
 $rs = $pdo->prepare("SELECT * FROM fornecedores_evento WHERE evento_id = ? AND status = 'Contratado' ORDER BY servico ASC");
@@ -991,6 +1048,12 @@ foreach ($lista_conv_principais as $c) {
     $conv_grupos[$cat][] = $c;
 }
 ksort($conv_grupos);
+
+// Total de pessoas (titular + acompanhantes) e quantas já confirmaram — pro
+// atalho "Gerenciar Convidados" da barra lateral (ex: "5/50 confirmados").
+$total_pessoas_conv = count($lista_conv);
+$total_conf_pessoas  = 0;
+foreach ($lista_conv as $cp) { if ($cp['confirmado']) $total_conf_pessoas++; }
 
 // Checklist - Ordenado dinamicamente pela ordem cronológica de criação/importação das etapas
 $rs3 = $pdo->prepare("
@@ -1085,11 +1148,10 @@ $msg_erro    = $_SESSION['msg_erro']    ?? '';
 unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
 
 // Notificações (atividade dos noivos neste evento)
-$notificacoes    = buscar_notificacoes($pdo, $evento_id, 15);
-$ultima_vista    = ultima_visualizacao_notificacoes($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
-$itens_lidos     = itens_lidos_notificacao($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
-$nao_lidas       = contar_nao_lidas($notificacoes, $ultima_vista, $itens_lidos);
-$notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_notificacao_nao_lido($item, $ultima_vista, $itens_lidos)));
+$notificacoes    = buscar_notificacoes($pdo, $evento_id, 15, null, null, $is_admin);
+$vistas_notif    = chaves_vistas_usuario($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
+$nao_lidas       = contar_nao_vistas($notificacoes, $vistas_notif);
+$notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset($vistas_notif[$item['chave']])));
 ?>
 <!DOCTYPE html>
 <html lang="pt-br">
@@ -1098,9 +1160,10 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <?php include __DIR__ . '/pwa_head.inc.php'; ?>
   <title>Gerenciar Evento - Meu Evento PRO</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css?v=15">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+  <link rel="stylesheet" href="css/estilo.css?v=18">
+  <?= estilo_tema_evento($cor_modulo) ?>
   <style>
     /* ---- VARIÁVEL DE RAIO USADA EM VÁRIOS CARDS (estilo.css não a define) ---- */
     :root { --radius: 16px; }
@@ -1120,6 +1183,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
     /* ---- LINHA DE BOTÕES DO CABEÇALHO: Exportar PDF à esquerda, sino de
        notificações empurrado pra extremidade direita ---- */
     .header-btn-exportar  { order: 1; }
+    .header-top-actions .dias-pill-mobile { order: 1; } /* logo depois do Exportar PDF */
     .header-btn-sino      { order: 2; margin-left: auto; }
 
     /* ---- HERO DO CABEÇALHO (gerenciar.php) ---- */
@@ -1161,12 +1225,34 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
        a largura igualmente (em vez de empilhar quando o conteúdo não coube
        numa linha só). */
     @media (max-width: 767.98px) {
-      .info-tiles { flex-wrap: nowrap; }
-      .info-tiles .info-tile { flex: 1 1 0; min-width: 0; padding: .5rem .55rem .5rem .5rem; }
-      .info-tiles .info-tile-icon { width: 34px; height: 34px; font-size: .95rem; }
+      /* Com o 3º card (convidados confirmados) não cabia lado a lado com
+         ícone à esquerda — o texto não encolhia e um card invadia o outro.
+         No celular: ícone pequeno em cima, texto centralizado embaixo. */
+      /* Ícone ao lado da data/horário/confirmados (não em cima), tudo menor
+         pra caber os cards lado a lado sem invadir um ao outro. */
+      .info-tiles { flex-wrap: nowrap; gap: .35rem !important; }
+      .info-tiles .info-tile {
+        flex: 1 1 auto; min-width: 0; /* largura parte do tamanho do próprio texto */
+        gap: .35rem; padding: .4rem .45rem .4rem .35rem; border-radius: 12px;
+      }
+      .info-tiles .info-tile > div { min-width: 0; flex: 1 1 auto; }
+      .info-tiles .info-tile-icon { width: 24px; height: 24px; border-radius: 7px; font-size: .72rem; }
       .info-tiles .info-tile-val,
       .info-tiles .info-tile-lbl { overflow: hidden; text-overflow: ellipsis; }
-      .info-tiles .info-tile-val { font-size: .9rem; }
+      .info-tiles .info-tile-val { font-size: .74rem; }
+      .info-tiles .info-tile-lbl { font-size: .54rem; }
+
+      /* Barra do topo: logo menor pra "Painel" caber na mesma linha */
+      .logo-nav-evento { height: 30px !important; }
+
+      /* Atalhos da lateral (Mural, Notas, Playlist, Fornecedores, Convidados):
+         o "Abrir" vira só a seta, sobrando espaço pro título não cortar. */
+      .btn-musicas-sidebar > div > span.btn,
+      .btn-notas-sidebar > div > span.btn,
+      .card-inspiracoes .card-body > a.btn { font-size: 0; padding: .4rem .6rem !important; }
+      .btn-musicas-sidebar > div > span.btn i,
+      .btn-notas-sidebar > div > span.btn i,
+      .card-inspiracoes .card-body > a.btn i { font-size: .9rem; margin: 0 !important; }
     }
     .info-tile {
       display: flex; align-items: center; gap: .65rem;
@@ -1227,7 +1313,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
       display: none;
     }
     .hero-hearts {
-      position: absolute; top: 10%; right: 3%; width: 150px; height: auto; display: none;
+      position: absolute; top: 6%; right: 2%; width: 260px; height: auto; display: none;
     }
     /* Efeito de "desenhar" o contorno: a linha some (dashoffset positivo),
        vai sendo traçada até completar o coração, segura um instante e
@@ -1239,6 +1325,8 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
       animation: heroHeartsDraw 7s ease-in-out infinite;
     }
     .hero-hearts path:nth-of-type(2) { animation-delay: 1.2s; }
+    .hero-hearts path:nth-of-type(3) { animation-delay: 2.4s; }
+    .hero-hearts path:nth-of-type(4) { animation-delay: 3.6s; }
     @keyframes heroHeartsDraw {
       0%   { stroke-dashoffset: 1000; }
       42%  { stroke-dashoffset: 0; }
@@ -1262,8 +1350,24 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
     .linha-contato-uploads { min-width: 0; }
     .linha-contato-uploads > .info-contato-evento { min-width: 0; flex-shrink: 1; }
     .contato-email-val { font-size: .78rem; }
+    /* WhatsApp: ícone verde clicável (abre a conversa no número cadastrado) */
+    .contato-whats-icone {
+      width: 36px; height: 36px; align-items: center; justify-content: center;
+      background: #dcfce7; color: #16a34a; font-size: 1.05rem;
+      transition: transform .15s ease, background .15s ease;
+    }
+    .contato-whats:hover .contato-whats-icone,
+    .contato-whats:active .contato-whats-icone { background: #16a34a; color: #fff; transform: scale(1.06); }
     @media (max-width: 767.98px) {
-      .contato-email-val { max-width: 40vw; }
+      /* E-mail ocupa todo o espaço que sobra (antes ficava espremido até
+         sobrar uma letra, porque o número do WhatsApp não encolhia). */
+      .info-contato-evento { flex: 1 1 auto; }
+      /* No celular os blocos (e-mail+WhatsApp / CPF) ficam em linhas próprias:
+         o divisor entre eles sobrava solto no fim da primeira linha. */
+      .info-contato-evento > div { padding-right: 0 !important; border-right: 0 !important; }
+      .info-contato-fixa { width: 100%; }
+      .info-contato-fixa > div:first-child { flex: 1 1 auto; min-width: 0; padding-right: .75rem; margin-right: .75rem; }
+      .contato-email-val { max-width: none; }
       /* Contrato fica oculto no mobile (d-none d-md-flex) — o item antes
          dele (que passa a ser o último visível) não deve mostrar a
          divisória à direita que sobraria solta. */
@@ -1276,52 +1380,52 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
       .btn-uploads-tile .badge { font-size: .55rem; padding: .25em .45em; }
     }
 
-    /* ---- PAGAMENTO FORNECEDOR ---- */
-    .forn-pago-row {
-      border-top: 1px solid #f1f5f9;
-      padding: .55rem .75rem .55rem 1rem;
-      display: grid;
-      grid-template-columns: 1fr auto auto;
-      align-items: center;
-      gap: .5rem;
-      background: #fff;
-      transition: background .15s;
+    /* ---- CONTATO NO CELULAR (duas linhas) ---- */
+    /* As duas linhas usam a mesma grade (nº de colunas = nº de quadradinhos):
+       o e-mail ocupa as da esquerda e o WhatsApp fica centralizado na última,
+       alinhado com o Uploads logo abaixo. */
+    .contato-mobile .cm-linha { display: grid; grid-template-columns: repeat(var(--cm-colunas, 3), minmax(0, 1fr)); gap: .45rem; align-items: center; }
+    /* O e-mail ocupa a linha toda, só reservando à direita espaço até o
+       WhatsApp (meia coluna + metade do ícone): usa todo o espaço livre sem
+       cortar à toa e sem encostar no ícone. */
+    .contato-mobile .cm-email {
+      grid-column: 1 / -1; grid-row: 1;
+      padding-right: calc((100% - (var(--cm-colunas, 3) - 1) * .45rem) / var(--cm-colunas, 3) / 2 + 24px); display: flex; align-items: center; gap: .6rem; min-width: 0; }
+    .contato-mobile .cm-whats { grid-column: -2 / -1; grid-row: 1; /* a última coluna */ justify-self: center; }
+    .contato-mobile .cm-icone {
+      width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: #f8f5f2; color: var(--color-primary, #a9744f);
     }
-    .forn-pago-row:hover { background: #f8fafc; }
-    .forn-pago-row:last-child { border-bottom-left-radius: 6px; border-bottom-right-radius: 6px; }
-    .forn-info-nome { font-size: .78rem; font-weight: 700; color: #1e293b; line-height: 1.2; }
-    .forn-info-sub  { font-size: .67rem; color: #94a3b8; }
-    .forn-valores   { display: flex; flex-direction: column; align-items: flex-end; gap: .1rem; }
-    .forn-val-total { font-size: .72rem; color: #64748b; }
-    .forn-val-rest  { font-size: .75rem; font-weight: 700; }
-    .forn-val-rest.ok  { color: #16a34a; }
-    .forn-val-rest.nok { color: #dc2626; }
-    .forn-val-pago-linha { font-size: .72rem; font-weight: 700; color: #2563eb; display: flex; align-items: center; gap: .25rem; }
-    .forn-btn-editar-pago, .forn-btn-cancelar-edit {
-      border: none; background: transparent; color: #94a3b8; padding: 0; font-size: .68rem;
-      cursor: pointer; transition: color .15s; line-height: 1;
+    /* e-mail só ocupa o próprio tamanho: o WhatsApp fica logo ao lado dele */
+    .contato-mobile .cm-texto { flex: 0 1 auto; min-width: 0; display: flex; flex-direction: column; }
+    .contato-mobile .cm-val { font-size: .82rem; font-weight: 700; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .contato-mobile .cm-lbl { font-size: .66rem; color: #94a3b8; }
+    .contato-mobile .cm-grade { display: grid; grid-template-columns: repeat(var(--cm-colunas, 3), minmax(0, 1fr)); gap: .45rem; margin-top: .75rem; }
+    .contato-mobile .cm-chip {
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .1rem;
+      min-width: 0; padding: .45rem .35rem; border-radius: 12px;
+      background: #f8fafc; border: 1px solid #eef2f6; text-align: center;
     }
-    .forn-btn-editar-pago:hover  { color: #2563eb; }
-    .forn-btn-cancelar-edit:hover { color: #dc2626; }
-    .forn-input-wrap { display: flex; align-items: center; gap: .35rem; }
-    .forn-input-pago-adm {
-      width: 90px; font-size: .75rem; border: 1.5px solid #e2e8f0;
-      border-radius: 7px; padding: .28rem .5rem;
-      background: #f8fafc; transition: border-color .2s, background .2s;
-      text-align: right;
+    .contato-mobile .cm-chip-topo { display: flex; align-items: center; gap: .3rem; font-size: .62rem; color: #94a3b8; font-weight: 600; white-space: nowrap; }
+    .contato-mobile .cm-chip-topo i { font-size: .8rem; color: #64748b; }
+    .contato-mobile .cm-chip-val { font-size: .74rem; font-weight: 700; color: #1e293b; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .contato-mobile .cm-chip-val .badge { font-size: .55rem; padding: .2em .45em; vertical-align: middle; }
+    .contato-mobile .cm-chip-btn { cursor: pointer; }
+    .contato-mobile .cm-chip-btn:active { background: #f1f5f9; }
+
+    /* ---- TAREFAS DO CHECKLIST ---- */
+    /* ✏️ 🗑️ lado a lado na linha do prazo (antes empilhados ao lado do título,
+       que perdia largura e quebrava em várias linhas no celular). */
+    .tarefa-card .task-actions { flex-direction: row; gap: .3rem; }
+    .tarefa-card .task-actions .btn { width: 30px; height: 26px; padding: 0 !important; display: inline-flex; align-items: center; justify-content: center; }
+    @media (max-width: 767.98px) {
+      /* Campos de comentário mais baixos (a letra segue 16px por causa do zoom do iPhone) */
+      .form-ajax-tarefa .form-control, .form-ajax-etapa .form-control { height: 38px; padding: .3rem .7rem; }
+      .form-ajax-tarefa .btn, .form-ajax-etapa .btn { height: 38px; padding-top: 0; padding-bottom: 0; display: inline-flex; align-items: center; }
     }
-    .forn-input-pago-adm:focus { outline: none; border-color: #22c55e; background: #fff; }
-    .forn-btn-salvar {
-      font-size: .7rem; font-weight: 700; padding: .28rem .6rem;
-      border-radius: 7px; border: none; background: #22c55e; color: #fff;
-      cursor: pointer; white-space: nowrap; transition: background .15s, transform .1s;
-    }
-    .forn-btn-salvar:hover  { background: #16a34a; }
-    .forn-btn-salvar:active { transform: scale(.95); }
-    .forn-pago-badge {
-      font-size: .58rem; font-weight: 700; padding: .22em .55em;
-      border-radius: 999px; text-transform: uppercase; letter-spacing: .04em;
-    }
+
+    /* ---- PAGAMENTO FORNECEDOR (resumo financeiro) ---- */
     .barra-pag-wrap { height: 5px; background: #dde3ea; border-radius: 999px; overflow: hidden; margin-top: .3rem; box-shadow: inset 0 1px 2px rgba(0,0,0,.08); }
     .barra-pag-fill {
       height: 100%; border-radius: 999px; transition: width .4s ease;
@@ -1348,7 +1452,6 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
     }
     .fin-chip-label { font-size: .55rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 700; opacity: .75; }
     .fin-chip-val   { font-size: .85rem; font-weight: 800; line-height: 1.1; margin-top: .15rem; white-space: nowrap; }
-    .scroll-lista-pequena { max-height: 360px; overflow-y: auto; }
     .scroll-lista-grande  { max-height: 420px; overflow-y: auto; }
 
     /* ---- BLOCO DE NOTAS ---- */
@@ -1376,9 +1479,11 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
       background-size: 100% 24px;
     }
     .btn-notas-sidebar {
+      text-align: left; /* é um <button>: sem isso o título ficava centralizado, diferente dos outros atalhos */
       background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
       border: 1.5px solid #fcd34d; border-radius: var(--radius);
       transition: box-shadow .2s, transform .15s; display: block;
+      padding: 0; /* <button> tem padding padrão do navegador que <a> não tem — sem isso o "Abrir" ficava desalinhado dos outros atalhos */
     }
     .btn-notas-sidebar:hover { box-shadow: 0 6px 18px rgba(253,211,77,.35); transform: translateY(-1px); }
     #grid-notas .nota-card-wrap { animation: notaEntra .3s ease both; }
@@ -1393,8 +1498,10 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
       border: 1.5px solid #d9b997; border-radius: var(--radius);
       transition: box-shadow .2s, transform .15s;
       display: block; width: 100%; text-align: left; cursor: pointer;
+      padding: 0; /* <button> tem padding padrão do navegador que <a> não tem — sem isso o "Abrir" ficava desalinhado dos outros atalhos */
     }
     .btn-musicas-sidebar:hover { box-shadow: 0 6px 18px rgba(169,116,79,.3); transform: translateY(-1px); }
+    .btn-musicas-sidebar.atalho-restrito:hover { box-shadow: none; transform: none; }
     .musica-item {
       transition: box-shadow .15s, transform .15s;
       animation: notaEntra .3s ease both;
@@ -1541,7 +1648,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
       .fin-chip-val { font-size: .72rem; }
       .fin-chip-label { font-size: .5rem; }
 
-      .sidebar-sticky { position: static !important; top: auto !important; }
+      .sidebar-sticky { position: static !important; top: auto !important; gap: .35rem !important; }
 
       .etapa-hdr { flex-wrap: wrap; row-gap: .35rem; }
       .etapa-hdr .fw-bold { min-width: 0; }
@@ -1551,10 +1658,8 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
       .musica-item { flex-wrap: wrap; }
       .musica-item .musica-acoes { flex-basis: 100%; justify-content: flex-end; margin-top: .35rem; }
 
-      .forn-pago-row { grid-template-columns: 1fr; row-gap: .35rem; }
-      .forn-valores { align-items: flex-start !important; }
-      .forn-input-wrap { justify-content: flex-end; }
-      .forn-input-pago-adm { width: auto; flex: 1 1 auto; min-width: 0; }
+      /* Card do título do Checklist ocupa a linha toda, sem sobrar espaço em branco do lado. */
+      .checklist-title-band { width: 100%; }
 
       .checklist-btns-row { gap: .4rem !important; overflow-x: auto; -webkit-overflow-scrolling: touch; }
       .checklist-btns-row .btn { font-size: .74rem; padding: .35rem .6rem; }
@@ -1562,19 +1667,61 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
 
       .badges-info-evento { gap: .35rem !important; overflow-x: auto; -webkit-overflow-scrolling: touch; }
       .badges-info-evento .badge { font-size: .68rem; padding: .35rem .55rem !important; }
+
+      /* Atalhos dos módulos (Mural, Notas, Playlist, Fornecedores, Convidados): mais compactos. */
+      .card-inspiracoes .card-body,
+      .btn-notas-sidebar > div,
+      .btn-musicas-sidebar > div {
+        padding: .65rem !important;
+        gap: .5rem !important;
+      }
+      .card-inspiracoes h6,
+      .btn-notas-sidebar h6,
+      .btn-musicas-sidebar h6 { font-size: .82rem; }
+      .card-inspiracoes small,
+      .btn-notas-sidebar small,
+      .btn-musicas-sidebar small { font-size: .66rem !important; }
+      .card-inspiracoes [style*="44px"],
+      .btn-notas-sidebar [style*="44px"],
+      .btn-musicas-sidebar [style*="44px"] {
+        width: 34px !important; height: 34px !important;
+      }
+      .card-inspiracoes .fs-4,
+      .btn-notas-sidebar .fs-4,
+      .btn-musicas-sidebar .fs-4 { font-size: .95rem !important; }
+      .card-inspiracoes .btn,
+      .btn-notas-sidebar .btn,
+      .btn-musicas-sidebar .btn { padding: .28rem .5rem !important; font-size: .66rem !important; }
+
+      /* Checklist fica recolhido até tocar no botão; a bolinha vermelha avisa
+         que existe checklist pra ver. */
+      #checklist-corpo-mobile {
+        overflow: hidden;
+        max-height: 0;
+        opacity: 0;
+        transition: max-height .35s ease, opacity .3s ease;
+      }
+      #checklist-corpo-mobile.aberto { opacity: 1; }
+      #icone-toggle-checklist { transition: transform .25s ease; display: inline-block; }
+      #icone-toggle-checklist.girado { transform: rotate(90deg); }
+      .dot-aviso-checklist {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: #dc3545; display: inline-block;
+        box-shadow: 0 0 0 2px rgba(220,53,69,.25);
+      }
     }
   </style>
 </head>
 <body>
 
-<nav class="navbar navbar-dark bg-dark shadow-sm">
-  <div class="container">
-    <span class="navbar-brand mb-0">
-      <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">
+<nav class="navbar navbar-dark shadow-sm" style="background-color: <?= htmlspecialchars($cor_modulo) ?>;">
+  <div class="container flex-nowrap">
+    <span class="navbar-brand mb-0 flex-shrink-1" style="min-width:0;">
+      <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" class="logo-nav-evento" style="height:40px;">
     </span>
-    <div class="d-flex align-items-center gap-2">
-      <a href="painel_admin.php" class="btn btn-sm btn-outline-light rounded-3">
-        <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
+    <div class="d-flex align-items-center gap-2 flex-shrink-0">
+      <a href="painel_admin.php" class="btn btn-sm btn-outline-light rounded-3 text-nowrap">
+        <i class="bi bi-arrow-left me-1"></i> <span class="d-none d-sm-inline">Voltar ao </span>Painel
       </a>
     </div>
   </div>
@@ -1683,8 +1830,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
         <span class="hero-dots"></span>
         <span class="hero-foto-sim"></span>
         <svg class="hero-hearts" viewBox="0 0 200 160">
-          <path d="M62,42 C42,20 8,32 8,58 C8,84 42,98 62,120 C82,98 116,84 116,58 C116,32 82,20 62,42 Z" fill="none" stroke="rgba(255,222,160,.95)" stroke-width="3.5"/>
-          <path d="M104,74 C90,60 68,68 68,86 C68,104 90,112 104,128 C118,112 140,104 140,86 C140,68 118,60 104,74 Z" fill="none" stroke="rgba(255,222,160,.8)" stroke-width="3.5"/>
+          <?= decoracao_hero_svg($evento['tipo_evento'] ?? 'casamento') ?>
         </svg>
       </div>
       <div class="d-flex flex-wrap align-items-center gap-2 mb-3 header-top-actions">
@@ -1692,6 +1838,14 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
                 data-bs-toggle="modal" data-bs-target="#modalExportarPdf">
           <i class="bi bi-file-earmark-pdf-fill me-1"></i> Exportar PDF
         </button>
+        <!-- Celular: dias que faltam ao lado do Exportar PDF -->
+        <?php if ($dias > 0): ?>
+          <span class="dias-pill-mobile d-md-none"><i class="bi bi-calendar-check-fill me-1"></i>Faltam <?= $dias ?> dia<?= $dias > 1 ? 's' : '' ?></span>
+        <?php elseif ($dias === 0): ?>
+          <span class="dias-pill-mobile dias-pill-hoje d-md-none"><i class="bi bi-stars me-1"></i>É hoje!</span>
+        <?php else: ?>
+          <span class="dias-pill-mobile dias-pill-passado d-md-none">Há <?= abs($dias) ?> dia<?= abs($dias) > 1 ? 's' : '' ?></span>
+        <?php endif; ?>
 
         <div class="dropdown header-btn-sino" id="dropdown-notificacoes">
           <button class="btn btn-sm btn-outline-light rounded-circle position-relative" type="button" data-bs-toggle="dropdown" aria-expanded="false" style="width:40px;height:40px;">
@@ -1704,7 +1858,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
           </button>
           <div class="dropdown-menu dropdown-menu-end shadow-lg border-0 p-0" style="width:340px;max-height:420px;overflow-y:auto;">
             <div class="px-3 py-2 border-bottom bg-light d-flex justify-content-between align-items-center">
-              <span class="fw-bold small text-uppercase text-muted"><i class="bi bi-bell me-1"></i> Notificações do casal</span>
+              <span class="fw-bold small text-uppercase text-muted"><i class="bi bi-bell me-1"></i> <?= htmlspecialchars($labels['notif_dropdown_titulo']) ?></span>
               <button type="button" id="btn-marcar-lidas" class="btn btn-link btn-sm p-0 text-decoration-none">Marcar lidas</button>
             </div>
             <div id="lista-notificacoes">
@@ -1715,7 +1869,8 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
             <?php else: foreach ($notificacoes as $n): ?>
               <div class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom" style="cursor:pointer;"
                    data-chave="<?= htmlspecialchars($n['chave'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-                   <?= !empty($n['nota_id']) ? 'data-nota-id="' . (int)$n['nota_id'] . '"' : '' ?>>
+                   <?= !empty($n['nota_id']) ? 'data-nota-id="' . (int)$n['nota_id'] . '"' : '' ?>
+                   <?= !empty($n['link']) ? 'data-link="' . htmlspecialchars($n['link'], ENT_QUOTES, 'UTF-8') . '"' : '' ?>>
                 <i class="bi <?= htmlspecialchars($n['icone'], ENT_QUOTES, 'UTF-8') ?> mt-1"></i>
                 <div class="flex-fill" style="min-width:0;">
                   <div class="small text-dark"><?= htmlspecialchars($n['texto'], ENT_QUOTES, 'UTF-8') ?></div>
@@ -1730,34 +1885,28 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
 
       <div class="header-hero-accent">
         <div class="d-flex align-items-center justify-content-between gap-2">
-          <div class="header-hero-label mb-0">Casamento de</div>
-          <?php if ($dias > 0): ?>
-            <span class="dias-pill-mobile d-md-none"><i class="bi bi-calendar-check-fill me-1"></i>Faltam <?= $dias ?> dia<?= $dias > 1 ? 's' : '' ?></span>
-          <?php elseif ($dias === 0): ?>
-            <span class="dias-pill-mobile dias-pill-hoje d-md-none"><i class="bi bi-stars me-1"></i>É hoje!</span>
-          <?php else: ?>
-            <span class="dias-pill-mobile dias-pill-passado d-md-none">Há <?= abs($dias) ?> dia<?= abs($dias) > 1 ? 's' : '' ?></span>
-          <?php endif; ?>
+          <div class="header-hero-label mb-0"><?= htmlspecialchars($labels['header_hero_prefixo']) ?></div>
         </div>
+        <?php [$titulo_evento_hero, $subtitulo_evento_hero] = titulo_subtitulo_evento($evento['tipo_evento'] ?? 'casamento', $evento['nome'], $evento['nome_secundario'] ?? null, 'Painel de controle do evento'); ?>
         <h2 class="mb-1 text-white nome-noivos-titulo">
-          <?= htmlspecialchars($evento['nome'], ENT_QUOTES, 'UTF-8') ?>
+          <?= htmlspecialchars($titulo_evento_hero, ENT_QUOTES, 'UTF-8') ?>
         </h2>
-        <p class="header-hero-subtitle mb-0">Painel de controle do evento</p>
+        <p class="header-hero-subtitle mb-0"><?= htmlspecialchars($subtitulo_evento_hero, ENT_QUOTES, 'UTF-8') ?></p>
 
         <div class="d-flex flex-wrap gap-2 info-tiles">
-          <div class="info-tile">
+          <div class="info-tile info-tile-data">
             <span class="info-tile-icon"><i class="bi bi-calendar-event"></i></span>
             <div>
               <div class="info-tile-val"><?= date('d/m/Y', strtotime($evento['data_evento'])) ?></div>
-              <div class="info-tile-lbl">Data do evento</div>
+              <div class="info-tile-lbl"><span class="d-none d-md-inline">Data do evento</span><span class="d-md-none">Data</span></div>
             </div>
           </div>
           <?php if (!empty($evento['hora_evento'])): ?>
-          <div class="info-tile">
+          <div class="info-tile info-tile-hora">
             <span class="info-tile-icon"><i class="bi bi-clock"></i></span>
             <div>
               <div class="info-tile-val"><?= date('H:i', strtotime($evento['hora_evento'])) ?></div>
-              <div class="info-tile-lbl">Horário do evento</div>
+              <div class="info-tile-lbl"><span class="d-none d-md-inline">Horário do evento</span><span class="d-md-none">Horário</span></div>
             </div>
           </div>
           <?php endif; ?>
@@ -1786,10 +1935,61 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
             </div>
           </div>
           <?php endif; ?>
+          <a href="convidados.php?id=<?= $evento_id ?>" class="info-tile text-decoration-none">
+            <span class="info-tile-icon"><i class="bi bi-people-fill"></i></span>
+            <div>
+              <div class="info-tile-val"><span id="cnt-badge-conf"><?= $total_conf_pessoas ?></span>/<?= $total_pessoas_conv ?><span class="d-none d-md-inline"> confirmados</span></div>
+              <div class="info-tile-lbl"><span class="d-none d-md-inline">Gerenciar Convidados</span><span class="d-md-none">Confirmados</span></div>
+            </div>
+          </a>
         </div>
       </div>
     </div>
-    <div class="bg-white p-3 border-top d-flex flex-nowrap align-items-center gap-2 gap-md-3 linha-contato-uploads" style="border-radius: 0 0 var(--radius) var(--radius);">
+    <!-- CELULAR: contato em duas linhas (e-mail + WhatsApp / CPF, Contrato e
+         Uploads em quadradinhos). A linha de baixo é a versão do computador. -->
+    <?php
+      $whats_digitos_m = preg_replace('/\D+/', '', (string)($evento['telefone'] ?? ''));
+      if ($whats_digitos_m !== '' && strlen($whats_digitos_m) <= 11) { $whats_digitos_m = '55' . $whats_digitos_m; }
+      // Quantos quadradinhos na 2ª linha (CPF?, Contrato, Uploads?) — a 1ª linha
+      // usa as mesmas colunas pra o WhatsApp ficar alinhado com o último.
+      $cm_colunas = 1 + (!empty($evento['cpf']) ? 1 : 0) + ($is_admin ? 1 : 0);
+    ?>
+    <div class="bg-white p-3 border-top d-md-none contato-mobile" style="border-radius: 0 0 var(--radius) var(--radius); --cm-colunas: <?= $cm_colunas ?>;">
+      <div class="cm-linha">
+        <div class="cm-email">
+          <span class="cm-icone"><i class="bi bi-envelope-fill"></i></span>
+          <a class="cm-texto text-decoration-none" href="mailto:<?= htmlspecialchars($evento['email'], ENT_QUOTES, 'UTF-8') ?>">
+            <span class="cm-val"><?= htmlspecialchars($evento['email'], ENT_QUOTES, 'UTF-8') ?></span>
+            <span class="cm-lbl">E-mail do responsável</span>
+          </a>
+        </div>
+        <?php if ($whats_digitos_m !== ''): ?>
+        <a href="https://wa.me/<?= $whats_digitos_m ?>" target="_blank" rel="noopener" class="contato-whats cm-whats"
+           title="Abrir conversa no WhatsApp: <?= htmlspecialchars($evento['telefone'], ENT_QUOTES, 'UTF-8') ?>" aria-label="Abrir conversa no WhatsApp">
+          <span class="rounded-circle d-flex contato-whats-icone"><i class="bi bi-whatsapp"></i></span>
+        </a>
+        <?php endif; ?>
+      </div>
+      <div class="cm-grade">
+        <?php if (!empty($evento['cpf'])): ?>
+        <div class="cm-chip">
+          <span class="cm-chip-topo"><i class="bi bi-person-vcard"></i> CPF</span>
+          <span class="cm-chip-val"><?= htmlspecialchars($evento['cpf'], ENT_QUOTES, 'UTF-8') ?></span>
+        </div>
+        <?php endif; ?>
+        <div class="cm-chip">
+          <span class="cm-chip-topo"><i class="bi bi-file-earmark-text-fill"></i> Contrato</span>
+          <span class="cm-chip-val">#<?= str_pad($evento['id'], 4, '0', STR_PAD_LEFT) ?></span>
+        </div>
+        <?php if ($is_admin): ?>
+        <button type="button" class="cm-chip cm-chip-btn" data-bs-toggle="modal" data-bs-target="#modalDocumentos" title="Uploads do evento (contrato, RG, comprovantes...)">
+          <span class="cm-chip-topo"><i class="bi bi-paperclip"></i> Documentos</span>
+          <span class="cm-chip-val">Uploads<?php if ($total_documentos > 0): ?> <span class="badge rounded-pill bg-primary"><?= $total_documentos ?></span><?php endif; ?></span>
+        </button>
+        <?php endif; ?>
+      </div>
+    </div>
+    <div class="bg-white p-3 border-top d-none d-md-flex flex-nowrap align-items-center gap-2 gap-md-3 linha-contato-uploads" style="border-radius: 0 0 var(--radius) var(--radius);">
       <div class="d-flex flex-wrap row-gap-3 info-contato-evento">
         <div class="d-flex flex-nowrap info-contato-fixa">
           <div class="d-flex align-items-center gap-2 min-width-0">
@@ -1799,14 +1999,22 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
               <div class="text-muted text-truncate" style="font-size:.68rem;">E-mail do responsável</div>
             </div>
           </div>
-          <?php if (!empty($evento['telefone'])): ?>
-          <div class="d-flex align-items-center gap-2 flex-shrink-0">
-            <span class="bg-light rounded-circle p-2 d-flex flex-shrink-0"><i class="bi bi-whatsapp text-success"></i></span>
-            <div>
-              <div class="fw-bold small text-nowrap"><?= htmlspecialchars($evento['telefone'], ENT_QUOTES, 'UTF-8') ?></div>
+          <?php if (!empty($evento['telefone'])):
+            // Link direto pra conversa no WhatsApp: só dígitos, com o 55 do
+            // Brasil na frente quando o número foi salvo só com DDD + telefone.
+            $whats_digitos = preg_replace('/\D+/', '', $evento['telefone']);
+            if (strlen($whats_digitos) <= 11) { $whats_digitos = '55' . $whats_digitos; }
+          ?>
+          <a href="https://wa.me/<?= $whats_digitos ?>" target="_blank" rel="noopener"
+             class="d-flex align-items-center gap-2 flex-shrink-0 text-decoration-none contato-whats"
+             title="Abrir conversa no WhatsApp: <?= htmlspecialchars($evento['telefone'], ENT_QUOTES, 'UTF-8') ?>"
+             aria-label="Abrir conversa no WhatsApp">
+            <span class="rounded-circle d-flex flex-shrink-0 contato-whats-icone"><i class="bi bi-whatsapp"></i></span>
+            <div class="d-none d-md-block">
+              <div class="fw-bold small text-nowrap text-dark"><?= htmlspecialchars($evento['telefone'], ENT_QUOTES, 'UTF-8') ?></div>
               <div class="text-muted" style="font-size:.68rem;">WhatsApp</div>
             </div>
-          </div>
+          </a>
           <?php endif; ?>
         </div>
         <?php if (!empty($evento['cpf'])): ?>
@@ -1890,6 +2098,15 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
         </div>
       </div>
 
+      <button type="button" id="btn-toggle-checklist-mobile" class="btn btn-sm btn-outline-secondary rounded-3 w-100 d-md-none d-flex align-items-center justify-content-center gap-2 mb-3">
+        <i class="bi bi-chevron-right" id="icone-toggle-checklist"></i>
+        <span id="texto-toggle-checklist">Ver etapas do checklist</span>
+        <?php if ($total_g > 0): ?>
+          <span class="dot-aviso-checklist" title="Tem checklist para ver"></span>
+        <?php endif; ?>
+      </button>
+
+      <div id="checklist-corpo-mobile">
       <?php if (empty($passos)): ?>
         <div class="card border-0 shadow-sm text-center py-5 text-muted checklist-vazio" style="border-radius: var(--radius);">
           <i class="bi bi-info-circle fs-1 mb-2 checklist-vazio-icon"></i>
@@ -1932,7 +2149,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
                   </div>
                   <span class="text-white-50 pct-etapa" style="font-size:.72rem;min-width:30px;"><?= $pctE ?>%</span>
                 </div>
-                <span class="badge bg-white bg-opacity-20 text-white rounded-pill px-2">
+                <span class="badge text-white rounded-pill px-2" style="background: rgba(255,255,255,.2);">
                   <span class="conc-etapa"><?= $concE ?></span>/<?= $totE ?>
                 </span>
                 <i class="bi bi-chevron-down text-white small chevron-etapa"></i>
@@ -1949,7 +2166,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
                     <?php foreach ($coments_etapa[$etapa] ?? [] as $ce):
                       $cor = $ce['autor'] === 'Noivos' ? 'bg-danger' : 'bg-primary'; ?>
                       <div class="my-1 bg-white border p-2 rounded-3 shadow-sm" style="font-size:.82rem;">
-                        <span class="badge <?= $cor ?> rounded-pill me-2"><?= htmlspecialchars($ce['autor'], ENT_QUOTES, 'UTF-8') ?></span>
+                        <span class="badge <?= $cor ?> rounded-pill me-2"><?= htmlspecialchars($ce['autor'] ?: 'Assessoria', ENT_QUOTES, 'UTF-8') ?></span>
                         <?= htmlspecialchars($ce['comentario'], ENT_QUOTES, 'UTF-8') ?>
                       </div>
                     <?php endforeach; ?>
@@ -1958,7 +2175,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                     <input type="hidden" name="comentario_etapa_admin" value="1">
                     <input type="hidden" name="etapa_nome" value="<?= htmlspecialchars($etapa, ENT_QUOTES, 'UTF-8') ?>">
-                    <input type="text" name="novo_comentario_etapa" class="form-control form-control-sm" placeholder="Nota geral para os noivos…" required>
+                    <input type="text" name="novo_comentario_etapa" class="form-control form-control-sm" placeholder="<?= htmlspecialchars($labels['placeholder_nota_checklist']) ?>" required>
                     <button type="submit" class="btn btn-sm btn-dark px-3">Salvar</button>
                   </form>
                 </div>
@@ -1983,7 +2200,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
                         <i class="bi <?= $done ? 'bi-check-circle-fill' : 'bi-circle' ?>"></i>
                       </button>
                       <div class="w-100">
-                        <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                        <div class="mb-2">
                           <div style="min-width:0;">
                             <h6 class="fw-bold mb-1 <?= $done ? 'text-muted text-decoration-line-through' : 'text-dark' ?>" style="line-height:1.4;">
                               <?= htmlspecialchars($t['tarefa'], ENT_QUOTES, 'UTF-8') ?>
@@ -1998,11 +2215,8 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
                                 <i class="bi bi-file-text"></i> Ler
                               </button>
                               <?php endif; ?>
-                            </div>
-                          </div>
-
                           <?php if ($is_admin): ?>
-                          <div class="task-actions">
+                          <div class="task-actions ms-auto">
                             <button type="button"
                                     class="btn btn-sm btn-outline-primary py-0 px-2 rounded"
                                     data-bs-toggle="modal"
@@ -2018,14 +2232,15 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
                             </button>
                           </div>
                           <?php endif; ?>
-
+                            </div>
+                          </div>
                         </div>
                         <div class="border-top pt-2">
                           <div class="lista-coment-tarefa mb-2">
                             <?php foreach ($coments_tarefa[$tid] ?? [] as $cm):
                               $corC = $cm['autor'] === 'Noivos' ? 'text-danger' : 'text-primary'; ?>
                               <div class="small my-1 bg-light p-2 rounded-3" style="font-size:.77rem;border:1px solid #f1f5f9;">
-                                <strong class="<?= $corC ?>"><?= htmlspecialchars($cm['autor'], ENT_QUOTES, 'UTF-8') ?>:</strong>
+                                <strong class="<?= $corC ?>"><?= htmlspecialchars($cm['autor'] ?: 'Assessoria', ENT_QUOTES, 'UTF-8') ?>:</strong>
                                 <?= htmlspecialchars($cm['comentario'], ENT_QUOTES, 'UTF-8') ?>
                               </div>
                             <?php endforeach; ?>
@@ -2060,6 +2275,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
         <?php endif; ?>
 
       <?php endif; ?>
+      </div>
     </div>
 
     <div class="col-md-5">
@@ -2076,7 +2292,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
                 <small class="text-white-50 text-truncate d-block" style="font-size:.78rem;">Referências, paletas e ideias</small>
               </div>
             </div>
-            <a href="inspiracoes.php?id=<?= $evento_id ?>" class="btn btn-light btn-sm fw-bold rounded-pill px-3 shadow-sm flex-shrink-0" style="color:var(--color-primary-dark);">
+            <a href="inspiracoes.php?id=<?= $evento_id ?>" class="btn btn-light btn-sm fw-bold rounded-pill px-3 shadow-sm flex-shrink-0" style="color:var(--color-primary-dark); border:none;">
               Abrir <i class="bi bi-arrow-right ms-1"></i>
             </a>
           </div>
@@ -2092,11 +2308,11 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
                 <h6 class="mb-0 fw-bold text-dark text-truncate">Bloco de Notas</h6>
                 <small class="text-dark text-truncate d-block" style="font-size:.78rem;opacity:.6;">
                   <span id="notas-count-badge"><?= $total_notas ?> nota<?= $total_notas !== 1 ? 's' : '' ?></span>
-                  · visível ao casal
+                  · visível ao <?= htmlspecialchars($labels['singular_contratante']) ?>
                 </small>
               </div>
             </div>
-            <span class="btn btn-warning btn-sm fw-bold rounded-pill px-3 shadow-sm flex-shrink-0" style="pointer-events:none;">
+            <span class="btn btn-warning btn-sm fw-bold rounded-pill px-3 shadow-sm flex-shrink-0" style="pointer-events:none; border:none;">
               Abrir <i class="bi bi-arrow-right ms-1"></i>
             </span>
           </div>
@@ -2112,7 +2328,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
                 <h6 class="mb-0 fw-bold text-dark text-truncate">Playlist do Evento</h6>
                 <small class="text-dark text-truncate d-block" style="font-size:.78rem;opacity:.6;">
                   <span id="musicas-count-badge"><?= $total_musicas ?> música<?= $total_musicas !== 1 ? 's' : '' ?></span>
-                  · visível ao casal
+                  · visível ao <?= htmlspecialchars($labels['singular_contratante']) ?>
                 </small>
               </div>
             </div>
@@ -2122,6 +2338,64 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
             </span>
           </div>
         </button>
+
+        <?php if ($is_admin): /* financeiro/fornecedores: só admin abre (mesma regra do Resumo Financeiro e do PDF) */ ?>
+        <a href="fornecedores_evento.php?id=<?= $evento_id ?>" class="btn-musicas-sidebar text-decoration-none" style="background: linear-gradient(135deg, #ede9fe 0%, #ddd6fe 100%); border-color: #c4b5fd;">
+          <div class="d-flex justify-content-between align-items-center gap-2 p-3">
+            <div class="d-flex align-items-center gap-3" style="min-width:0;">
+              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0" style="width:44px;height:44px;">
+                <i class="bi bi-briefcase-fill fs-4" style="color:#7c3aed;"></i>
+              </div>
+              <div style="min-width:0;">
+                <h6 class="mb-0 fw-bold text-dark text-truncate">Fornecedores &amp; Orçamentos</h6>
+                <small class="text-dark text-truncate d-block" style="font-size:.78rem;opacity:.6;">
+                  <?= count($lista_forn) ?> fornecedor<?= count($lista_forn) !== 1 ? 'es' : '' ?> · R$ <?= number_format($total_forn, 2, ',', '.') ?> previsto
+                </small>
+              </div>
+            </div>
+            <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm flex-shrink-0" style="pointer-events:none; background:#7c3aed; border:none; color:#fff;">
+              Abrir <i class="bi bi-arrow-right ms-1"></i>
+            </span>
+          </div>
+        </a>
+        <?php else: /* assistente: vê que a área existe, mas bloqueada e sem valores */ ?>
+        <div class="btn-musicas-sidebar atalho-restrito" title="Área financeira restrita ao administrador"
+             style="background: #f1f5f9; border-color: #e2e8f0; cursor: not-allowed;">
+          <div class="d-flex justify-content-between align-items-center gap-2 p-3">
+            <div class="d-flex align-items-center gap-3" style="min-width:0;">
+              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0" style="width:44px;height:44px;">
+                <i class="bi bi-briefcase-fill fs-4" style="color:#94a3b8;"></i>
+              </div>
+              <div style="min-width:0;">
+                <h6 class="mb-0 fw-bold text-secondary text-truncate">Fornecedores &amp; Orçamentos</h6>
+                <small class="text-muted text-truncate d-block" style="font-size:.78rem;">Restrito ao administrador</small>
+              </div>
+            </div>
+            <span class="btn btn-sm fw-bold rounded-pill px-3 flex-shrink-0" style="pointer-events:none; background:#e2e8f0; border:none; color:#64748b;">
+              <i class="bi bi-lock-fill me-1"></i> Restrito
+            </span>
+          </div>
+        </div>
+        <?php endif; ?>
+
+        <a href="convidados.php?id=<?= $evento_id ?>" class="btn-musicas-sidebar text-decoration-none" style="background: linear-gradient(135deg, #cffafe 0%, #a5f3fc 100%); border-color: #67e8f9;">
+          <div class="d-flex justify-content-between align-items-center gap-2 p-3">
+            <div class="d-flex align-items-center gap-3" style="min-width:0;">
+              <div class="bg-white rounded-3 d-flex align-items-center justify-content-center shadow-sm flex-shrink-0" style="width:44px;height:44px;">
+                <i class="bi bi-people-fill fs-4" style="color:#0891b2;"></i>
+              </div>
+              <div style="min-width:0;">
+                <h6 class="mb-0 fw-bold text-dark text-truncate">Gerenciar Convidados</h6>
+                <small class="text-dark text-truncate d-block" style="font-size:.78rem;opacity:.6;">
+                  <?= $total_conf_pessoas ?>/<?= $total_pessoas_conv ?> confirmado<?= $total_conf_pessoas !== 1 ? 's' : '' ?>
+                </small>
+              </div>
+            </div>
+            <span class="btn btn-sm fw-bold rounded-pill px-3 shadow-sm flex-shrink-0" style="pointer-events:none; background:#0891b2; border:none; color:#fff;">
+              Abrir <i class="bi bi-arrow-right ms-1"></i>
+            </span>
+          </div>
+        </a>
 
         <div class="card shadow-sm border-0" style="border-radius: var(--radius);">
           <div class="card-body p-3">
@@ -2187,173 +2461,6 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
         </div>
         <?php endif; ?>
 
-        <div class="row g-2" id="grupoAcessos">
-          <div class="col-6">
-            <button class="btn w-100 d-flex flex-column align-items-center justify-content-center p-2 shadow-sm text-white h-100"
-                    style="background: #1e293b; border-radius: var(--radius); border: none;"
-                    data-bs-toggle="collapse" data-bs-target="#collapseEquipe"
-                    aria-expanded="false" aria-controls="collapseEquipe">
-              <i class="bi bi-person-badge-fill text-info fs-3 mb-2"></i>
-              <span class="fw-bold" style="font-size:.85rem;">Equipe Contratada</span>
-              <?php if (!$is_admin): ?>
-              <span class="mt-2 text-white-50" style="font-size:.7rem;"><i class="bi bi-lock-fill me-1"></i>Acesso restrito</span>
-              <?php endif; ?>
-            </button>
-          </div>
-          <div class="col-6">
-            <button class="btn w-100 d-flex flex-column align-items-center justify-content-center p-2 shadow-sm text-white h-100"
-                    style="background: #334155; border-radius: var(--radius); border: none;"
-                    data-bs-toggle="collapse" data-bs-target="#collapseConvidados"
-                    aria-expanded="false" aria-controls="collapseConvidados">
-              <i class="bi bi-people-fill text-info fs-3 mb-2"></i>
-              <span class="fw-bold" style="font-size:.85rem;">Convidados</span>
-              <div class="mt-2 text-success fw-bold" style="font-size:.85rem;">
-                <span id="cnt-badge-conf"><?= $total_conf ?></span> confirmados
-              </div>
-            </button>
-          </div>
-        </div>
-
-        <div class="accordion" id="accordionAcessos">
-
-          <div class="collapse" id="collapseEquipe" data-bs-parent="#accordionAcessos">
-            <div class="card shadow-sm border-0" style="border-radius: var(--radius);">
-              <?php if (!$is_admin): ?>
-              <div class="text-center text-muted py-5">
-                <i class="bi bi-lock-fill fs-1 d-block mb-2"></i>
-                <span class="fw-bold">Restrito</span>
-              </div>
-              <?php else: ?>
-              <div class="etapa-body bg-white rounded-3">
-                <div class="p-3 border-bottom bg-light rounded-top">
-                  <div class="d-flex justify-content-between align-items-center mb-2">
-                    <small class="text-muted fw-bold" style="font-size:.68rem;text-transform:uppercase;">Resumo Financeiro</small>
-                    <div class="d-flex gap-2">
-                      <button class="btn btn-sm btn-primary shadow-sm" data-bs-toggle="modal" data-bs-target="#modalFornecedor">
-                        <i class="bi bi-plus-lg me-1"></i> Novo
-                      </button>
-                      <a href="fornecedores_evento.php?id=<?= $evento_id ?>" class="btn btn-sm btn-outline-dark shadow-sm">
-                        <i class="bi bi-gear-fill me-1"></i> Completo
-                      </a>
-                    </div>
-                  </div>
-                </div>
-                <div class="scroll-lista-pequena">
-                  <?php if (empty($lista_forn)): ?>
-                    <div class="text-center text-muted py-4 small">
-                      <i class="bi bi-inbox d-block fs-3 mb-2"></i>
-                      Nenhum fornecedor contratado ainda.
-                    </div>
-                  <?php else: ?>
-                    <?php foreach ($lista_forn as $f):
-                      $fid    = (int)$f['id'];
-                      $fValor = (float)$f['valor'];
-                      $fPago  = (float)($f['valor_pago'] ?? 0);
-                      $fRest  = max(0.0, $fValor - $fPago);
-                      $fPct   = $fValor > 0 ? round($fPago / $fValor * 100) : 0;
-                      $fQuit  = $fRest <= 0;
-                      $barClr = $fQuit ? 'bg-success' : ($fPct >= 50 ? 'bg-info' : 'bg-warning');
-                    ?>
-                    <div class="forn-pago-row" id="forn-adm-<?= $fid ?>" data-pago="<?= $fPago ?>">
-                      <div>
-                        <div class="forn-info-nome"><?= htmlspecialchars($f['servico'], ENT_QUOTES, 'UTF-8') ?></div>
-                        <div class="forn-info-sub"><?= htmlspecialchars($f['nome'], ENT_QUOTES, 'UTF-8') ?></div>
-                        <div class="d-flex align-items-center gap-2 mt-1">
-                          <div style="flex:1;height:3px;background:#e2e8f0;border-radius:999px;overflow:hidden;">
-                            <div class="forn-barra-fill-adm <?= $barClr ?>" style="height:100%;width:<?= $fPct ?>%;border-radius:999px;transition:width .4s;"></div>
-                          </div>
-                          <span class="forn-pago-badge <?= $fQuit ? 'bg-success text-white' : 'bg-warning text-dark' ?> forn-badge-adm">
-                            <?= $fQuit ? '✓ Quitado' : ($fPct > 0 ? $fPct.'%' : '—') ?>
-                          </span>
-                        </div>
-                      </div>
-                      <div class="forn-valores">
-                        <div class="forn-val-total">R$ <?= number_format($fValor, 2, ',', '.') ?></div>
-                        <div class="forn-val-pago-linha">
-                          Pago: R$ <span class="forn-pago-valor-txt"><?= number_format($fPago, 2, ',', '.') ?></span>
-                          <button type="button" class="forn-btn-editar-pago" data-id="<?= $fid ?>" title="Corrigir valor pago">
-                            <i class="bi bi-pencil-fill"></i>
-                          </button>
-                        </div>
-                        <div class="forn-val-rest <?= $fQuit ? 'ok' : 'nok' ?> forn-rest-adm">
-                          <?= $fQuit ? '✓ Quitado' : 'Resta R$ '.number_format($fRest, 2, ',', '.') ?>
-                        </div>
-                      </div>
-                      <div class="forn-input-wrap forn-add-wrap">
-                        <input type="text" class="forn-input-pago-adm forn-input-add"
-                               data-id="<?= $fid ?>" data-total="<?= $fValor ?>"
-                               placeholder="+ pagamento" inputmode="decimal" title="Somar novo pagamento (R$)">
-                        <button type="button" class="forn-btn-salvar forn-btn-add-adm"
-                                 data-id="<?= $fid ?>" title="Adicionar pagamento">
-                          <i class="bi bi-plus-lg"></i>
-                        </button>
-                      </div>
-                      <div class="forn-input-wrap forn-edit-wrap" style="display:none;">
-                        <input type="text" class="forn-input-pago-adm forn-input-edit"
-                               data-id="<?= $fid ?>" data-total="<?= $fValor ?>"
-                               value="<?= number_format($fPago, 2, ',', '.') ?>"
-                               placeholder="0,00" inputmode="decimal" title="Corrigir valor pago (R$)">
-                        <button type="button" class="forn-btn-salvar forn-btn-salvar-edit-adm"
-                                 data-id="<?= $fid ?>" title="Salvar correção">
-                          <i class="bi bi-check-lg"></i>
-                        </button>
-                        <button type="button" class="forn-btn-cancelar-edit" title="Cancelar">
-                          <i class="bi bi-x-lg"></i>
-                        </button>
-                      </div>
-                    </div>
-                    <?php endforeach; ?>
-                    <div class="px-3 py-2 bg-light border-top d-flex justify-content-between align-items-center" style="font-size:.72rem;">
-                      <span class="text-muted fw-bold text-uppercase">Total contratado:</span>
-                      <span class="fw-bold text-dark">R$ <?= number_format($total_forn, 2, ',', '.') ?></span>
-                    </div>
-                  <?php endif; ?>
-                </div>
-              </div>
-              <?php endif; ?>
-            </div>
-          </div>
-
-          <div class="collapse" id="collapseConvidados" data-bs-parent="#accordionAcessos">
-            <div class="card shadow-sm border-0" style="border-radius: var(--radius);">
-              <div class="etapa-body bg-white p-3 rounded-3">
-                <div class="row g-2 mb-3">
-                  <div class="col-12 col-sm-4">
-                    <button type="button" class="btn btn-success w-100 btn-sm fw-bold shadow-sm py-2 rounded-3 h-100"
-                            data-bs-toggle="modal" data-bs-target="#modalAddConvidado">
-                      <i class="bi bi-person-plus-fill me-1"></i> Criar Convite
-                    </button>
-                  </div>
-                  <div class="col-12 col-sm-4">
-                    <a href="convidados.php?id=<?= $evento_id ?>" class="btn btn-info w-100 btn-sm fw-bold shadow-sm py-2 rounded-3 h-100 d-flex align-items-center justify-content-center text-dark">
-                      <i class="bi bi-people-fill me-2"></i> Gerenciar
-                    </a>
-                  </div>
-                  <div class="col-12 col-sm-4">
-                    <a href="organizar_mesas.php?id=<?= $evento_id ?>" class="btn btn-primary w-100 btn-sm fw-bold shadow-sm py-2 rounded-3 h-100 d-flex align-items-center justify-content-center">
-                      <i class="bi bi-grid-3x3-gap-fill me-2"></i> Organizar Mesas
-                    </a>
-                  </div>
-                </div>
-                <div class="row g-2 mb-3">
-                  <div class="col-6">
-                    <div class="bg-success bg-opacity-10 rounded-3 p-3 text-center border border-success border-opacity-25">
-                      <h4 class="mb-0 fw-bold text-success" id="cnt-conf"><?= $total_conf ?></h4>
-                      <small class="text-muted" style="font-size:.7rem;">Confirmados</small>
-                    </div>
-                  </div>
-                  <div class="col-6">
-                    <div class="bg-warning bg-opacity-10 rounded-3 p-3 text-center border border-warning border-opacity-25">
-                      <h4 class="mb-0 fw-bold" id="cnt-pend" style="color:#d97706;"><?= $total_pend ?></h4>
-                      <small class="text-muted" style="font-size:.7rem;">Pendentes</small>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-        </div>
       </div>
     </div>
   </div>
@@ -2373,7 +2480,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
         <div class="modal-body p-4">
           <div class="mb-3">
             <label class="form-label small fw-bold text-secondary">Etapa (Nome da etapa)</label>
-            <input type="text" name="etapa" class="form-control" placeholder="Ex: Pré-Casamento" required>
+            <input type="text" name="etapa" class="form-control" placeholder="<?= htmlspecialchars($labels['placeholder_etapa_exemplo']) ?>" required>
           </div>
           <div class="mb-3">
             <label class="form-label small fw-bold text-secondary">Nome da Tarefa</label>
@@ -2424,50 +2531,6 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
 </div>
 <?php endif; ?>
 
-<div class="modal fade" id="modalFornecedor" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content border-0 shadow-lg rounded-4">
-      <div class="modal-header bg-light border-0">
-        <h5 class="modal-title fw-bold"><i class="bi bi-person-plus text-success me-2"></i> Adicionar Fornecedor</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-      </div>
-      <form method="POST" action="?id=<?= $evento_id ?>">
-        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
-        <input type="hidden" name="adicionar_fornecedor" value="1">
-        <div class="modal-body p-4">
-          <div class="mb-3">
-            <label class="form-label small fw-bold text-secondary">Serviço Prestado</label>
-            <input type="text" name="servico_fornecedor" class="form-control" placeholder="Ex: Fotografia, Buffet…" required>
-          </div>
-          <div class="mb-3">
-            <label class="form-label small fw-bold text-secondary">Nome / Empresa</label>
-            <input type="text" name="nome_fornecedor" class="form-control" required>
-          </div>
-          <div class="row g-3">
-            <div class="<?= $is_admin ? 'col-12 col-sm-6' : 'col-12' ?>">
-              <label class="form-label small fw-bold text-secondary">Status</label>
-              <select name="status_fornecedor" class="form-select">
-                <option value="Contratado">Contratado</option>
-                <option value="Orçamento">Apenas Orçamento</option>
-              </select>
-            </div>
-            <?php if ($is_admin): ?>
-            <div class="col-12 col-sm-6">
-              <label class="form-label small fw-bold text-secondary">Valor Total (R$)</label>
-              <input type="text" name="valor_fornecedor" class="form-control" placeholder="0,00">
-            </div>
-            <?php endif; ?>
-          </div>
-        </div>
-        <div class="modal-footer border-0 pt-0">
-          <button type="button" class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
-          <button type="submit" class="btn btn-success btn-sm px-4 rounded-pill fw-bold">Salvar</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-
 <div class="modal fade" id="modalLocais" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content border-0 shadow-lg rounded-4">
@@ -2517,9 +2580,16 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
         <input type="hidden" name="adicionar_convidado_admin" value="1">
         <div class="modal-body p-4">
-          <div class="mb-3">
-            <label class="form-label small fw-bold text-secondary">Nome do Convidado / Família (Titular)</label>
-            <input type="text" name="nome_convidado" class="form-control" required>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <label class="form-label small fw-bold text-secondary">Nome / Família</label>
+              <input type="text" name="nome_convidado" id="add-nome" class="form-control" required>
+              <div class="invalid-feedback aviso-nome-duplicado-add"></div>
+            </div>
+            <div class="col-6">
+              <label class="form-label small fw-bold text-secondary">Sobrenome</label>
+              <input type="text" name="sobrenome_convidado" id="add-sobrenome" class="form-control" placeholder="Opcional">
+            </div>
           </div>
           <div class="row g-3 mb-4">
             <div class="col-12 col-md-6">
@@ -2539,7 +2609,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
             </div>
             <div class="col-12 col-md-6">
               <label class="form-label small fw-bold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" name="telefone_convidado" class="form-control" placeholder="(00) 00000-0000" required>
+              <input type="text" inputmode="numeric" name="telefone_convidado" class="form-control input-telefone" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-4 text-secondary opacity-25">
@@ -2570,9 +2640,16 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
       <form id="form-edit-convidado">
         <input type="hidden" id="econv-id">
         <div class="modal-body p-4">
-          <div class="mb-3">
-            <label class="form-label small fw-bold text-secondary">Nome do Convidado / Família (Titular)</label>
-            <input type="text" id="econv-nome" class="form-control" required>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <label class="form-label small fw-bold text-secondary">Nome / Família</label>
+              <input type="text" id="econv-nome" class="form-control" required>
+              <div class="invalid-feedback aviso-nome-duplicado-edit"></div>
+            </div>
+            <div class="col-6">
+              <label class="form-label small fw-bold text-secondary">Sobrenome</label>
+              <input type="text" id="econv-sobrenome" class="form-control" placeholder="Opcional">
+            </div>
           </div>
           <div class="row g-3 mb-4">
             <div class="col-12 col-md-6">
@@ -2581,7 +2658,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
             </div>
             <div class="col-12 col-md-6">
               <label class="form-label small fw-bold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" id="econv-telefone" class="form-control" placeholder="(00) 00000-0000" required>
+              <input type="text" inputmode="numeric" id="econv-telefone" class="form-control input-telefone" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-4 text-secondary opacity-25">
@@ -2677,7 +2754,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
           </div>
           <div>
             <h5 class="modal-title fw-bold mb-0 text-dark">Playlist do Evento</h5>
-            <span class="text-muted" style="font-size:.73rem;">Sugestões e músicas confirmadas · visíveis ao casal</span>
+            <span class="text-muted" style="font-size:.73rem;">Sugestões e músicas confirmadas · visíveis ao <?= htmlspecialchars($labels['singular_contratante']) ?></span>
           </div>
         </div>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -2711,7 +2788,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
                   Momento da Celebração <span class="text-danger">*</span>
                 </label>
                 <select id="musica-momento" class="form-select">
-                  <?php foreach ($momentos_casamento as $momento): ?>
+                  <?php foreach ($labels['momentos_evento'] as $momento): ?>
                   <option value="<?= htmlspecialchars($momento, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($momento, ENT_QUOTES, 'UTF-8') ?></option>
                   <?php endforeach; ?>
                   <option value="__outro__">✏️ Outro (digitar)</option>
@@ -3049,7 +3126,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
           </div>
           <div>
             <h5 class="modal-title fw-bold mb-0 text-dark">Bloco de Notas</h5>
-            <span class="text-muted" style="font-size:.73rem;">Anotações do assessor · visíveis ao casal</span>
+            <span class="text-muted" style="font-size:.73rem;">Anotações do assessor · visíveis ao <?= htmlspecialchars($labels['singular_contratante']) ?></span>
           </div>
         </div>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -3090,7 +3167,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
                    style="font-size:.95rem;padding:.65rem .85rem;">
             <textarea id="nota-conteudo"
                       class="form-control nota-form-input nota-linhas" rows="4"
-                      placeholder="Escreva aqui a anotação para o casal…"
+                      placeholder="<?= htmlspecialchars($labels['placeholder_anotacao_cliente']) ?>"
                       style="font-size:.88rem;resize:vertical;padding:.65rem .85rem;line-height:1.7;"></textarea>
             <div class="d-flex justify-content-between align-items-center mt-3">
               <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-3 d-none" id="btn-cancelar-nota">
@@ -3199,62 +3276,53 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => item_no
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 const SELF       = window.location.href;
 const CSRF_TOKEN  = <?= json_encode($csrf_token) ?>;
 
-/* ---- Ao abrir "Convidados" ou "Equipe Contratada", rola a página até as opções aparecerem ---- */
-['collapseConvidados', 'collapseEquipe'].forEach(id => {
-  document.getElementById(id)?.addEventListener('shown.bs.collapse', function () {
-    this.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  });
-});
 
 /* ---- SINO DE NOTIFICAÇÕES ---- */
 
-// Botão "Marcar lidas": some com o badge e limpa a lista exibida
+// Botão "Marcar lidas": marca só as chaves visíveis agora (deste evento) e limpa a lista
 document.getElementById('btn-marcar-lidas')?.addEventListener('click', function (e) {
   e.stopPropagation();
+  const lista = document.getElementById('lista-notificacoes');
+  const chaves = lista ? Array.from(lista.querySelectorAll('.notif-item[data-chave]')).map(el => el.dataset.chave) : [];
   const badge = document.querySelector('#dropdown-notificacoes .badge');
   if (badge) badge.remove();
-  const lista = document.getElementById('lista-notificacoes');
   if (lista) {
     lista.innerHTML = '<div class="text-center text-muted p-4 small"><i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.</div>';
   }
-  fetch('notificacoes_marcar_lidas.php', { method: 'POST' }).catch(() => {});
+  if (chaves.length) {
+    fetch('notificacoes_marcar_lidas.php?chaves=' + encodeURIComponent(chaves.join(',')), { method: 'POST' }).catch(() => {});
+  }
 });
 
-// Diminui (ou remove) o número no sino sem esperar o servidor responder
-function decrementarBadgeNotificacoes() {
-  const badge = document.querySelector('#dropdown-notificacoes .badge');
-  if (!badge) return;
-  const atual = parseInt(badge.textContent, 10) || 0;
-  const novo  = Math.max(0, atual - 1);
-  if (novo === 0) { badge.remove(); return; }
-  badge.textContent = novo > 9 ? '9+' : String(novo);
-}
-
-// Clicar em uma notificação marca só ELA como lida (não todas — por isso o
-// item.chave individual, em vez do "último visto" geral) e a remove da lista
-// (notificações de nota, além disso, abrem o Bloco de Notas direto na nota)
+// Clicar numa notificação marca só ELA como vista (não todas) e a remove da
+// lista — notificações de nota, além disso, abrem o Bloco de Notas direto na nota.
 document.getElementById('lista-notificacoes')?.addEventListener('click', function (e) {
   const item = e.target.closest('.notif-item');
   if (!item) return;
   if (item.dataset.chave) {
-    fetch('notificacoes_marcar_item_lido.php', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'chave=' + encodeURIComponent(item.dataset.chave),
-      keepalive: true
-    }).catch(() => {});
-    decrementarBadgeNotificacoes();
+    fetch('notificacoes_marcar_lidas.php?chave=' + encodeURIComponent(item.dataset.chave), { method: 'POST', keepalive: true }).catch(() => {});
   }
   if (item.dataset.notaId) {
     bootstrap.Dropdown.getInstance(document.querySelector('#dropdown-notificacoes [data-bs-toggle="dropdown"]'))?.hide();
     abrirNotaNoModal(item.dataset.notaId);
   }
+  // Notificação com destino próprio (ex: arquivo enviado num fornecedor)
+  if (item.dataset.link) {
+    window.location.href = item.dataset.link;
+    return;
+  }
   item.remove();
+  const badge = document.querySelector('#dropdown-notificacoes .badge');
+  if (badge) {
+    const restante = parseInt(badge.textContent, 10) - 1;
+    if (restante > 0) { badge.textContent = restante > 9 ? '9+' : restante; }
+    else { badge.remove(); }
+  }
   const lista = document.getElementById('lista-notificacoes');
   if (lista && !lista.querySelector('.notif-item')) {
     lista.innerHTML = '<div class="text-center text-muted p-4 small"><i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.</div>';
@@ -3335,6 +3403,32 @@ async function ajax(obj) {
   return r.json();
 }
 
+/* ---- Máscara de telefone BR: (DD) XXXX-XXXX pra fixo, (DD) 9 XXXX-XXXX pra
+   celular — o "9" do celular fica separado pra ficar claro que é o prefixo. ---- */
+function formatarTelefoneBr(valorDigitado) {
+  const digitos = valorDigitado.replace(/\D/g, '');
+  if (digitos.length === 0) return '';
+  // Não trava a quantidade de dígitos nem força DDD/formato brasileiro pra
+  // números fora do padrão BR (DDD + 8 ou 9 dígitos) — pode ser um número
+  // internacional, com DDI ou outro formato qualquer.
+  if (digitos.length > 11) return digitos;
+  const ddd = digitos.slice(0, 2);
+  const resto = digitos.slice(2);
+  if (resto.length === 0) return '(' + ddd;
+  let out = '(' + ddd + ') ';
+  if (resto.length === 9) {
+    out += resto.slice(0, 1) + ' ' + resto.slice(1, 5) + (resto.length > 5 ? '-' + resto.slice(5, 9) : '');
+  } else {
+    out += resto.slice(0, 4) + (resto.length > 4 ? '-' + resto.slice(4, 8) : '');
+  }
+  return out;
+}
+document.querySelectorAll('.input-telefone').forEach(function (input) {
+  input.addEventListener('input', function () {
+    input.value = formatarTelefoneBr(input.value);
+  });
+});
+
 /* ---- BRL helpers — CORRIGIDO: remove "R$ " antes de parsear ---- */
 function brl(n) {
   return 'R$ ' + parseFloat(n).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -3395,6 +3489,33 @@ document.querySelectorAll('.btn-import-padrao').forEach(btn => {
       { icon: 'bi bi-download text-primary fs-4', iconBg: 'bg-primary bg-opacity-10', btnClass: 'btn-primary', btnText: 'Importar' }
     );
   });
+});
+
+/* ---- MOSTRAR/OCULTAR CHECKLIST (mobile), com transição suave de altura ---- */
+document.getElementById('btn-toggle-checklist-mobile')?.addEventListener('click', function () {
+  const corpo    = document.getElementById('checklist-corpo-mobile');
+  const icone    = document.getElementById('icone-toggle-checklist');
+  const texto    = document.getElementById('texto-toggle-checklist');
+  const vaiAbrir = !corpo.classList.contains('aberto');
+
+  if (vaiAbrir) {
+    corpo.classList.add('aberto');
+    corpo.style.maxHeight = corpo.scrollHeight + 'px';
+    corpo.addEventListener('transitionend', function limpar(e) {
+      if (e.propertyName === 'max-height') {
+        corpo.style.maxHeight = 'none';
+        corpo.removeEventListener('transitionend', limpar);
+      }
+    });
+  } else {
+    corpo.style.maxHeight = corpo.scrollHeight + 'px';
+    corpo.offsetHeight; // força reflow pra travar o valor atual antes de animar pra 0
+    corpo.classList.remove('aberto');
+    corpo.style.maxHeight = '0px';
+  }
+
+  icone.classList.toggle('girado', vaiAbrir);
+  texto.textContent = vaiAbrir ? 'Ocultar etapas do checklist' : 'Ver etapas do checklist';
 });
 
 /* ---- LIMPAR CHECKLIST ---- */
@@ -3590,152 +3711,6 @@ document.querySelectorAll('.form-ajax-tarefa').forEach(form => {
   });
 });
 
-/* ---- PAGAMENTO FORNECEDORES (AJAX) ---- */
-let totalPagoGeralAdm = <?= json_encode($total_forn_pago) ?>;
-const totalContratoGeralAdm = <?= json_encode($total_forn) ?>;
-
-function atualizarChipsGeraisAdm() {
-  const restante = Math.max(0, totalContratoGeralAdm - totalPagoGeralAdm);
-  const pct      = totalContratoGeralAdm > 0 ? Math.round(totalPagoGeralAdm / totalContratoGeralAdm * 100) : 0;
-  const elPago   = document.getElementById('adm-total-pago');
-  const elRest   = document.getElementById('adm-total-rest');
-  const elBarra  = document.getElementById('adm-barra-pago');
-  const elPct    = document.getElementById('adm-pct-pago');
-  if (elPago)  elPago.textContent  = brl(totalPagoGeralAdm);
-  if (elRest)  elRest.textContent  = brl(restante);
-  if (elBarra) elBarra.style.width = pct + '%';
-  if (elPct)   elPct.textContent   = pct + '%';
-}
-
-function atualizarLinhaFornecedorAdm(row, pago, total) {
-  const rest = Math.max(0, total - pago);
-  const pct  = total > 0 ? Math.round(pago / total * 100) : 0;
-  const quit = rest <= 0;
-
-  const pagoAnterior = parseFloat(row.dataset.pago || 0);
-  totalPagoGeralAdm += (pago - pagoAnterior);
-  row.dataset.pago = pago;
-
-  const barra = row.querySelector('.forn-barra-fill-adm');
-  if (barra) {
-    barra.className          = 'forn-barra-fill-adm ' + (quit ? 'bg-success' : pct >= 50 ? 'bg-info' : 'bg-warning');
-    barra.style.width        = pct + '%';
-    barra.style.height       = '100%';
-    barra.style.borderRadius = '999px';
-    barra.style.transition   = 'width .4s';
-  }
-  const badge = row.querySelector('.forn-badge-adm');
-  if (badge) {
-    badge.textContent = quit ? '✓ Quitado' : (pct > 0 ? pct + '%' : '—');
-    badge.className   = 'forn-pago-badge forn-badge-adm ' + (quit ? 'bg-success text-white' : 'bg-warning text-dark');
-  }
-  const restEl = row.querySelector('.forn-rest-adm');
-  if (restEl) {
-    restEl.textContent = quit ? '✓ Quitado' : 'Resta ' + brl(rest);
-    restEl.className   = 'forn-val-rest forn-rest-adm ' + (quit ? 'ok' : 'nok');
-  }
-  const pagoTxt = row.querySelector('.forn-pago-valor-txt');
-  if (pagoTxt) pagoTxt.textContent = pago.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-
-  atualizarChipsGeraisAdm();
-}
-
-/* Somar novo pagamento ao valor já pago */
-document.querySelectorAll('.forn-btn-add-adm').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    const fid   = btn.dataset.id;
-    const row   = document.getElementById('forn-adm-' + fid);
-    const input = row.querySelector('.forn-input-add');
-    const total = parseFloat(input.dataset.total || 0);
-    const valor = parseBrl(input.value);
-    if (!valor || valor <= 0) { toast('Informe um valor maior que zero.', 'verm'); return; }
-    const origBtn = btn.innerHTML;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    btn.disabled  = true;
-    try {
-      const r = await ajax({ adicionar_pagamento: '1', fornecedor_id: fid, valor_pago: valor.toString() });
-      if (r.ok) {
-        const pago = parseFloat(r.valor_pago);
-        const quit = parseFloat(r.valor_rest) <= 0;
-        atualizarLinhaFornecedorAdm(row, pago, total);
-        input.value = '';
-        toast(quit ? 'Pagamento quitado! 🎉' : 'Pagamento adicionado!', quit ? 'verde' : 'info');
-      } else {
-        toast(r.msg || 'Erro ao salvar pagamento.', 'verm');
-      }
-    } catch { toast('Erro de conexão. Tente novamente.', 'verm'); }
-    btn.innerHTML = origBtn;
-    btn.disabled  = false;
-  });
-});
-
-/* Alternar para o modo de corrigir o valor pago */
-document.querySelectorAll('.forn-btn-editar-pago').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const fid       = btn.dataset.id;
-    const row       = document.getElementById('forn-adm-' + fid);
-    const addWrap   = row.querySelector('.forn-add-wrap');
-    const editWrap  = row.querySelector('.forn-edit-wrap');
-    const editInput = editWrap.querySelector('.forn-input-edit');
-    editInput.value = parseFloat(row.dataset.pago || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-    addWrap.style.display  = 'none';
-    editWrap.style.display = 'flex';
-    editInput.focus();
-    editInput.select();
-  });
-});
-
-/* Cancelar a correção */
-document.querySelectorAll('.forn-btn-cancelar-edit').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const row = btn.closest('.forn-pago-row');
-    row.querySelector('.forn-edit-wrap').style.display = 'none';
-    row.querySelector('.forn-add-wrap').style.display  = 'flex';
-  });
-});
-
-/* Salvar a correção (sobrescreve o valor pago) */
-document.querySelectorAll('.forn-btn-salvar-edit-adm').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    const fid   = btn.dataset.id;
-    const row   = document.getElementById('forn-adm-' + fid);
-    const input = row.querySelector('.forn-input-edit');
-    const total = parseFloat(input.dataset.total || 0);
-    let   valor = parseBrl(input.value);
-    if (valor < 0) { toast('O valor não pode ser negativo.', 'verm'); return; }
-    if (valor > total) {
-      toast('Valor maior que o contrato! Ajustado para o total.', 'info');
-      valor = total;
-    }
-    const origBtn = btn.innerHTML;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    btn.disabled  = true;
-    try {
-      const r = await ajax({ atualizar_valor_pago: '1', fornecedor_id: fid, valor_pago: valor.toString() });
-      if (r.ok) {
-        const pago = parseFloat(r.valor_pago);
-        atualizarLinhaFornecedorAdm(row, pago, total);
-        row.querySelector('.forn-edit-wrap').style.display = 'none';
-        row.querySelector('.forn-add-wrap').style.display  = 'flex';
-        toast('Valor corrigido!', 'info');
-      } else {
-        toast(r.msg || 'Erro ao salvar pagamento.', 'verm');
-      }
-    } catch { toast('Erro de conexão. Tente novamente.', 'verm'); }
-    btn.innerHTML = origBtn;
-    btn.disabled  = false;
-  });
-});
-
-document.querySelectorAll('.forn-input-pago-adm').forEach(input => {
-  input.addEventListener('blur',  () => {
-    if (input.value.trim() === '') return;
-    const n = parseBrl(input.value);
-    if (!isNaN(n)) input.value = n.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-  });
-  input.addEventListener('focus', () => input.select());
-});
-
 /* ---- CONVIDADOS ---- */
 function deltaCntTotal(n) {
   const e = document.getElementById('cnt-total');
@@ -3880,7 +3855,7 @@ function bindEditConv(btn) {
     document.getElementById('econv-id').value        = btn.dataset.id;
     document.getElementById('econv-nome').value       = btn.dataset.nome;
     document.getElementById('econv-categoria').value  = btn.dataset.categoria;
-    document.getElementById('econv-telefone').value   = btn.dataset.telefone;
+    document.getElementById('econv-telefone').value   = formatarTelefoneBr(btn.dataset.telefone || '');
 
     const listaEdit = document.getElementById('acomp-edit-lista');
     listaEdit.innerHTML = '';

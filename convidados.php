@@ -3,13 +3,16 @@ session_start();
 require_once 'sessao_timeout.inc.php';
 verificar_sessao_ativa();
 
-if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'noivos'])) {
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'noivos', 'desenvolvedor'])) {
     header("Location: index.php?sessao_expirada=1");
     exit;
 }
 $eh_noivos = ($_SESSION['usuario_tipo'] === 'noivos');
 
 require_once 'conexao.php';
+require_once 'modulos_evento.inc.php';
+garantir_coluna_tipo_evento($pdo);
+garantir_coluna_sobrenome_convidado($pdo);
 
 /* ============================================================
    CSRF TOKEN
@@ -43,6 +46,20 @@ if ($eh_noivos) {
 }
 $url_pagina = 'convidados.php' . ($eh_noivos ? '' : "?id=$evento_id");
 
+// Impede a equipe de acessar/manipular (inclusive via AJAX) convidados de um
+// evento de outro módulo — checado aqui, antes do bloco de handlers POST logo
+// abaixo, para também cobrir as ações AJAX (não só a renderização da página).
+if (!$eh_noivos) {
+    $modulo_ativo = $_SESSION['modulo_ativo'] ?? null;
+    $stmt_tipo_evento = $pdo->prepare("SELECT tipo_evento FROM eventos WHERE id = ?");
+    $stmt_tipo_evento->execute([$evento_id]);
+    $tipo_evento_alvo = $stmt_tipo_evento->fetchColumn();
+    if (!$modulo_ativo || $tipo_evento_alvo === false || $tipo_evento_alvo !== $modulo_ativo) {
+        header("Location: painel_admin.php");
+        exit;
+    }
+}
+
 /* ============================================================
    AUTO-CONFIGURAÇÃO DO BANCO DE DADOS
    ============================================================ */
@@ -70,6 +87,18 @@ if (!schema_ja_verificado('convite_evento_v2')) {
         try { $pdo->query($check); } catch (Exception $e) { try { $pdo->exec($alter); } catch (Exception $x) {} }
     }
     marcar_schema_verificado('convite_evento_v2');
+}
+// Posição de enquadramento da foto do casal (arrastar pra ajustar) — marcador
+// próprio porque 'convite_evento_v2' já tinha rodado antes de essas colunas existirem.
+if (!schema_ja_verificado('convite_foto_posicao_v1')) {
+    $schema_checks_foto_pos = [
+        "SELECT foto_casal_pos_x FROM eventos LIMIT 1" => "ALTER TABLE eventos ADD COLUMN foto_casal_pos_x DECIMAL(5,2) NOT NULL DEFAULT 50",
+        "SELECT foto_casal_pos_y FROM eventos LIMIT 1" => "ALTER TABLE eventos ADD COLUMN foto_casal_pos_y DECIMAL(5,2) NOT NULL DEFAULT 50",
+    ];
+    foreach ($schema_checks_foto_pos as $check => $alter) {
+        try { $pdo->query($check); } catch (Exception $e) { try { $pdo->exec($alter); } catch (Exception $x) {} }
+    }
+    marcar_schema_verificado('convite_foto_posicao_v1');
 }
 
 // Link público de confirmação de presença (usado pelo botão de WhatsApp).
@@ -129,6 +158,56 @@ function sincronizar_acompanhantes(PDO $pdo, int $evento_id, int $principal_id, 
     }
 }
 
+/** Verifica se já existe outro convidado titular deste evento com o mesmo
+ *  telefone (comparando só os dígitos, já que a formatação pode variar —
+ *  "(95) 9 8158-9312" e "95981589312" são o mesmo número). Cada convidado
+ *  precisa de um número próprio, pois é o que identifica o link de convite
+ *  individual. Retorna o nome do convidado conflitante, ou null se não houver. */
+function convidado_telefone_duplicado(PDO $pdo, int $evento_id, string $fone, int $ignorar_id = 0): ?string {
+    $digitosNovo = preg_replace('/\D+/', '', $fone);
+    if ($digitosNovo === '') return null;
+    $stmt = $pdo->prepare("SELECT id, nome, telefone FROM convidados WHERE evento_id = ? AND convidado_principal_id IS NULL AND telefone IS NOT NULL AND telefone <> ''");
+    $stmt->execute([$evento_id]);
+    foreach ($stmt->fetchAll() as $c) {
+        if ((int)$c['id'] === $ignorar_id) continue;
+        if (preg_replace('/\D+/', '', $c['telefone']) === $digitosNovo) {
+            return $c['nome'];
+        }
+    }
+    return null;
+}
+
+/** Verifica se já existe outro convidado titular deste evento com o mesmo
+ *  primeiro nome E sem sobrenome cadastrado (ambíguo — dois "Marcos" sem
+ *  como diferenciar). Só é considerado conflito quando o convidado NOVO
+ *  também está sem sobrenome — se ele já informou um, a ambiguidade dessa
+ *  criação/edição específica já foi resolvida. */
+function convidado_nome_duplicado(PDO $pdo, int $evento_id, string $nomeCompleto, int $ignorar_id = 0): bool {
+    $alvo = trim($nomeCompleto);
+    if ($alvo === '') return false;
+    // Compara o nome final (já com sobrenome concatenado, se houver) contra o
+    // de todo mundo — não só contra quem também está sem sobrenome. Dar um
+    // sobrenome só resolve a ambiguidade se o resultado for um nome diferente;
+    // repetir "Rick" + "Bruno" três vezes tem que continuar batendo.
+    $stmt = $pdo->prepare("SELECT id FROM convidados WHERE evento_id = ? AND convidado_principal_id IS NULL AND LOWER(TRIM(nome)) = LOWER(TRIM(?)) AND id != ?");
+    $stmt->execute([$evento_id, $alvo, $ignorar_id]);
+    return (bool)$stmt->fetchColumn();
+}
+
+/** Pra repopular o campo "Nome" do modal de edição sem duplicar o sobrenome:
+ *  como "nome" guarda o nome completo já concatenado ("Marcos Vinícius"),
+ *  remove o sufixo " + sobrenome" pra voltar só o primeiro nome digitado.
+ *  Registros antigos (sem sobrenome próprio) retornam o nome como está. */
+function nome_convidado_sem_sobrenome(string $nome, ?string $sobrenome): string {
+    $sobrenome = trim((string)$sobrenome);
+    if ($sobrenome === '') return $nome;
+    $sufixo = ' ' . $sobrenome;
+    if (str_ends_with($nome, $sufixo)) {
+        return substr($nome, 0, -strlen($sufixo));
+    }
+    return $nome;
+}
+
 /* ============================================================
    POST HANDLERS
    ============================================================ */
@@ -177,21 +256,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // noivos/assessoria saberem se vão comparecer antes deles mesmos responderem pelo link.
     if (isset($_POST['adicionar_convidado'])) {
         $nome       = trim($_POST['nome_convidado']      ?? '');
+        $sobrenome  = trim($_POST['sobrenome_convidado']  ?? '');
         $fone       = trim($_POST['telefone_convidado']  ?? '');
         $cat        = trim($_POST['categoria_convidado'] ?? 'Outros');
         $nomes_acomp  = $_POST['nome_acompanhante_novo']  ?? [];
         $faixas_acomp = $_POST['faixa_acompanhante_novo'] ?? [];
+        $nome_completo = trim($nome . ($sobrenome !== '' ? ' ' . $sobrenome : ''));
 
         if ($nome === '') {
             $_SESSION['msg_erro'] = "Informe o nome do convidado.";
         } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
             $_SESSION['msg_erro'] = "Informe um telefone/WhatsApp válido (com DDD) para o convidado.";
+        } elseif (($dup_nome = convidado_telefone_duplicado($pdo, $evento_id, $fone)) !== null) {
+            $_SESSION['msg_erro'] = "Esse telefone já está cadastrado para <strong>" . htmlspecialchars($dup_nome, ENT_QUOTES, 'UTF-8') . "</strong>. Cada convidado precisa de um número diferente.";
+        } elseif (convidado_nome_duplicado($pdo, $evento_id, $nome_completo)) {
+            $_SESSION['msg_erro'] = "Já existe um convite com o nome <strong>" . htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8') . "</strong>. Informe um sobrenome diferente pra identificar cada um.";
         } else {
-            $pdo->prepare("INSERT INTO convidados (evento_id, nome, telefone, categoria, confirmado) VALUES (?, ?, ?, ?, 0)")
-                ->execute([$evento_id, $nome, $fone, $cat]);
+            $pdo->prepare("INSERT INTO convidados (evento_id, nome, sobrenome, telefone, categoria, confirmado) VALUES (?, ?, ?, ?, ?, 0)")
+                ->execute([$evento_id, $nome_completo, $sobrenome ?: null, $fone, $cat]);
             $novo_id = (int)$pdo->lastInsertId();
             sincronizar_acompanhantes($pdo, $evento_id, $novo_id, [], $nomes_acomp, $faixas_acomp);
-            $_SESSION['msg_sucesso'] = "Convite <strong>" . htmlspecialchars($nome) . "</strong> criado!";
+            $_SESSION['msg_sucesso'] = "Convite <strong>" . htmlspecialchars($nome_completo) . "</strong> criado!";
         }
         header("Location: $url_pagina"); exit;
     }
@@ -200,22 +285,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['editar_convidado'])) {
         $cid        = (int)($_POST['convidado_id'] ?? 0);
         $nome       = trim($_POST['nome_convidado']      ?? '');
+        $sobrenome  = trim($_POST['sobrenome_convidado']  ?? '');
         $fone       = trim($_POST['telefone_convidado']  ?? '');
         $cat        = trim($_POST['categoria_convidado'] ?? 'Outros');
         $confirmado = ($_POST['status_convidado'] ?? 'pendente') === 'confirmado' ? 1 : 0;
         $ids_acomp    = $_POST['id_acompanhante_edit']    ?? [];
         $nomes_acomp  = $_POST['nome_acompanhante_edit']  ?? [];
         $faixas_acomp = $_POST['faixa_acompanhante_edit'] ?? [];
+        $nome_completo = trim($nome . ($sobrenome !== '' ? ' ' . $sobrenome : ''));
 
         if ($cid <= 0 || $nome === '') {
             $_SESSION['msg_erro'] = "Informe o nome do convidado.";
         } elseif (strlen(preg_replace('/\D+/', '', $fone)) < 10) {
             $_SESSION['msg_erro'] = "Informe um telefone/WhatsApp válido (com DDD) para o convidado.";
+        } elseif (($dup_nome = convidado_telefone_duplicado($pdo, $evento_id, $fone, $cid)) !== null) {
+            $_SESSION['msg_erro'] = "Esse telefone já está cadastrado para <strong>" . htmlspecialchars($dup_nome, ENT_QUOTES, 'UTF-8') . "</strong>. Cada convidado precisa de um número diferente.";
+        } elseif (convidado_nome_duplicado($pdo, $evento_id, $nome_completo, $cid)) {
+            $_SESSION['msg_erro'] = "Já existe um convite com o nome <strong>" . htmlspecialchars($nome_completo, ENT_QUOTES, 'UTF-8') . "</strong>. Informe um sobrenome diferente pra identificar cada um.";
         } else {
-            $pdo->prepare("UPDATE convidados SET nome = ?, telefone = ?, categoria = ?, confirmado = ? WHERE id = ? AND evento_id = ?")
-                ->execute([$nome, $fone, $cat, $confirmado, $cid, $evento_id]);
+            $pdo->prepare("UPDATE convidados SET nome = ?, sobrenome = ?, telefone = ?, categoria = ?, confirmado = ? WHERE id = ? AND evento_id = ?")
+                ->execute([$nome_completo, $sobrenome ?: null, $fone, $cat, $confirmado, $cid, $evento_id]);
             sincronizar_acompanhantes($pdo, $evento_id, $cid, $ids_acomp, $nomes_acomp, $faixas_acomp);
-            $_SESSION['msg_sucesso'] = "Convidado <strong>" . htmlspecialchars($nome) . "</strong> atualizado!";
+            $_SESSION['msg_sucesso'] = "Convidado <strong>" . htmlspecialchars($nome_completo) . "</strong> atualizado!";
         }
         header("Location: $url_pagina"); exit;
     }
@@ -232,19 +323,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: $url_pagina"); exit;
     }
 
-    // 4. Alternar manualmente o status de confirmação de um acompanhante — a
-    // assessoria pode marcar presença direto, sem depender do link do convidado.
+    // 4. Alternar manualmente o status de confirmação — titular ou acompanhante,
+    // a assessoria/noivos podem marcar presença direto, sem abrir o modal de
+    // editar nem depender do link do convidado. Responde em JSON (clique via
+    // JS, sem recarregar a página — antes isso jogava a rolagem pro topo).
     if (isset($_POST['alternar_status_acompanhante'])) {
         $cid = (int)($_POST['convidado_id'] ?? 0);
         $confirmar = ($_POST['confirmar'] ?? '0') === '1';
-        $pdo->prepare("UPDATE convidados SET confirmado = ?, resposta_rsvp = ? WHERE id = ? AND evento_id = ? AND convidado_principal_id IS NOT NULL")
-            ->execute([$confirmar ? 1 : 0, $confirmar ? 'confirmado' : null, $cid, $evento_id]);
-        header("Location: $url_pagina"); exit;
+        $upd = $pdo->prepare("UPDATE convidados SET confirmado = ?, resposta_rsvp = ? WHERE id = ? AND evento_id = ?");
+        $upd->execute([$confirmar ? 1 : 0, $confirmar ? 'confirmado' : null, $cid, $evento_id]);
+        if ($upd->rowCount() === 0) {
+            json_out(['ok' => false, 'msg' => 'Convidado não encontrado.']);
+        }
+        json_out([
+            'ok'         => true,
+            'id'         => $cid,
+            'confirmado' => $confirmar ? 1 : 0,
+            'status'     => $confirmar ? 'confirmado' : 'pendente',
+            'label'      => $confirmar ? 'Confirmado' : 'Pendente',
+        ]);
     }
 
     // 5. Personalizar convite: ativar/desativar e enviar a foto do casal
     if (isset($_POST['salvar_foto_casal'])) {
         $ativa = ($_POST['foto_ativa'] ?? '0') === '1';
+        $pos_x = isset($_POST['foto_casal_pos_x']) ? max(0, min(100, (float)$_POST['foto_casal_pos_x'])) : 50;
+        $pos_y = isset($_POST['foto_casal_pos_y']) ? max(0, min(100, (float)$_POST['foto_casal_pos_y'])) : 50;
 
         if (!$ativa) {
             $pdo->prepare("UPDATE eventos SET foto_casal_ativa = 0 WHERE id = ?")->execute([$evento_id]);
@@ -274,12 +378,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $antigo = './uploads/' . $foto_atual;
                 if (is_file($antigo)) @unlink($antigo);
             }
-            $pdo->prepare("UPDATE eventos SET foto_casal = ?, foto_casal_ativa = 1 WHERE id = ?")->execute([$novo_nome, $evento_id]);
+            $pdo->prepare("UPDATE eventos SET foto_casal = ?, foto_casal_ativa = 1, foto_casal_pos_x = ?, foto_casal_pos_y = ? WHERE id = ?")
+                ->execute([$novo_nome, $pos_x, $pos_y, $evento_id]);
             json_out(['ok' => true, 'ativa' => 1, 'foto_url' => 'uploads/' . $novo_nome]);
         }
 
         if (!empty($foto_atual)) {
-            $pdo->prepare("UPDATE eventos SET foto_casal_ativa = 1 WHERE id = ?")->execute([$evento_id]);
+            $pdo->prepare("UPDATE eventos SET foto_casal_ativa = 1, foto_casal_pos_x = ?, foto_casal_pos_y = ? WHERE id = ?")
+                ->execute([$pos_x, $pos_y, $evento_id]);
             json_out(['ok' => true, 'ativa' => 1, 'foto_url' => 'uploads/' . $foto_atual]);
         }
 
@@ -336,7 +442,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
    CARREGAMENTO DE DADOS
    ============================================================ */
 $stmt = $pdo->prepare("
-    SELECT e.data_evento, e.cor_convite, e.foto_casal, e.foto_casal_ativa, e.mensagem_convite, e.cor_btn_sim, e.cor_btn_nao, c.nome
+    SELECT e.data_evento, e.cor_convite, e.foto_casal, e.foto_casal_ativa, e.foto_casal_pos_x, e.foto_casal_pos_y, e.mensagem_convite, e.cor_btn_sim, e.cor_btn_nao, e.tipo_evento, c.nome
     FROM eventos e
     INNER JOIN clientes c ON e.cliente_id = c.id
     WHERE e.id = ?
@@ -344,6 +450,10 @@ $stmt = $pdo->prepare("
 $stmt->execute([$evento_id]);
 $evento = $stmt->fetch();
 if (!$evento) die("Evento não encontrado.");
+
+$labels = labels_modulo_evento($evento['tipo_evento']);
+garantir_tabela_modulos_config($pdo);
+$cor_modulo = cor_painel_evento($pdo, $evento);
 
 $stmtC = $pdo->prepare("SELECT * FROM convidados WHERE evento_id = ? ORDER BY nome ASC");
 $stmtC->execute([$evento_id]);
@@ -406,9 +516,10 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <?php include __DIR__ . '/pwa_head.inc.php'; ?>
   <title>Gerenciar Convidados — <?= htmlspecialchars($evento['nome']) ?> - Meu Evento PRO</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css?v=15">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+  <link rel="stylesheet" href="css/estilo.css?v=18">
+  <?= estilo_tema_evento($cor_modulo) ?>
 
   <style>
     :root { --radius: 12px; }
@@ -431,9 +542,30 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
     @media (max-width: 767.98px) {
       .hdr-actions-row { width: 100%; flex-wrap: wrap !important; }
       .hdr-actions-row .btn {
-        flex: 1 1 calc(50% - .5rem); min-width: 0; white-space: normal; line-height: 1.2;
-        font-size: .72rem; padding: .5rem .35rem;
+        flex: 1 1 calc(50% - .5rem); min-width: 0; white-space: nowrap; line-height: 1.2;
+        font-size: .7rem; padding: .5rem .3rem; overflow: hidden; text-overflow: ellipsis;
       }
+      .hdr-actions-row .btn i { margin-right: .25rem !important; }
+
+      /* Barra do topo: logo menor pra "Painel" caber na mesma linha */
+      .logo-nav-conv { height: 30px !important; }
+
+      /* Cards de contagem: ícone e setinha menores, texto sem quebrar,
+         setinha dentro do card (antes vazava pra fora no "Confirmados"). */
+      body .stat-card { padding: .65rem .5rem; gap: .45rem; min-width: 0; }
+      body .stat-card > div { min-width: 0; }
+      body .stat-card .stat-icon { width: 32px; height: 32px; border-radius: 10px; font-size: .9rem; }
+      /* Número e nome (Convites/Confirmados/Pendentes/Recusaram) lado a lado
+         em vez de um embaixo do outro — ganha altura pro card ficar mais baixo. */
+      body .stat-card .val-lbl-row { display: flex; align-items: baseline; gap: .3rem; min-width: 0; }
+      body .stat-card .val { font-size: 1.1rem; flex-shrink: 0; }
+      body .stat-card .lbl { font-size: .6rem; letter-spacing: -.01em; margin-top: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      body .stat-card .stat-chevron { display: none; } /* o card inteiro já é clicável */
+      body #cnt-pessoas { white-space: nowrap; }
+
+      /* Filtros (Todos/Confirmados/Pendentes/Recusaram) cabendo na linha */
+      #filtros-wrap { flex-wrap: nowrap; }
+      #filtros-wrap .btn { flex: 1 1 auto; min-width: 0; padding: .3rem .35rem !important; font-size: .66rem !important; white-space: nowrap; }
     }
 
     .stat-card {
@@ -620,14 +752,14 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
 </head>
 <body>
 
-<nav class="navbar navbar-dark bg-dark shadow-sm">
-  <div class="container-fluid px-3 px-lg-4">
-    <span class="navbar-brand mb-0">
-      <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" style="height:40px;">
+<nav class="navbar navbar-dark shadow-sm" style="background-color: <?= htmlspecialchars($cor_modulo) ?>;">
+  <div class="container-fluid px-3 px-lg-4 flex-nowrap">
+    <span class="navbar-brand mb-0 flex-shrink-1" style="min-width:0;">
+      <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" class="logo-nav-conv" style="height:40px;">
     </span>
-    <div class="d-flex align-items-center gap-2">
-      <a href="<?= $eh_noivos ? 'noivos.php' : 'gerenciar.php?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-3">
-        <i class="bi bi-arrow-left me-1"></i> Voltar ao Painel
+    <div class="d-flex align-items-center gap-2 flex-shrink-0">
+      <a href="<?= $eh_noivos ? 'noivos.php' : 'gerenciar.php?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-3 text-nowrap">
+        <i class="bi bi-arrow-left me-1"></i> <span class="d-none d-sm-inline">Voltar ao </span>Painel
       </a>
     </div>
   </div>
@@ -667,13 +799,13 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
       </div>
       <div class="d-flex flex-wrap gap-2 hdr-actions-row">
         <button class="btn btn-sm btn-outline-light rounded-pill fw-semibold px-3 btn-chama-atencao" data-bs-toggle="modal" data-bs-target="#modalPersonalizarConvite">
-          <i class="bi bi-palette-fill me-1 icone-arco-iris"></i> Personalizar Convite
+          <i class="bi bi-palette-fill me-1 icone-arco-iris"></i> Personalizar<span class="d-none d-md-inline"> Convite</span>
         </button>
         <button class="btn btn-sm btn-outline-light rounded-pill fw-semibold px-3" data-bs-toggle="modal" data-bs-target="#modalLinkGeral">
           <i class="bi bi-link-45deg me-1"></i> Link Geral
         </button>
         <a href="organizar_mesas.php<?= $eh_noivos ? '' : '?id=' . $evento_id ?>" class="btn btn-sm btn-outline-light rounded-pill fw-semibold px-3">
-          <i class="bi bi-grid-3x3-gap-fill me-1"></i> Organizar Mesas
+          <i class="bi bi-grid-3x3-gap-fill me-1"></i> <span class="d-none d-md-inline">Organizar </span>Mesas
         </a>
         <button class="btn btn-sm btn-info rounded-pill text-dark fw-semibold shadow-sm px-3" data-bs-toggle="modal" data-bs-target="#modalAddConvidado">
           <i class="bi bi-person-plus-fill me-1"></i> Criar Convite
@@ -687,9 +819,11 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
       <div class="stat-card stat-total" data-filtro="todos">
         <span class="stat-icon"><i class="bi bi-envelope-fill"></i></span>
         <div>
-          <div class="val" id="cnt-total"><?= $total_conv ?></div>
-          <div class="lbl">Convites</div>
-          <div class="text-muted" style="font-size:.62rem;margin-top:.15rem;" id="cnt-pessoas"><?= $total_pessoas ?> convidado<?= $total_pessoas === 1 ? '' : 's' ?> ao todo</div>
+          <div class="val-lbl-row">
+            <div class="val" id="cnt-total"><?= $total_conv ?></div>
+            <div class="lbl">Convites</div>
+          </div>
+          <div class="text-muted" style="font-size:.62rem;margin-top:.15rem;" id="cnt-pessoas"><?= $total_pessoas ?> <span class="d-none d-md-inline">convidado<?= $total_pessoas === 1 ? '' : 's' ?> ao todo</span><span class="d-md-none">pessoa<?= $total_pessoas === 1 ? '' : 's' ?></span></div>
         </div>
         <i class="bi bi-chevron-right stat-chevron"></i>
       </div>
@@ -697,21 +831,21 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
     <div class="col">
       <div class="stat-card stat-confirmado" data-filtro="confirmado">
         <span class="stat-icon"><i class="bi bi-check-circle-fill"></i></span>
-        <div><div class="val" id="cnt-conf"><?= $total_conf ?></div><div class="lbl">Confirmados</div></div>
+        <div><div class="val-lbl-row"><div class="val" id="cnt-conf"><?= $total_conf ?></div><div class="lbl">Confirmados</div></div></div>
         <i class="bi bi-chevron-right stat-chevron"></i>
       </div>
     </div>
     <div class="col">
       <div class="stat-card stat-pendente" data-filtro="pendente">
         <span class="stat-icon"><i class="bi bi-hourglass-split"></i></span>
-        <div><div class="val" id="cnt-pend"><?= $total_pend ?></div><div class="lbl">Pendentes</div></div>
+        <div><div class="val-lbl-row"><div class="val" id="cnt-pend"><?= $total_pend ?></div><div class="lbl">Pendentes</div></div></div>
         <i class="bi bi-chevron-right stat-chevron"></i>
       </div>
     </div>
     <div class="col">
       <div class="stat-card stat-recusado" data-filtro="recusado">
         <span class="stat-icon"><i class="bi bi-x-circle-fill"></i></span>
-        <div><div class="val" id="cnt-recusado"><?= $total_recusado ?></div><div class="lbl">Recusaram</div></div>
+        <div><div class="val-lbl-row"><div class="val" id="cnt-recusado"><?= $total_recusado ?></div><div class="lbl">Recusaram</div></div></div>
         <i class="bi bi-chevron-right stat-chevron"></i>
       </div>
     </div>
@@ -790,7 +924,12 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
           <div class="family-titular p-3 flex-grow-1 d-flex flex-column">
             <div class="d-flex justify-content-between align-items-start gap-1">
               <span class="fw-bold text-dark text-truncate" style="font-size:.85rem;" title="<?= htmlspecialchars($c['nome'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($c['nome'], ENT_QUOTES, 'UTF-8') ?></span>
-              <span class="status-pill status-<?= $status ?> flex-shrink-0"><span class="status-dot"></span><?= $statusLabel ?></span>
+              <button type="button" class="status-pill status-<?= $status ?> flex-shrink-0 btn-status-convidado btn-status-titular"
+                      data-id="<?= $c['id'] ?>"
+                      data-status="<?= $status ?>"
+                      title="<?= $status === 'confirmado' ? 'Clique para desmarcar a confirmação' : 'Clique para confirmar presença manualmente' ?>">
+                <span class="status-dot"></span><span class="status-label"><?= $statusLabel ?></span>
+              </button>
             </div>
             <div class="d-flex align-items-center gap-1 flex-wrap mt-1">
               <span class="badge bg-light text-dark border" style="font-size:.6rem;"><?= htmlspecialchars($c['categoria'], ENT_QUOTES, 'UTF-8') ?></span>
@@ -815,7 +954,8 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
                 <button type="button" class="btn-icon-conv text-primary btn-edit-convidado"
                         title="Editar convidado"
                         data-id="<?= $c['id'] ?>"
-                        data-nome="<?= htmlspecialchars($c['nome'], ENT_QUOTES, 'UTF-8') ?>"
+                        data-nome="<?= htmlspecialchars(nome_convidado_sem_sobrenome($c['nome'], $c['sobrenome'] ?? null), ENT_QUOTES, 'UTF-8') ?>"
+                        data-sobrenome="<?= htmlspecialchars($c['sobrenome'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                         data-telefone="<?= htmlspecialchars($c['telefone'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                         data-categoria="<?= htmlspecialchars($c['categoria'], ENT_QUOTES, 'UTF-8') ?>"
                         data-acompanhantes-json="<?= $acompJson ?>"
@@ -849,16 +989,12 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
             <div class="family-acomp-item">
               <span class="text-truncate fw-semibold min-w-0" style="font-size:.72rem;color:#334155;" title="<?= htmlspecialchars($am['nome'] . ' — ' . $am['rotulo'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($am['nome'], ENT_QUOTES, 'UTF-8') ?></span>
               <div class="d-flex align-items-center gap-1 flex-shrink-0">
-                <form method="POST" class="m-0">
-                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
-                  <input type="hidden" name="alternar_status_acompanhante" value="1">
-                  <input type="hidden" name="convidado_id" value="<?= $am['id'] ?>">
-                  <input type="hidden" name="confirmar" value="<?= $am['status'] === 'confirmado' ? '0' : '1' ?>">
-                  <button type="submit" class="status-pill status-pill-mini status-<?= $am['status'] ?> btn-status-convidado"
-                          title="<?= $am['status'] === 'confirmado' ? 'Clique para desmarcar a confirmação' : 'Clique para confirmar presença manualmente' ?>">
-                    <span class="status-dot"></span><?= $amLabel ?>
-                  </button>
-                </form>
+                <button type="button" class="status-pill status-pill-mini status-<?= $am['status'] ?> btn-status-convidado"
+                        data-id="<?= $am['id'] ?>"
+                        data-status="<?= $am['status'] ?>"
+                        title="<?= $am['status'] === 'confirmado' ? 'Clique para desmarcar a confirmação' : 'Clique para confirmar presença manualmente' ?>">
+                  <span class="status-dot"></span><span class="status-label"><?= $amLabel ?></span>
+                </button>
               </div>
             </div>
             <?php endforeach; ?>
@@ -925,7 +1061,7 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
                 <i class="bi bi-image-fill text-danger"></i>
               </div>
               <div>
-                <label class="form-check-label fw-bold small text-dark mb-0" for="switch-foto-convite">Foto do casal no convite</label>
+                <label class="form-check-label fw-bold small text-dark mb-0" for="switch-foto-convite"><?= htmlspecialchars($labels['label_foto_convite']) ?></label>
                 <p class="text-muted mb-0" style="font-size:.76rem;line-height:1.4;">Quando ativada, a foto aparece no topo da página que o convidado vê ao abrir o link.</p>
               </div>
             </div>
@@ -936,12 +1072,18 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
           </div>
 
           <div id="area-foto-convite" class="mt-3 pt-3 border-top" style="border-color:#fecaca !important; <?= !empty($evento['foto_casal_ativa']) ? '' : 'display:none;' ?>">
-            <div class="text-center mb-3">
-              <img id="preview-foto-convite"
-                   src="<?= !empty($evento['foto_casal']) ? 'uploads/' . htmlspecialchars($evento['foto_casal'], ENT_QUOTES, 'UTF-8') : '' ?>"
-                   class="rounded-circle shadow-sm <?= empty($evento['foto_casal']) ? 'd-none' : '' ?>"
-                   style="width:96px;height:96px;object-fit:cover;border:3px solid #fff;">
+            <div class="text-center mb-2">
+              <div id="crop-foto-convite"
+                   class="rounded-circle shadow-sm mx-auto <?= empty($evento['foto_casal']) ? 'd-none' : '' ?>"
+                   style="width:140px;height:140px;border:3px solid #fff;cursor:grab;background-repeat:no-repeat;background-size:cover;
+                          background-image:<?= !empty($evento['foto_casal']) ? "url('uploads/" . htmlspecialchars($evento['foto_casal'], ENT_QUOTES, 'UTF-8') . "')" : 'none' ?>;
+                          background-position:<?= htmlspecialchars((string)($evento['foto_casal_pos_x'] ?? 50), ENT_QUOTES, 'UTF-8') ?>% <?= htmlspecialchars((string)($evento['foto_casal_pos_y'] ?? 50), ENT_QUOTES, 'UTF-8') ?>%;"></div>
+              <small class="text-muted d-block mt-2" id="dica-arrastar-foto" style="font-size:.7rem; <?= empty($evento['foto_casal']) ? 'display:none;' : '' ?>">
+                <i class="bi bi-arrows-move me-1"></i>Arraste a foto para ajustar o enquadramento
+              </small>
             </div>
+            <input type="hidden" id="input-foto-convite-pos-x" value="<?= htmlspecialchars((string)($evento['foto_casal_pos_x'] ?? 50), ENT_QUOTES, 'UTF-8') ?>">
+            <input type="hidden" id="input-foto-convite-pos-y" value="<?= htmlspecialchars((string)($evento['foto_casal_pos_y'] ?? 50), ENT_QUOTES, 'UTF-8') ?>">
             <label class="form-label small fw-semibold text-secondary mb-1">Escolher imagem</label>
             <input type="file" id="input-foto-convite" accept="image/png, image/jpeg, image/webp" class="form-control form-control-sm mb-3 bg-white">
             <div class="d-flex gap-2">
@@ -1152,9 +1294,16 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
         <input type="hidden" name="adicionar_convidado" value="1">
         <div class="modal-body py-3">
-          <div class="mb-3">
-            <label class="form-label small fw-semibold text-secondary">Nome do Convidado / Família (Titular)</label>
-            <input type="text" name="nome_convidado" class="form-control rounded-3" required>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <label class="form-label small fw-semibold text-secondary">Nome</label>
+              <input type="text" name="nome_convidado" id="add-nome" class="form-control rounded-3" required>
+              <div class="invalid-feedback aviso-nome-duplicado-add"></div>
+            </div>
+            <div class="col-6">
+              <label class="form-label small fw-semibold text-secondary">Sobrenome</label>
+              <input type="text" name="sobrenome_convidado" id="add-sobrenome" class="form-control rounded-3" placeholder="Opcional">
+            </div>
           </div>
           <div class="row g-3 mb-3">
             <div class="col-md-6">
@@ -1170,7 +1319,7 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
             </div>
             <div class="col-md-6">
               <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" name="telefone_convidado" class="form-control rounded-3" placeholder="(00) 00000-0000" required>
+              <input type="text" inputmode="numeric" name="telefone_convidado" class="form-control rounded-3 input-telefone" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-3 text-secondary opacity-25">
@@ -1212,9 +1361,16 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
         <input type="hidden" name="editar_convidado" value="1">
         <input type="hidden" name="convidado_id" id="ec-id">
         <div class="modal-body py-3">
-          <div class="mb-3">
-            <label class="form-label small fw-semibold text-secondary">Nome do Convidado / Família (Titular)</label>
-            <input type="text" name="nome_convidado" id="ec-nome" class="form-control rounded-3" required>
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <label class="form-label small fw-semibold text-secondary">Nome / Família</label>
+              <input type="text" name="nome_convidado" id="ec-nome" class="form-control rounded-3" required>
+              <div class="invalid-feedback aviso-nome-duplicado-edit"></div>
+            </div>
+            <div class="col-6">
+              <label class="form-label small fw-semibold text-secondary">Sobrenome</label>
+              <input type="text" name="sobrenome_convidado" id="ec-sobrenome" class="form-control rounded-3" placeholder="Opcional">
+            </div>
           </div>
           <div class="row g-3 mb-3">
             <div class="col-md-6">
@@ -1223,7 +1379,7 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
             </div>
             <div class="col-md-6">
               <label class="form-label small fw-semibold text-secondary">Telefone / WhatsApp</label>
-              <input type="text" name="telefone_convidado" id="ec-telefone" class="form-control rounded-3" placeholder="(00) 00000-0000" required>
+              <input type="text" inputmode="numeric" name="telefone_convidado" id="ec-telefone" class="form-control rounded-3 input-telefone" placeholder="(00) 00000-0000" required>
             </div>
           </div>
           <hr class="my-3 text-secondary opacity-25">
@@ -1255,10 +1411,19 @@ $tem_botoes_convite = !empty($evento['cor_btn_sim']) || !empty($evento['cor_btn_
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;
 const NOME_CASAL = <?= json_encode($evento['nome']) ?>;
+const MSG_CONVITE_PREFIXO = <?= json_encode($labels['msg_whatsapp_convite']) ?>;
+const LABEL_FOTO_CONVITE = <?= json_encode($labels['label_foto_convite']) ?>;
+// Nome completo (já com sobrenome, se houver) de cada convidado titular —
+// usado só pro aviso "já existe um convite com esse nome" ao criar/editar,
+// sem precisar de uma chamada AJAX extra a cada tecla digitada.
+const CONVIDADOS_NOMES = <?= json_encode(array_values(array_map(
+    fn($c) => ['id' => (int)$c['id'], 'nome' => mb_strtolower(trim($c['nome']))],
+    $lista_convidados
+))) ?>;
 
 document.querySelectorAll('.toast').forEach(t => new bootstrap.Toast(t).show());
 
@@ -1326,8 +1491,9 @@ document.querySelectorAll('.btn-edit-convidado').forEach(btn => {
   btn.addEventListener('click', function () {
     document.getElementById('ec-id').value        = this.dataset.id;
     document.getElementById('ec-nome').value       = this.dataset.nome;
+    document.getElementById('ec-sobrenome').value  = this.dataset.sobrenome || '';
     document.getElementById('ec-categoria').value  = this.dataset.categoria;
-    document.getElementById('ec-telefone').value   = this.dataset.telefone;
+    document.getElementById('ec-telefone').value   = formatarTelefoneBr(this.dataset.telefone || '');
     document.getElementById(this.dataset.confirmado === '1' ? 'ec-status-confirmado' : 'ec-status-pendente').checked = true;
 
     const listaEdit = document.getElementById('acomp-edit-lista');
@@ -1356,7 +1522,7 @@ document.querySelectorAll('.btn-whatsapp-convidado').forEach(btn => {
       if (!r.ok) {
         alert(r.msg || 'Não foi possível gerar o link.');
       } else {
-        const msg = encodeURIComponent('Oi ' + r.nome + '! Confirme sua presença no casamento de ' + NOME_CASAL + ' por aqui: ' + r.link);
+        const msg = encodeURIComponent('Oi ' + r.nome + '! ' + MSG_CONVITE_PREFIXO + ' ' + NOME_CASAL + ' por aqui: ' + r.link);
         window.open('https://wa.me/' + r.telefone_digits + '?text=' + msg, '_blank');
       }
     } catch {
@@ -1411,6 +1577,77 @@ document.querySelectorAll('.btn-copiar-link-convidado').forEach(btn => {
     this.innerHTML = orig;
   });
 });
+
+/* ---- Status (Confirmado/Pendente) do titular e de cada acompanhante: clique
+   confirma/desmarca na hora, sem abrir o modal de editar e sem recarregar a
+   página (antes era um <form> comum — o POST recarregava e jogava a rolagem
+   pro topo). Vale tanto pro titular (borda do card inteiro muda de cor)
+   quanto pra cada acompanhante (só o próprio selo muda). ---- */
+document.querySelectorAll('.btn-status-convidado').forEach(btn => {
+  btn.addEventListener('click', async function () {
+    if (this.disabled) return;
+    const confirmarNovo = this.dataset.status === 'confirmado' ? '0' : '1';
+    this.disabled = true;
+
+    try {
+      const fd = new FormData();
+      fd.append('alternar_status_acompanhante', '1');
+      fd.append('convidado_id', this.dataset.id);
+      fd.append('confirmar', confirmarNovo);
+      fd.append('csrf_token', CSRF_TOKEN);
+      const r = await fetch(window.location.href, { method: 'POST', body: fd }).then(res => res.json());
+
+      if (!r.ok) {
+        alert(r.msg || 'Não foi possível atualizar o status.');
+      } else {
+        this.dataset.status = r.status;
+        this.classList.remove('status-confirmado', 'status-pendente', 'status-recusado');
+        this.classList.add('status-' + r.status);
+        this.title = r.status === 'confirmado' ? 'Clique para desmarcar a confirmação' : 'Clique para confirmar presença manualmente';
+        const label = this.querySelector('.status-label');
+        if (label) label.textContent = r.label;
+
+        const row = this.closest('.conv-row');
+        if (row) {
+          // Titular: a cor da borda do card inteiro segue o status dele.
+          if (this.classList.contains('btn-status-titular')) {
+            row.classList.remove('confirmado', 'pendente', 'recusado');
+            row.classList.add(r.status);
+          }
+          // Busca/filtro consideram qualquer pessoa da família — reconstrói
+          // a partir do status atual de cada selo (titular + acompanhantes).
+          const statuses = new Set();
+          row.querySelectorAll('.btn-status-convidado').forEach(b => statuses.add(b.dataset.status));
+          row.dataset.statuses = Array.from(statuses).join(' ');
+        }
+
+        atualizarContadoresEstatisticas();
+      }
+    } catch {
+      alert('Erro de conexão.');
+    }
+
+    this.disabled = false;
+  });
+});
+
+// Recalcula os cards "Convites/Confirmados/Pendentes/Recusaram" do topo a
+// partir do que está na tela — evita precisar recarregar a página só pra
+// atualizar os números depois de confirmar/desmarcar alguém.
+function atualizarContadoresEstatisticas() {
+  let conf = 0, pend = 0, recusado = 0;
+  document.querySelectorAll('#lista-convidados .btn-status-convidado').forEach(b => {
+    if (b.dataset.status === 'confirmado') conf++;
+    else if (b.dataset.status === 'recusado') recusado++;
+    else pend++;
+  });
+  const elConf = document.getElementById('cnt-conf');
+  const elPend = document.getElementById('cnt-pend');
+  const elRecusado = document.getElementById('cnt-recusado');
+  if (elConf) elConf.textContent = conf;
+  if (elPend) elPend.textContent = pend;
+  if (elRecusado) elRecusado.textContent = recusado;
+}
 
 /* ---- Botão de copiar o link geral (sem token, o mesmo pra todo mundo) ---- */
 document.getElementById('btn-copiar-link-geral')?.addEventListener('click', async function () {
@@ -1526,12 +1763,73 @@ async function postConvite(payload) {
   const switchFoto     = document.getElementById('switch-foto-convite');
   const areaFoto       = document.getElementById('area-foto-convite');
   const inputFoto      = document.getElementById('input-foto-convite');
-  const previewFoto    = document.getElementById('preview-foto-convite');
+  const cropFoto       = document.getElementById('crop-foto-convite');
+  const dicaArrastar   = document.getElementById('dica-arrastar-foto');
+  const inputPosX      = document.getElementById('input-foto-convite-pos-x');
+  const inputPosY      = document.getElementById('input-foto-convite-pos-y');
   const btnSalvarFoto  = document.getElementById('btn-salvar-foto-convite');
   const btnRemoverFoto = document.getElementById('btn-remover-foto-convite');
 
   switchFoto?.addEventListener('change', () => {
     areaFoto.style.display = switchFoto.checked ? '' : 'none';
+  });
+
+  function aplicarPosicaoFoto() {
+    cropFoto.style.backgroundPosition = inputPosX.value + '% ' + inputPosY.value + '%';
+  }
+
+  // Arrastar a foto dentro do círculo pra escolher qual parte fica visível —
+  // move em pixels, converte pra % relativo ao próprio círculo.
+  (function initArrastarFoto() {
+    if (!cropFoto) return;
+    let arrastando = false, inicioX = 0, inicioY = 0, posXInicial = 50, posYInicial = 50;
+
+    function comecar(clientX, clientY) {
+      if (cropFoto.classList.contains('d-none')) return;
+      arrastando = true;
+      inicioX = clientX; inicioY = clientY;
+      posXInicial = parseFloat(inputPosX.value) || 50;
+      posYInicial = parseFloat(inputPosY.value) || 50;
+      cropFoto.style.cursor = 'grabbing';
+    }
+    function mover(clientX, clientY) {
+      if (!arrastando) return;
+      const rect = cropFoto.getBoundingClientRect();
+      const deltaX = ((clientX - inicioX) / rect.width) * 100;
+      const deltaY = ((clientY - inicioY) / rect.height) * 100;
+      inputPosX.value = Math.min(100, Math.max(0, posXInicial - deltaX)).toFixed(1);
+      inputPosY.value = Math.min(100, Math.max(0, posYInicial - deltaY)).toFixed(1);
+      aplicarPosicaoFoto();
+    }
+    function soltar() {
+      arrastando = false;
+      cropFoto.style.cursor = 'grab';
+    }
+
+    cropFoto.addEventListener('mousedown', e => { e.preventDefault(); comecar(e.clientX, e.clientY); });
+    window.addEventListener('mousemove', e => mover(e.clientX, e.clientY));
+    window.addEventListener('mouseup', soltar);
+    cropFoto.addEventListener('touchstart', e => { const t = e.touches[0]; comecar(t.clientX, t.clientY); }, { passive: true });
+    window.addEventListener('touchmove', e => { if (!arrastando) return; const t = e.touches[0]; mover(t.clientX, t.clientY); }, { passive: true });
+    window.addEventListener('touchend', soltar);
+  })();
+
+  // Ao escolher um arquivo novo, mostra o preview já no círculo arrastável,
+  // recentralizado — o enquadramento anterior era da foto antiga, não faz
+  // sentido reaproveitar pra uma imagem diferente.
+  inputFoto?.addEventListener('change', () => {
+    const arquivo = inputFoto.files[0];
+    if (!arquivo) return;
+    const leitor = new FileReader();
+    leitor.onload = e => {
+      cropFoto.style.backgroundImage = `url('${e.target.result}')`;
+      cropFoto.classList.remove('d-none');
+      inputPosX.value = '50';
+      inputPosY.value = '50';
+      aplicarPosicaoFoto();
+      dicaArrastar.style.display = '';
+    };
+    leitor.readAsDataURL(arquivo);
   });
 
   btnSalvarFoto?.addEventListener('click', async function () {
@@ -1545,14 +1843,17 @@ async function postConvite(payload) {
       fd.append('csrf_token', CSRF_TOKEN);
       fd.append('salvar_foto_casal', '1');
       fd.append('foto_ativa', switchFoto.checked ? '1' : '0');
+      fd.append('foto_casal_pos_x', inputPosX.value);
+      fd.append('foto_casal_pos_y', inputPosY.value);
       if (arquivo) fd.append('foto_casal_arquivo', arquivo);
       const r = await fetch(window.location.href, { method: 'POST', body: fd }).then(res => res.json());
 
       if (r.ok) {
         if (r.foto_url) {
-          previewFoto.src = r.foto_url + '?t=' + Date.now();
-          previewFoto.classList.remove('d-none');
+          cropFoto.style.backgroundImage = `url('${r.foto_url}?t=${Date.now()}')`;
+          cropFoto.classList.remove('d-none');
           btnRemoverFoto.classList.remove('d-none');
+          dicaArrastar.style.display = '';
           inputFoto.value = '';
         }
         carregarPreviewConvite();
@@ -1567,12 +1868,15 @@ async function postConvite(payload) {
   });
 
   btnRemoverFoto?.addEventListener('click', async function () {
-    if (!confirm('Remover a foto do casal do convite?')) return;
+    if (!confirm('Remover a ' + LABEL_FOTO_CONVITE.toLowerCase() + '?')) return;
     try {
       const r = await postConvite({ remover_foto_casal: '1' });
       if (r.ok) {
-        previewFoto.classList.add('d-none');
-        previewFoto.src = '';
+        cropFoto.classList.add('d-none');
+        cropFoto.style.backgroundImage = 'none';
+        dicaArrastar.style.display = 'none';
+        inputPosX.value = '50';
+        inputPosY.value = '50';
         btnRemoverFoto.classList.add('d-none');
         switchFoto.checked = false;
         areaFoto.style.display = 'none';
@@ -1743,6 +2047,77 @@ document.querySelectorAll('#filtros-wrap .btn').forEach(btn => {
     });
     aplicarFiltro();
   });
+});
+
+// Máscara de telefone BR: formata sozinho enquanto digita — (DD) XXXX-XXXX
+// pra fixo (8 dígitos) e (DD) 9 XXXX-XXXX pra celular (9 dígitos), com o "9"
+// do celular separado pra ficar claro que é o prefixo de celular, não parte
+// do número em si.
+function formatarTelefoneBr(valorDigitado) {
+    const digitos = valorDigitado.replace(/\D/g, '');
+    if (digitos.length === 0) return '';
+    // Não trava a quantidade de dígitos nem força DDD/formato brasileiro pra
+    // números fora do padrão BR (DDD + 8 ou 9 dígitos) — pode ser um número
+    // internacional, com DDI ou outro formato qualquer. Nesse caso mostra os
+    // dígitos como estão, sem impor parênteses/traço que não fariam sentido.
+    if (digitos.length > 11) return digitos;
+    const ddd = digitos.slice(0, 2);
+    const resto = digitos.slice(2);
+    if (resto.length === 0) return '(' + ddd;
+    let out = '(' + ddd + ') ';
+    if (resto.length === 9) {
+        // Celular completo (com o 9º dígito): separa o "9" do resto.
+        out += resto.slice(0, 1) + ' ' + resto.slice(1, 5) + (resto.length > 5 ? '-' + resto.slice(5, 9) : '');
+    } else {
+        // Ainda incompleto (até 8 dígitos) — não dá pra saber se vai virar
+        // fixo ou celular, então agrupa como 4+4; reflui pro formato de
+        // celular automaticamente assim que o 9º dígito é digitado.
+        out += resto.slice(0, 4) + (resto.length > 4 ? '-' + resto.slice(4, 8) : '');
+    }
+    return out;
+}
+document.querySelectorAll('.input-telefone').forEach(function (input) {
+    input.addEventListener('input', function () {
+        input.value = formatarTelefoneBr(input.value);
+    });
+});
+
+// Aviso de nome duplicado: compara o nome final (nome + sobrenome, se houver)
+// contra o de todo mundo — dar QUALQUER sobrenome não basta, tem que ser um
+// sobrenome que realmente resulte num nome diferente. Checagem só no
+// navegador (lista já carregada na página); o backend valida de novo ao salvar.
+function conferirNomeDuplicado(inputNome, inputSobrenome, avisoEl, idAtual) {
+    const nomeCompleto = (inputNome.value.trim() + ' ' + inputSobrenome.value.trim()).trim().toLowerCase();
+    const meuId = idAtual ? parseInt(idAtual, 10) : 0;
+    const duplicado = nomeCompleto !== '' && CONVIDADOS_NOMES.some(c => c.nome === nomeCompleto && c.id !== meuId);
+    inputNome.classList.toggle('is-invalid', duplicado);
+    if (duplicado) {
+        avisoEl.textContent = 'Já existe um convite com o nome "' + inputNome.value.trim() + (inputSobrenome.value.trim() ? ' ' + inputSobrenome.value.trim() : '') + '". Informe um sobrenome diferente pra identificar cada um.';
+    }
+    return duplicado;
+}
+
+const addNome = document.getElementById('add-nome');
+const addSobrenome = document.getElementById('add-sobrenome');
+const avisoNomeAdd = document.querySelector('.aviso-nome-duplicado-add');
+if (addNome && addSobrenome && avisoNomeAdd) {
+    const conferir = () => conferirNomeDuplicado(addNome, addSobrenome, avisoNomeAdd, 0);
+    addNome.addEventListener('input', conferir);
+    addSobrenome.addEventListener('input', conferir);
+}
+
+const ecNome = document.getElementById('ec-nome');
+const ecSobrenome = document.getElementById('ec-sobrenome');
+const avisoNomeEdit = document.querySelector('.aviso-nome-duplicado-edit');
+if (ecNome && ecSobrenome && avisoNomeEdit) {
+    const conferir = () => conferirNomeDuplicado(ecNome, ecSobrenome, avisoNomeEdit, document.getElementById('ec-id')?.value);
+    ecNome.addEventListener('input', conferir);
+    ecSobrenome.addEventListener('input', conferir);
+}
+document.querySelectorAll('.btn-edit-convidado').forEach(btn => {
+    btn.addEventListener('click', function () {
+        ecNome?.classList.remove('is-invalid');
+    });
 });
 </script>
 

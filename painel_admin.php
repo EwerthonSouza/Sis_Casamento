@@ -5,18 +5,50 @@ verificar_sessao_ativa();
 
 // Importa a conexão com o banco de dados
 require_once 'conexao.php';
+require_once 'modulos_evento.inc.php';
 require_once __DIR__ . '/config/central.php';
 
 // ============================================================
-// TRAVA DE SEGURANÇA: Admin e Assistente acessam esta página
+// TRAVA DE SEGURANÇA: Admin, Assistente e Desenvolvedor acessam esta página
 // ============================================================
-if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente'])) {
+if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['admin', 'assistente', 'desenvolvedor'])) {
     header("Location: index.php?sessao_expirada=1");
     exit;
 }
 
-// Variável global para facilitação de regras de acesso do Admin
-$is_admin = ($_SESSION['usuario_tipo'] === 'admin');
+garantir_coluna_tipo_evento($pdo);
+garantir_tabela_modulos_config($pdo);
+garantir_tabela_modulos_liberados($pdo);
+garantir_coluna_nome_secundario_cliente($pdo);
+
+// ============================================================
+// MÓDULO ATIVO: qual tipo de evento a equipe escolheu no hub
+// ============================================================
+if (!modulo_evento_valido($_SESSION['modulo_ativo'] ?? null)) {
+    header("Location: hub_modulos.php");
+    exit;
+}
+// Revalida contra o que o desenvolvedor liberou pra este usuário — protege contra
+// sessão desatualizada (ex: o desenvolvedor revogou o módulo depois do login).
+// Desenvolvedor sempre tem acesso a todos os módulos.
+if (!in_array($_SESSION['modulo_ativo'], modulos_liberados_sessao($pdo), true)) {
+    header("Location: hub_modulos.php");
+    exit;
+}
+$modulo_ativo = $_SESSION['modulo_ativo'];
+$labels = labels_modulo_evento($modulo_ativo);
+$cor_modulo = cor_modulo_evento($pdo, $modulo_ativo);
+$icones_por_modulo = [
+    'casamento'   => 'bi-heart-fill',
+    'aniversario' => 'bi-balloon-fill',
+    'corporativo' => 'bi-briefcase-fill',
+    'academico'   => 'bi-mortarboard-fill',
+];
+$icone_modulo_atual = $icones_por_modulo[$modulo_ativo] ?? 'bi-calendar-heart';
+
+// Variável global para facilitação de regras de acesso do Admin — o desenvolvedor
+// tem sempre acesso total, equivalente ao admin.
+$is_admin = in_array($_SESSION['usuario_tipo'], ['admin', 'desenvolvedor'], true);
 
 // ============================================================
 // CSRF: Gera token de sessão para proteção dos formulários
@@ -44,35 +76,78 @@ require_once 'notificacoes.inc.php';
 // MIGRAÇÃO AUTOMÁTICA DA TABELA (executa uma vez se necessário)
 // Garante que a tabela suporte múltiplas anotações por dia com horário
 // ============================================================
-try {
-    $cols = $pdo->query("SHOW COLUMNS FROM calendario_anotacoes")->fetchAll(PDO::FETCH_COLUMN);
-    
-    // 1. Adiciona a coluna 'id' como Primary Key (se não existir)
-    if (!in_array('id', $cols)) {
-        try { $pdo->exec("ALTER TABLE calendario_anotacoes DROP PRIMARY KEY"); } catch(Exception $e) {}
-        $pdo->exec("ALTER TABLE calendario_anotacoes ADD COLUMN id INT AUTO_INCREMENT PRIMARY KEY FIRST");
-    }
-
-    // 2. Adiciona a coluna 'hora_nota' (se não existir)
-    if (!in_array('hora_nota', $cols)) {
-        $pdo->exec("ALTER TABLE calendario_anotacoes ADD COLUMN hora_nota TIME NULL AFTER data_nota");
-    }
-
-    // 2b. Adiciona a coluna 'notificar' — liga/desliga o lembrete no navegador
-    // no horário da anotação (só faz sentido se ela tiver hora_nota).
-    if (!in_array('notificar', $cols)) {
-        $pdo->exec("ALTER TABLE calendario_anotacoes ADD COLUMN notificar TINYINT(1) NOT NULL DEFAULT 0");
-    }
-
-    // 3. Remove a restrição única por data (se existir)
+// Só roda essa checagem uma vez (marcador em disco) — sem isso, o DROP INDEX
+// do passo 3 falhava (índice já removido) em toda requisição, pra sempre.
+if (!schema_ja_verificado('calendario_anotacoes')) {
     try {
-        $pdo->exec("ALTER TABLE calendario_anotacoes DROP INDEX data_nota");
-    } catch(Exception $e) {
-        // Ignora silenciosamente se o índice já não existir
-    }
+        $cols = $pdo->query("SHOW COLUMNS FROM calendario_anotacoes")->fetchAll(PDO::FETCH_COLUMN);
 
-} catch (Exception $e) {
-    error_log("[MIGRAÇÃO calendario_anotacoes] " . $e->getMessage());
+        // 1. Adiciona a coluna 'id' como Primary Key (se não existir)
+        if (!in_array('id', $cols)) {
+            try { $pdo->exec("ALTER TABLE calendario_anotacoes DROP PRIMARY KEY"); } catch(Exception $e) {}
+            $pdo->exec("ALTER TABLE calendario_anotacoes ADD COLUMN id INT AUTO_INCREMENT PRIMARY KEY FIRST");
+        }
+
+        // 2. Adiciona a coluna 'hora_nota' (se não existir)
+        if (!in_array('hora_nota', $cols)) {
+            $pdo->exec("ALTER TABLE calendario_anotacoes ADD COLUMN hora_nota TIME NULL AFTER data_nota");
+        }
+
+        // 2b. Adiciona a coluna 'notificar' — liga/desliga o lembrete no navegador
+        // no horário da anotação (só faz sentido se ela tiver hora_nota).
+        if (!in_array('notificar', $cols)) {
+            $pdo->exec("ALTER TABLE calendario_anotacoes ADD COLUMN notificar TINYINT(1) NOT NULL DEFAULT 0");
+        }
+
+        // 3. Remove a restrição única por data (se existir)
+        try {
+            $pdo->exec("ALTER TABLE calendario_anotacoes DROP INDEX data_nota");
+        } catch(Exception $e) {
+            // Ignora silenciosamente se o índice já não existir
+        }
+
+        marcar_schema_verificado('calendario_anotacoes');
+    } catch (Exception $e) {
+        error_log("[MIGRAÇÃO calendario_anotacoes] " . $e->getMessage());
+    }
+}
+
+// Bloco de notas GERAL do painel — sem evento_id (não é do casal, é um
+// bloquinho de anotações da equipe), mas COM tipo_evento: cada módulo
+// (Casamentos/Aniversários/Corporativo/Acadêmico) tem o seu próprio bloco,
+// sem compartilhar notas entre módulos diferentes.
+if (!schema_ja_verificado('notas_gerais_painel')) {
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS notas_gerais_painel (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            titulo VARCHAR(150) NOT NULL,
+            conteudo TEXT NULL,
+            cor VARCHAR(20) NOT NULL DEFAULT 'amarelo',
+            autor VARCHAR(100) NULL,
+            tipo_evento VARCHAR(20) NOT NULL DEFAULT 'casamento',
+            criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        marcar_schema_verificado('notas_gerais_painel');
+    } catch (Exception $e) {
+        error_log("[MIGRAÇÃO notas_gerais_painel] " . $e->getMessage());
+    }
+}
+
+// Coluna tipo_evento adicionada depois de o bloco já estar em uso — instalações
+// que já passaram pelo CREATE TABLE acima (marcador já gravado) não ganham a
+// coluna nova sem este marcador próprio.
+if (!schema_ja_verificado('notas_gerais_painel_coluna_tipo_evento')) {
+    try {
+        $pdo->query("SELECT tipo_evento FROM notas_gerais_painel LIMIT 1");
+    } catch (Exception $e) {
+        try {
+            $pdo->exec("ALTER TABLE notas_gerais_painel ADD COLUMN tipo_evento VARCHAR(20) NOT NULL DEFAULT 'casamento'");
+        } catch (Exception $e2) {
+            error_log("[MIGRAÇÃO notas_gerais_painel_coluna_tipo_evento] " . $e2->getMessage());
+        }
+    }
+    marcar_schema_verificado('notas_gerais_painel_coluna_tipo_evento');
 }
 
 // ============================================================
@@ -232,10 +307,85 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // 2d. SALVAR / EDITAR NOTA GERAL DO PAINEL (sem evento — não é do casal —
+    // mas escopada por módulo: cada módulo tem seu próprio bloco, sem
+    // compartilhar notas com os outros módulos)
+    if (isset($_POST['salvar_nota_geral'])) {
+        validar_csrf();
+        $nota_id  = (int)($_POST['nota_id'] ?? 0);
+        $titulo   = trim($_POST['titulo_nota_geral'] ?? '');
+        $conteudo = trim($_POST['conteudo_nota_geral'] ?? '');
+        $cores_ok = ['amarelo', 'verde', 'azul', 'rosa', 'cinza'];
+        $cor      = in_array($_POST['cor_nota_geral'] ?? '', $cores_ok, true) ? $_POST['cor_nota_geral'] : 'amarelo';
+        $autor    = $_SESSION['usuario_nome'] ?? 'Equipe';
+
+        if ($titulo !== '') {
+            $novo = $nota_id === 0;
+            if ($nota_id > 0) {
+                $pdo->prepare("UPDATE notas_gerais_painel SET titulo=?, conteudo=?, cor=? WHERE id=? AND tipo_evento=?")
+                    ->execute([$titulo, $conteudo, $cor, $nota_id, $modulo_ativo]);
+            } else {
+                $pdo->prepare("INSERT INTO notas_gerais_painel (titulo, conteudo, cor, autor, tipo_evento) VALUES (?,?,?,?,?)")
+                    ->execute([$titulo, $conteudo, $cor, $autor, $modulo_ativo]);
+                $nota_id = (int)$pdo->lastInsertId();
+            }
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'ok'         => true,
+                    'id'         => $nota_id,
+                    'novo'       => $novo,
+                    'titulo'     => htmlspecialchars($titulo, ENT_QUOTES, 'UTF-8'),
+                    'conteudo'   => htmlspecialchars($conteudo, ENT_QUOTES, 'UTF-8'),
+                    'cor'        => $cor,
+                    'autor'      => htmlspecialchars($autor, ENT_QUOTES, 'UTF-8'),
+                    'atualizado' => date('d/m/Y H:i'),
+                ]);
+                exit;
+            }
+            $_SESSION['msg_sucesso'] = "Nota salva!";
+        } else {
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode(['ok' => false, 'msg' => 'Informe um título para a nota.']);
+                exit;
+            }
+            $_SESSION['msg_erro'] = "Informe um título para a nota.";
+        }
+        if (!$is_ajax) {
+            header("Location: painel_admin.php");
+            exit;
+        }
+    }
+
+    // 2e. EXCLUIR NOTA GERAL DO PAINEL
+    if (isset($_POST['excluir_nota_geral'])) {
+        validar_csrf();
+        $nota_id = (int)($_POST['nota_id'] ?? 0);
+        if ($nota_id > 0) {
+            $pdo->prepare("DELETE FROM notas_gerais_painel WHERE id = ? AND tipo_evento = ?")->execute([$nota_id, $modulo_ativo]);
+        }
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => true]);
+            exit;
+        }
+        $_SESSION['msg_sucesso'] = "Nota removida.";
+        header("Location: painel_admin.php");
+        exit;
+    }
+
     // 3. EXCLUIR EVENTO
     if (isset($_POST['excluir_evento'])) {
         validar_csrf();
         $evento_id = (int)($_POST['evento_id'] ?? 0);
+
+        // Impede excluir um evento de outro módulo adulterando o evento_id no POST
+        $stmt_tipo_check = $pdo->prepare("SELECT tipo_evento FROM eventos WHERE id = ?");
+        $stmt_tipo_check->execute([$evento_id]);
+        if ($stmt_tipo_check->fetchColumn() !== $modulo_ativo) {
+            $evento_id = 0;
+        }
 
         if ($evento_id > 0) {
             try {
@@ -296,7 +446,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $nome_noiva       = trim($_POST['nome_noiva'] ?? '');
         $nome_noivo       = trim($_POST['nome_noivo'] ?? '');
-        $nome_cliente     = $nome_noiva . ' & ' . $nome_noivo;
+        // Só em Casamentos os dois nomes são um par e ficam concatenados com
+        // "&" — nos outros módulos o 2º campo é o responsável pelo evento (um
+        // papel diferente, não uma "dupla"), então fica guardado à parte em vez
+        // de virar "Instituição & Responsável" em todo canto que mostra o nome.
+        $eh_casamento     = ($modulo_ativo === 'casamento');
+        $nome_cliente     = $eh_casamento ? ($nome_noiva . (!empty($nome_noivo) ? ' & ' . $nome_noivo : '')) : $nome_noiva;
+        $nome_secundario  = $eh_casamento ? null : ($nome_noivo !== '' ? $nome_noivo : null);
         $email_cliente    = trim($_POST['email_cliente'] ?? '');
         $cpf_cliente      = preg_replace('/[^0-9]/', '', trim($_POST['cpf_cliente'] ?? ''));
         $cpf_cliente      = $cpf_cliente !== '' ? $cpf_cliente : null; // NULL em vez de '' — a coluna é UNIQUE e '' duplicada quebra o 2º cadastro sem CPF
@@ -313,27 +469,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $email_e_da_equipe = (bool)$stmt_email_equipe->fetch();
 
         if ($email_e_da_equipe) {
-            $_SESSION['msg_erro'] = "Este e-mail já pertence a uma conta da equipe (admin/assistente) e não pode ser usado para o login do casal.";
+            $_SESSION['msg_erro'] = "Este e-mail já pertence a uma conta da equipe (admin/assistente) e não pode ser usado para o login do {$labels['singular_contratante']}.";
             header("Location: painel_admin.php");
             exit;
         }
 
-        if (!empty($nome_noiva) && !empty($nome_noivo) && !empty($email_cliente) && !empty($data_evento)) {
+        $exige_segundo_nome = ($modulo_ativo === 'casamento');
+        if (!empty($nome_noiva) && (!$exige_segundo_nome || !empty($nome_noivo)) && !empty($email_cliente) && !empty($data_evento)) {
 
             $senha_raw = empty($senha_raw) ? '123456' : $senha_raw;
             $senha_hash = password_hash($senha_raw, PASSWORD_BCRYPT);
 
             // Bloqueia duplicidade se o e-mail (sempre) ou o CPF (quando informado)
-            // já tiver um casamento futuro cadastrado — antes só checava por CPF,
-            // então cadastros repetidos com CPF em branco criavam eventos duplicados.
+            // já tiver um evento futuro cadastrado NO MESMO MÓDULO — um mesmo cliente
+            // pode ter, por exemplo, um casamento e um evento corporativo em paralelo,
+            // então a checagem não pode barrar módulos diferentes.
             $cadastro_liberado = true;
             $stmt_check = $pdo->prepare("
                 SELECT e.data_evento
                 FROM clientes c
                 INNER JOIN eventos e ON c.id = e.cliente_id
-                WHERE c.email = ? OR (c.cpf IS NOT NULL AND c.cpf = ?)
+                WHERE (c.email = ? OR (c.cpf IS NOT NULL AND c.cpf = ?)) AND e.tipo_evento = ?
             ");
-            $stmt_check->execute([$email_cliente, $cpf_cliente]);
+            $stmt_check->execute([$email_cliente, $cpf_cliente, $modulo_ativo]);
             foreach ($stmt_check->fetchAll(PDO::FETCH_ASSOC) as $ev) {
                 if ($ev['data_evento'] >= $data_hoje) {
                     $cadastro_liberado = false;
@@ -342,7 +500,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             if (!$cadastro_liberado) {
-                $_SESSION['msg_erro'] = "Atenção: Este e-mail (ou CPF) já possui um casamento futuro cadastrado.";
+                $_SESSION['msg_erro'] = "Atenção: Este e-mail (ou CPF) já possui um evento futuro cadastrado neste módulo ({$labels['nome_modulo']}).";
             } else {
                 try {
                     $pdo->beginTransaction();
@@ -353,19 +511,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     if ($cliente_existente) {
                         $cliente_id = $cliente_existente['id'];
-                        $stmt_cli_up = $pdo->prepare("UPDATE clientes SET nome = ?, cpf = ?, telefone = ? WHERE id = ?");
-                        $stmt_cli_up->execute([$nome_cliente, $cpf_cliente, $telefone_cliente, $cliente_id]);
+                        $stmt_cli_up = $pdo->prepare("UPDATE clientes SET nome = ?, nome_secundario = ?, cpf = ?, telefone = ? WHERE id = ?");
+                        $stmt_cli_up->execute([$nome_cliente, $nome_secundario, $cpf_cliente, $telefone_cliente, $cliente_id]);
                     } else {
-                        $stmt_cli = $pdo->prepare("INSERT INTO clientes (nome, email, cpf, telefone, senha) VALUES (?, ?, ?, ?, ?)");
-                        $stmt_cli->execute([$nome_cliente, $email_cliente, $cpf_cliente, $telefone_cliente, $senha_hash]);
+                        $stmt_cli = $pdo->prepare("INSERT INTO clientes (nome, nome_secundario, email, cpf, telefone, senha) VALUES (?, ?, ?, ?, ?, ?)");
+                        $stmt_cli->execute([$nome_cliente, $nome_secundario, $email_cliente, $cpf_cliente, $telefone_cliente, $senha_hash]);
                         $cliente_id = $pdo->lastInsertId();
                     }
 
                     $stmt_eve = $pdo->prepare("
-                        INSERT INTO eventos (cliente_id, data_evento, hora_evento, tipo_ceremonia, local_ceremonia, tipo_assessoria)
-                        VALUES (?, ?, ?, 'Igreja', '', 'Básica')
+                        INSERT INTO eventos (cliente_id, data_evento, hora_evento, tipo_ceremonia, local_ceremonia, tipo_assessoria, tipo_evento)
+                        VALUES (?, ?, ?, 'Igreja', '', 'Básica', ?)
                     ");
-                    $stmt_eve->execute([$cliente_id, $data_evento, $hora_evento]);
+                    $stmt_eve->execute([$cliente_id, $data_evento, $hora_evento, $modulo_ativo]);
                     $evento_id = $pdo->lastInsertId();
 
                     if (!empty($modelo_checklist)) {
@@ -386,7 +544,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     $pdo->commit();
                     centralQueueEvent($pdo, 'record.created', ['entity' => 'evento']);
-                    $_SESSION['msg_sucesso'] = "Casal, contrato e cronograma configurados com sucesso!";
+                    $_SESSION['msg_sucesso'] = ucfirst($labels['singular_contratante']) . ", contrato e cronograma configurados com sucesso!";
                 } catch (Exception $e) {
                     $pdo->rollBack();
                     error_log("[CADASTRAR EVENTO] " . $e->getMessage());
@@ -406,6 +564,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $cliente_id = (int)($_POST['cliente_id'] ?? 0);
         $nova_senha = trim($_POST['nova_senha'] ?? '');
 
+        // Impede resetar a senha de um cliente que não tem nenhum evento no módulo ativo
+        $stmt_tipo_check = $pdo->prepare("SELECT 1 FROM eventos WHERE cliente_id = ? AND tipo_evento = ? LIMIT 1");
+        $stmt_tipo_check->execute([$cliente_id, $modulo_ativo]);
+        if (!$stmt_tipo_check->fetchColumn()) {
+            $cliente_id = 0;
+        }
+
         if ($cliente_id > 0 && !empty($nova_senha)) {
             $nova_senha_hash = password_hash($nova_senha, PASSWORD_BCRYPT);
             $pdo->prepare("UPDATE clientes SET senha = ? WHERE id = ?")->execute([$nova_senha_hash, $cliente_id]);
@@ -423,6 +588,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $evento_id = (int)($_POST['evento_id_data'] ?? 0);
         $nova_data = $_POST['nova_data'] ?? '';
         $nova_hora = !empty($_POST['nova_hora']) ? $_POST['nova_hora'] : null;
+
+        // Impede editar a data de um evento de outro módulo adulterando o evento_id_data no POST
+        $stmt_tipo_check = $pdo->prepare("SELECT tipo_evento FROM eventos WHERE id = ?");
+        $stmt_tipo_check->execute([$evento_id]);
+        if ($stmt_tipo_check->fetchColumn() !== $modulo_ativo) {
+            $evento_id = 0;
+        }
 
         if ($evento_id > 0 && !empty($nova_data) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $nova_data)) {
             $pdo->prepare("UPDATE eventos SET data_evento = ?, hora_evento = ? WHERE id = ?")->execute([$nova_data, $nova_hora, $evento_id]);
@@ -442,12 +614,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $email_cliente    = trim($_POST['email_cadastro'] ?? '');
         $telefone_cliente = trim($_POST['telefone_cadastro'] ?? '');
 
+        // Impede editar o cadastro de um cliente que não tem nenhum evento no módulo ativo
+        $stmt_tipo_check = $pdo->prepare("SELECT 1 FROM eventos WHERE cliente_id = ? AND tipo_evento = ? LIMIT 1");
+        $stmt_tipo_check->execute([$cliente_id, $modulo_ativo]);
+        if (!$stmt_tipo_check->fetchColumn()) {
+            $cliente_id = 0;
+        }
+
         if ($cliente_id > 0 && !empty($nome_cliente) && filter_var($email_cliente, FILTER_VALIDATE_EMAIL)) {
             $pdo->prepare("UPDATE clientes SET nome = ?, email = ?, telefone = ? WHERE id = ?")
                 ->execute([$nome_cliente, $email_cliente, $telefone_cliente, $cliente_id]);
-            $_SESSION['msg_sucesso'] = "Dados do casal atualizados com sucesso!";
+            $_SESSION['msg_sucesso'] = "Dados do {$labels['singular_contratante']} atualizados com sucesso!";
         } else {
-            $_SESSION['msg_erro'] = "Preencha o nome e um e-mail válido para o casal.";
+            $_SESSION['msg_erro'] = "Preencha o nome e um e-mail válido para o {$labels['singular_contratante']}.";
         }
         header("Location: painel_admin.php");
         exit;
@@ -457,13 +636,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // ============================================================
 // 8. CARREGAMENTO DE DADOS PARA A ESTRUTURA VISUAL
 // ============================================================
-$lista_casamentos = $pdo->query("
+$stmt_lista_casamentos = $pdo->prepare("
     SELECT e.id AS evento_id, e.data_evento, e.hora_evento,
            c.id AS cliente_id, c.nome AS nome_noivos, c.email AS email_noivos, c.telefone AS telefone_noivos
     FROM eventos e
     INNER JOIN clientes c ON e.cliente_id = c.id
+    WHERE e.tipo_evento = ?
     ORDER BY e.data_evento ASC, e.hora_evento ASC
-")->fetchAll();
+");
+$stmt_lista_casamentos->execute([$modulo_ativo]);
+$lista_casamentos = $stmt_lista_casamentos->fetchAll();
 
 $eventos_por_data = [];
 $casamentos_realizados = [];
@@ -494,6 +676,14 @@ foreach ($notas_do_mes_raw as $nota) {
     $anotacoes_do_mes[$nota['data_nota']][] = $nota;
 }
 
+// Bloco de notas geral do painel — só as notas do módulo ativo (cada módulo tem o seu).
+$lista_notas_gerais = [];
+try {
+    $stmt_notas_gerais = $pdo->prepare("SELECT * FROM notas_gerais_painel WHERE tipo_evento = ? ORDER BY atualizado_em DESC, id DESC");
+    $stmt_notas_gerais->execute([$modulo_ativo]);
+    $lista_notas_gerais = $stmt_notas_gerais->fetchAll();
+} catch (Exception $e) {}
+
 $numero_dias_mes     = (int)date('t', strtotime("$ano_atual-$mes_atual_str-01"));
 $primeiro_dia_semana = (int)date('w', strtotime("$ano_atual-$mes_atual_str-01"));
 
@@ -514,12 +704,14 @@ $msg_erro_session    = $_SESSION['msg_erro'] ?? "";
 $msg_sucesso_session = $_SESSION['msg_sucesso'] ?? "";
 unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
 
-// Notificações globais (atividade dos noivos em todos os casamentos)
-$notificacoes = buscar_notificacoes($pdo, null, 15, $is_admin ? (int)$_SESSION['usuario_id'] : null);
-$ultima_vista = ultima_visualizacao_notificacoes($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
-$itens_lidos  = itens_lidos_notificacao($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
-$nao_lidas    = contar_nao_lidas($notificacoes, $ultima_vista, $itens_lidos);
-$notificacoes = array_values(array_filter($notificacoes, fn($item) => item_notificacao_nao_lido($item, $ultima_vista, $itens_lidos)));
+// Notificações do módulo ativo (atividade dos clientes só dos eventos deste
+// módulo — sem isso, quem tá administrando Aniversários via notificação de
+// um Casamento e vice-versa, o que confunde) + avisos da Central em modo
+// sino, quando quem está logado é admin.
+$notificacoes = buscar_notificacoes($pdo, null, 15, $modulo_ativo, $is_admin ? (int)$_SESSION['usuario_id'] : null, $is_admin);
+$vistas_notif = chaves_vistas_usuario($pdo, $_SESSION['usuario_tipo'], (int)($_SESSION['usuario_id'] ?? 0));
+$nao_lidas    = contar_nao_vistas($notificacoes, $vistas_notif);
+$notificacoes = array_values(array_filter($notificacoes, fn($item) => !isset($vistas_notif[$item['chave']])));
 
 // Avisos da Central em modo Faixa/Popup — Fase de Avisos (2026-09-15), só
 // pro usuário admin (ver PROJECT_CONTEXT.md). Mostra o mais recente ainda
@@ -554,9 +746,10 @@ if ($is_admin) {
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <?php include __DIR__ . '/pwa_head.inc.php'; ?>
     <title>Painel da Assessoria - Meu Evento PRO</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=15">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="css/estilo.css?v=18">
+    <?= estilo_tema_evento($cor_modulo) ?>
     <style>
         .btn-abrir-modal-data { transition: filter .15s, box-shadow .15s; }
         .btn-abrir-modal-data:hover, .btn-abrir-modal-data:focus-visible {
@@ -571,14 +764,27 @@ if ($is_admin) {
             display: flex; align-items: center; justify-content: center;
         }
 
+        /* Borda branca fixa: garante contraste mesmo se a cor do módulo escolhida
+           pela assessoria for vermelha (senão o botão "some" dentro da navbar). */
+        .btn-sair-navbar {
+            border: 2px solid rgba(255,255,255,.9) !important;
+            box-shadow: 0 2px 6px rgba(0,0,0,.2);
+        }
+        .btn-sair-navbar:hover {
+            background-color: #b02a37;
+            border-color: #fff !important;
+        }
+
         @media (max-width: 480px) {
             .logo-nav-admin { height: 34px; }
             .btn-icon-nav { width: 32px; height: 32px; font-size: .85rem; }
             .barra-icones-admin { gap: .35rem !important; }
         }
 
-        .nav-tabs .nav-link { color: #6c757d; font-weight: 500; }
-        .nav-tabs .nav-link.active { color: #0d6efd; font-weight: bold; border-bottom: 3px solid #0d6efd; background-color: transparent;}
+        .nav-tabs .nav-link { color: #6c757d; font-weight: 500; border: none; transition: color .15s ease; }
+        .nav-tabs .nav-link:hover { color: var(--color-primary-dark); }
+        .nav-tabs .nav-link.active { color: var(--color-primary-dark); font-weight: bold; border-bottom: 3px solid var(--color-primary); background-color: transparent; }
+        .nav-tabs .nav-link .badge.bg-primary { background: var(--color-primary) !important; color: #fff !important; }
         .celula-dia { cursor: pointer; transition: background 0.2s; }
         .celula-dia:hover { background-color: #f8f9fa; }
         .indicador-nota { position: absolute; bottom: 4px; right: 4px; width: 8px; height: 8px; background-color: #0d6efd; border-radius: 50%; }
@@ -592,11 +798,87 @@ if ($is_admin) {
             box-shadow: 0 8px 20px rgba(0,0,0,.25) !important;
         }
 
+        /* Botão "Criar [Evento]" do modal de cadastro — segue a cor do módulo
+           em vez do verde fixo do Bootstrap, igual o resto da tela já faz. */
+        .btn-criar-evento-modulo {
+            background-color: var(--color-primary);
+            border-color: var(--color-primary);
+            color: #fff;
+        }
+        .btn-criar-evento-modulo:hover {
+            background-color: var(--color-primary-dark);
+            border-color: var(--color-primary-dark);
+            color: #fff;
+        }
+
+        /* ---- HERO DO PAINEL: fundo com textura sutil + selo/chips em vidro ---- */
+        .hero-painel-admin {
+            position: relative;
+            overflow: hidden;
+        }
+        .hero-painel-admin::before {
+            content: '';
+            position: absolute; inset: 0;
+            background-image:
+                radial-gradient(circle at 88% 15%, rgba(255,255,255,.16) 0%, transparent 42%),
+                radial-gradient(circle at 6% 95%, rgba(255,255,255,.10) 0%, transparent 38%);
+            pointer-events: none;
+        }
+        .hero-painel-admin .icone-selo-modulo {
+            width: 60px; height: 60px; border-radius: 18px;
+            background: rgba(255,255,255,.14);
+            border: 1px solid rgba(255,255,255,.25);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.7rem; color: #fff;
+            backdrop-filter: blur(6px);
+            flex-shrink: 0;
+        }
+        .hero-painel-admin .badges-resumo-painel span {
+            background: rgba(255,255,255,.14) !important;
+            border: 1px solid rgba(255,255,255,.22);
+            backdrop-filter: blur(6px);
+        }
+        .hero-painel-admin .icone-marca-dagua {
+            position: absolute; right: 1.5rem; bottom: -1.2rem;
+            font-size: 7rem; color: rgba(255,255,255,.08);
+            pointer-events: none;
+            line-height: 1;
+        }
+        @media (max-width: 767.98px) { .hero-painel-admin .icone-marca-dagua { display: none; } }
+
         @media (max-width: 767.98px) {
             .badges-resumo-painel { gap: .4rem !important; overflow-x: auto; -webkit-overflow-scrolling: touch; font-size: .75rem !important; justify-content: center; }
             .badges-resumo-painel span { padding: .3rem .55rem !important; }
 
             .titulo-painel-wrap { width: 100%; text-align: center; }
+        }
+
+        /* ---- CELULAR: barra, título e chips numa linha só ---- */
+        @media (max-width: 767.98px) {
+            /* Barra do topo: todos os botões numa linha (antes quebrava e o
+               "Sair" descia sozinho pra uma segunda linha). */
+            .navbar .barra-icones-admin { flex-wrap: nowrap !important; gap: .3rem !important; }
+            .barra-icones-admin > .btn,
+            .barra-icones-admin > .dropdown > .btn {
+                width: 34px; height: 34px; padding: 0 !important; flex-shrink: 0;
+                display: inline-flex; align-items: center; justify-content: center;
+                font-size: .85rem;
+            }
+            .logo-nav-admin { height: 24px !important; }
+
+            /* Título: o bloco de texto não encolhia por causa da fileira de
+               chips e empurrava tudo pra fora da tela pela direita. */
+            .hero-painel-admin { padding: 1rem !important; }
+            .titulo-painel-wrap > div { min-width: 0; width: 100%; }
+            .hero-painel-admin h2 { font-size: 1.05rem; }
+            .hero-painel-admin p { font-size: .74rem; margin-bottom: .55rem !important; }
+            .badges-resumo-painel { overflow-x: visible; font-size: .64rem !important; gap: .3rem !important; }
+            .badges-resumo-painel > span,
+            .badges-resumo-painel > .btn { padding: .25rem .45rem !important; font-size: inherit !important; }
+            .badges-resumo-painel i { margin-right: .15rem !important; }
+
+            /* Calendário: "Setembro 2026" numa linha só */
+            #calendario-wrapper h5 { font-size: 1rem; white-space: nowrap; }
         }
 
         /* Estilos do modal de anotações por horário */
@@ -682,6 +964,28 @@ if ($is_admin) {
            AJUSTES MOBILE
            ================================================================== */
         @media (max-width: 767.98px) {
+            /* Data/horário do evento nos cards da aba Próximos: linha única, mais limpa */
+            .btn-data-evento-card {
+                display: inline-flex;
+                align-items: center;
+                gap: .3rem;
+                width: auto;
+                max-width: 100%;
+                background: rgba(13,110,253,.06);
+                border: 1px solid rgba(13,110,253,.18);
+                color: #0d6efd;
+                font-weight: 600;
+                font-size: .74rem;
+                line-height: 1;
+                padding: .3rem .55rem;
+                border-radius: 8px;
+                margin-bottom: .4rem;
+                text-align: left;
+            }
+            .btn-data-evento-card:active { background: rgba(13,110,253,.12); }
+            .btn-data-evento-sep { opacity: .4; }
+            .btn-data-evento-edit { margin-left: .2rem; opacity: .5; font-size: .68rem; }
+
             /* Navbar: logo menor e botões podem quebrar linha sem estourar a tela */
             .navbar .container {
                 flex-wrap: wrap;
@@ -714,6 +1018,16 @@ if ($is_admin) {
             .table-calendario td { height: 36px !important; width: 36px !important; }
             .table-calendario td span { width: 24px !important; height: 24px !important; font-size: 0.75rem; }
         }
+
+        .cor-nota-geral-radio:checked + span { transform: scale(1.3); box-shadow: 0 0 0 3px rgba(0,0,0,.18); }
+        .nota-geral-card { transition: box-shadow .15s; }
+        .nota-geral-card:hover { box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+
+        /* ---- AJUSTE DE SOBREPOSIÇÃO DOS MODAIS E FUNDOS CINZAS ---- */
+        .modal { z-index: 1055 !important; }
+        .modal-backdrop { z-index: 1050 !important; }
+        #modalConfirmar { z-index: 1075 !important; }
+        .modal-backdrop:nth-of-type(2) { z-index: 1070 !important; }
     </style>
 </head>
 <body class="bg-light">
@@ -786,15 +1100,18 @@ if ($is_admin) {
     <?php endif; ?>
 </div>
 
-<nav class="navbar navbar-dark bg-dark shadow-sm">
+<nav class="navbar navbar-dark shadow-sm" style="background-color: <?= htmlspecialchars($cor_modulo) ?>;">
     <div class="container flex-nowrap">
         <span class="navbar-brand flex-shrink-0">
             <img src="img/LOGO MEP NAV.svg" alt="Meu Evento PRO" class="logo-nav-admin">
         </span>
         <div class="d-flex align-items-center gap-2 barra-icones-admin">
-            <span class="text-white small d-none d-lg-block text-nowrap">
-                <i class="bi bi-person-circle"></i> Logado como:
-                <strong><?= $is_admin ? 'Assessoria Geral' : 'Assistente' ?></strong>
+            <span class="text-white small d-none d-lg-flex align-items-center gap-1 text-nowrap">
+                <i class="bi bi-person-circle"></i>
+                <strong><?= htmlspecialchars($_SESSION['usuario_nome'] ?? 'Usuário', ENT_QUOTES, 'UTF-8') ?></strong>
+                <span class="badge bg-white bg-opacity-25 text-white fw-normal" style="font-size:.62rem; letter-spacing:.3px;">
+                    <?= $_SESSION['usuario_tipo'] === 'desenvolvedor' ? 'DESENVOLVEDOR' : ($is_admin ? 'ADMIN' : 'ASSISTENTE') ?>
+                </span>
             </span>
             <div class="dropdown" id="dropdown-notificacoes">
                 <button class="btn btn-sm btn-outline-light rounded-circle position-relative btn-icon-nav" type="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -807,7 +1124,7 @@ if ($is_admin) {
                 </button>
                 <div class="dropdown-menu dropdown-menu-end shadow-lg border-0 p-0" style="width:360px;max-height:440px;overflow-y:auto;">
                     <div class="px-3 py-2 border-bottom bg-light d-flex justify-content-between align-items-center">
-                        <span class="fw-bold small text-uppercase text-muted"><i class="bi bi-bell me-1"></i> Atividade dos casais</span>
+                        <span class="fw-bold small text-uppercase text-muted"><i class="bi bi-bell me-1"></i> <?= htmlspecialchars($labels['notif_dropdown_titulo']) ?></span>
                         <button type="button" id="btn-marcar-lidas" class="btn btn-link btn-sm p-0 text-decoration-none">Marcar lidas</button>
                     </div>
                     <div id="lista-notificacoes">
@@ -822,6 +1139,10 @@ if ($is_admin) {
                         // Notificação de nota: leva direto pro Bloco de Notas daquele evento, já na nota certa.
                         if (!empty($n['nota_id']) && $n['evento_id']) {
                             $href .= '&abrir_nota=' . (int)$n['nota_id'];
+                        }
+                        // Notificação com destino próprio (ex: arquivo enviado num fornecedor).
+                        if (!empty($n['link'])) {
+                            $href = $n['link'];
                         }
                     ?>
                         <a href="<?= $href ?>" class="notif-item d-flex align-items-start gap-2 px-3 py-2 border-bottom text-decoration-none"
@@ -850,7 +1171,10 @@ if ($is_admin) {
             <a href="modelos_checklist.php" class="btn btn-sm btn-light fw-bold text-dark border-0">
                 <i class="bi bi-gear-fill text-secondary"></i> <span class="d-none d-sm-inline">Checklists</span>
             </a>
-            <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#modalConfirmarSaida">
+            <a href="hub_modulos.php" class="btn btn-sm btn-light fw-bold text-dark border-0">
+                <i class="bi bi-grid-3x3-gap-fill text-secondary"></i> <span class="d-none d-sm-inline">Trocar módulo</span>
+            </a>
+            <button type="button" class="btn btn-sm btn-danger fw-bold btn-sair-navbar" data-bs-toggle="modal" data-bs-target="#modalConfirmarSaida">
                 <i class="bi bi-box-arrow-right"></i> <span class="d-none d-sm-inline">Sair</span>
             </button>
         </div>
@@ -861,28 +1185,38 @@ if ($is_admin) {
 
     <div class="card border-0 shadow-sm rounded-4 mb-4 overflow-hidden">
         <div class="card-body p-0">
-            <div class="p-4 d-flex justify-content-between align-items-center flex-wrap gap-3" style="background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); color: white;">
-                <div class="titulo-painel-wrap">
-                    <h2 class="fw-bold mb-1" style="letter-spacing: -0.5px;">
-                        <i class="bi bi-calendar-heart text-warning me-2"></i> Painel da Assessoria
-                    </h2>
-                    <p class="mb-3 text-white-50">Bem-vinda! Aqui está o resumo geral dos seus eventos e compromissos.</p>
+            <div class="p-4 d-flex justify-content-between align-items-center flex-wrap gap-3 hero-painel-admin" style="background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%); color: white;">
+                <i class="bi <?= htmlspecialchars($icone_modulo_atual) ?> icone-marca-dagua"></i>
+                <div class="d-flex align-items-center gap-3 titulo-painel-wrap" style="position:relative; z-index:1;">
+                    <div class="icone-selo-modulo d-none d-sm-flex">
+                        <i class="bi <?= htmlspecialchars($icone_modulo_atual) ?>"></i>
+                    </div>
+                    <div>
+                        <h2 class="fw-bold mb-1" style="letter-spacing: -0.5px;">
+                            Painel da Assessoria — <?= htmlspecialchars($labels['nome_modulo']) ?>
+                        </h2>
+                        <p class="mb-3 text-white-50">Aqui está o resumo geral dos seus eventos e compromissos.</p>
 
-                    <div class="d-flex flex-nowrap gap-2 mt-2 badges-resumo-painel" style="font-size: 0.90rem;">
-                        <span class="bg-white bg-opacity-10 px-3 py-1 rounded-pill shadow-sm text-nowrap">
-                            <i class="bi bi-calendar3 me-1 text-info"></i> <?= date('d/m/Y') ?>
-                        </span>
-                        <span class="bg-white bg-opacity-10 px-3 py-1 rounded-pill shadow-sm text-nowrap">
-                            <i class="bi bi-heart-pulse-fill me-1 text-danger"></i> <strong><?= count($casamentos_futuros) ?></strong> Ativos
-                        </span>
-                        <span class="bg-white bg-opacity-10 px-3 py-1 rounded-pill shadow-sm text-nowrap">
-                            <i class="bi bi-check2-circle me-1 text-success"></i> <strong><?= count($casamentos_realizados) ?></strong> Realizados
-                        </span>
+                        <div class="d-flex flex-nowrap gap-2 mt-2 badges-resumo-painel" style="font-size: 0.90rem;">
+                            <span class="bg-white bg-opacity-10 px-3 py-1 rounded-pill shadow-sm text-nowrap">
+                                <i class="bi bi-calendar3 me-1" style="color: rgba(255,255,255,.85);"></i> <?= date('d/m/Y') ?>
+                            </span>
+                            <span class="bg-white bg-opacity-10 px-3 py-1 rounded-pill shadow-sm text-nowrap">
+                                <i class="bi bi-heart-pulse-fill me-1" style="color: rgba(255,255,255,.85);"></i> <strong><?= count($casamentos_futuros) ?></strong> Ativos
+                            </span>
+                            <span class="bg-white bg-opacity-10 px-3 py-1 rounded-pill shadow-sm text-nowrap">
+                                <i class="bi bi-check2-circle me-1" style="color: rgba(255,255,255,.85);"></i> <strong><?= count($casamentos_realizados) ?></strong> Realizados
+                            </span>
+                            <button type="button" class="btn bg-white bg-opacity-10 px-3 py-1 rounded-pill shadow-sm text-nowrap text-white border-0"
+                                    data-bs-toggle="modal" data-bs-target="#modalNotasGerais">
+                                <i class="bi bi-sticky-fill me-1" style="color: rgba(255,255,255,.85);"></i> <strong id="notas-gerais-count-badge"><?= count($lista_notas_gerais) ?></strong> Notas
+                            </button>
+                        </div>
                     </div>
                 </div>
-                
-                <button type="button" class="btn btn-novo-casamento btn-light fw-bold rounded-pill shadow px-4 py-2" data-bs-toggle="modal" data-bs-target="#modalNovoCasamento" style="color:var(--color-primary-dark); font-size:1rem;">
-                    <i class="bi bi-plus-lg me-2"></i> Novo Casamento
+
+                <button type="button" class="btn btn-novo-casamento btn-light fw-bold rounded-pill shadow px-4 py-2" data-bs-toggle="modal" data-bs-target="#modalNovoCasamento" style="color:var(--color-primary-dark); font-size:1rem; position:relative; z-index:1;">
+                    <i class="bi bi-plus-lg me-2"></i> <?= htmlspecialchars($labels['botao_novo_evento']) ?>
                 </button>
             </div>
         </div>
@@ -906,7 +1240,8 @@ if ($is_admin) {
                             </button>
                         </li>
                         <li class="nav-item" role="presentation">
-                            <button class="nav-link" id="buscar-tab" data-bs-toggle="tab" data-bs-target="#buscar" type="button" role="tab" title="Buscar Noivos" aria-label="Buscar Noivos">
+                            <?php $titulo_buscar = 'Buscar ' . ucfirst($labels['singular_contratante']); ?>
+                            <button class="nav-link" id="buscar-tab" data-bs-toggle="tab" data-bs-target="#buscar" type="button" role="tab" title="<?= htmlspecialchars($titulo_buscar) ?>" aria-label="<?= htmlspecialchars($titulo_buscar) ?>">
                                 <i class="bi bi-search"></i>
                             </button>
                         </li>
@@ -926,26 +1261,26 @@ if ($is_admin) {
                             <!-- Visão mobile: cards empilhados (evita tabela cortando ações no scroll horizontal) -->
                             <div class="d-md-none">
                                 <?php if (empty($casamentos_futuros)): ?>
-                                    <p class="text-center text-muted py-5"><i class="bi bi-inbox fs-3 d-block mb-2"></i>Nenhum casamento futuro agendado.</p>
+                                    <p class="text-center text-muted py-5"><i class="bi bi-inbox fs-3 d-block mb-2"></i><?= htmlspecialchars($labels['vazio_futuros']) ?></p>
                                 <?php else: ?>
                                     <?php foreach ($casamentos_futuros as $i => $cas): ?>
                                     <div class="border rounded-3 p-3 mb-2<?= $i >= 5 ? ' d-none casamento-extra-futuros' : '' ?>">
-                                        <span class="text-dark fw-bold fs-6 d-block mb-1"><?= htmlspecialchars($cas['nome_noivos']) ?></span>
-                                        <div class="d-flex justify-content-between align-items-start gap-2">
-                                            <div class="text-muted" style="font-size: 0.8rem; min-width:0; overflow-wrap:anywhere;">
-                                                <i class="bi bi-envelope"></i> <?= htmlspecialchars($cas['email_noivos']) ?><br>
-                                                <?php if (!empty($cas['telefone_noivos'])): ?>
-                                                    <i class="bi bi-whatsapp text-success"></i> <?= htmlspecialchars($cas['telefone_noivos']) ?>
-                                                <?php endif; ?>
-                                            </div>
-                                            <div class="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 rounded-3 text-start flex-shrink-0 btn-abrir-modal-data" style="min-width: 110px; padding:8px; cursor:pointer;"
-                                                 data-evento-id="<?= (int)$cas['evento_id'] ?>" data-data="<?= htmlspecialchars($cas['data_evento']) ?>" data-hora="<?= htmlspecialchars($cas['hora_evento'] ?? '') ?>"
-                                                 data-bs-toggle="modal" data-bs-target="#modalEditarData" role="button" title="Editar data/horário">
-                                                <i class="bi bi-calendar3 me-1"></i> <?= date('d/m/Y', strtotime($cas['data_evento'])) ?>
-                                                <?php if (!empty($cas['hora_evento'])): ?>
-                                                    <br><i class="bi bi-clock me-1"></i> <?= date('H:i', strtotime($cas['hora_evento'])) ?>
-                                                <?php endif; ?>
-                                            </div>
+                                        <span class="text-dark fw-bold fs-6 d-block mb-2"><?= htmlspecialchars($cas['nome_noivos']) ?></span>
+                                        <button type="button" class="btn-data-evento-card btn-abrir-modal-data"
+                                                data-evento-id="<?= (int)$cas['evento_id'] ?>" data-data="<?= htmlspecialchars($cas['data_evento']) ?>" data-hora="<?= htmlspecialchars($cas['hora_evento'] ?? '') ?>"
+                                                data-bs-toggle="modal" data-bs-target="#modalEditarData" title="Editar data/horário">
+                                            <i class="bi bi-calendar3"></i> <?= date('d/m/Y', strtotime($cas['data_evento'])) ?>
+                                            <?php if (!empty($cas['hora_evento'])): ?>
+                                                <span class="btn-data-evento-sep">•</span>
+                                                <i class="bi bi-clock"></i> <?= date('H:i', strtotime($cas['hora_evento'])) ?>
+                                            <?php endif; ?>
+                                            <i class="bi bi-pencil-fill btn-data-evento-edit"></i>
+                                        </button>
+                                        <div class="text-muted mb-1" style="font-size: 0.8rem; overflow-wrap:anywhere;">
+                                            <i class="bi bi-envelope"></i> <?= htmlspecialchars($cas['email_noivos']) ?><br>
+                                            <?php if (!empty($cas['telefone_noivos'])): ?>
+                                                <i class="bi bi-whatsapp text-success"></i> <?= htmlspecialchars($cas['telefone_noivos']) ?>
+                                            <?php endif; ?>
                                         </div>
                                         <div class="d-flex justify-content-center flex-wrap gap-1 mt-2">
                                             <button type="button" class="btn btn-sm btn-light border fw-bold text-warning btn-abrir-modal-senha" data-cliente-id="<?= (int)$cas['cliente_id'] ?>" data-bs-toggle="modal" data-bs-target="#modalResetSenha" title="Resetar Senha"><i class="bi bi-key"></i></button>
@@ -968,14 +1303,14 @@ if ($is_admin) {
                                 <table class="table table-hover align-middle mb-0 small">
                                     <thead class="table-light text-muted">
                                         <tr>
-                                            <th>Casal & Contatos</th>
+                                            <th><?= htmlspecialchars($labels['coluna_tabela_contato']) ?></th>
                                             <th width="25%">Data</th>
                                             <th width="20%" class="text-center">Ações</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                     <?php if (empty($casamentos_futuros)): ?>
-                                        <tr><td colspan="3" class="text-center text-muted py-5"><i class="bi bi-inbox fs-3 d-block mb-2"></i>Nenhum casamento futuro agendado.</td></tr>
+                                        <tr><td colspan="3" class="text-center text-muted py-5"><i class="bi bi-inbox fs-3 d-block mb-2"></i><?= htmlspecialchars($labels['vazio_futuros']) ?></td></tr>
                                     <?php else: ?>
                                         <?php foreach ($casamentos_futuros as $i => $cas): ?>
                                         <tr class="<?= $i >= 5 ? 'd-none casamento-extra-futuros' : '' ?>">
@@ -1062,7 +1397,7 @@ if ($is_admin) {
                                 <table class="table table-hover align-middle mb-0 small opacity-75">
                                     <thead class="table-light text-muted">
                                         <tr>
-                                            <th>Casal & Contatos</th>
+                                            <th><?= htmlspecialchars($labels['coluna_tabela_contato']) ?></th>
                                             <th width="25%">Data Realizada</th>
                                             <th width="20%" class="text-center">Ações</th>
                                         </tr>
@@ -1121,10 +1456,10 @@ if ($is_admin) {
                             </div>
 
                             <?php if (empty($lista_casamentos)): ?>
-                                <p class="text-center text-muted py-5"><i class="bi bi-inbox fs-3 d-block mb-2"></i>Nenhum casal cadastrado.</p>
+                                <p class="text-center text-muted py-5"><i class="bi bi-inbox fs-3 d-block mb-2"></i><?= htmlspecialchars($labels['vazio_cadastro']) ?></p>
                             <?php else: ?>
 
-                            <p class="text-center text-muted py-5 busca-noivos-vazio" style="display:none;"><i class="bi bi-search fs-3 d-block mb-2"></i>Nenhum casal encontrado.</p>
+                            <p class="text-center text-muted py-5 busca-noivos-vazio" style="display:none;"><i class="bi bi-search fs-3 d-block mb-2"></i><?= htmlspecialchars($labels['vazio_busca']) ?></p>
 
                             <!-- Visão mobile: cards empilhados -->
                             <div class="d-md-none">
@@ -1159,7 +1494,7 @@ if ($is_admin) {
                                 <table class="table table-hover align-middle mb-0 small">
                                     <thead class="table-light text-muted">
                                         <tr>
-                                            <th>Casal & Contatos</th>
+                                            <th><?= htmlspecialchars($labels['coluna_tabela_contato']) ?></th>
                                             <th width="15%">Status</th>
                                             <th width="20%">Data</th>
                                             <th width="20%" class="text-center">Ações</th>
@@ -1261,7 +1596,7 @@ if ($is_admin) {
                                     $casais_nomes = [];
                                     foreach ($eventos_por_data[$data_verificacao] as $ev) {
                                         $hora_str = !empty($ev['hora_evento']) ? ' às ' . date('H:i', strtotime($ev['hora_evento'])) : '';
-                                        $casais_nomes[] = 'Casamento: ' . htmlspecialchars($ev['nome_noivos'], ENT_QUOTES) . $hora_str;
+                                        $casais_nomes[] = $labels['prefixo_calendario_dia'] . ' ' . htmlspecialchars($ev['nome_noivos'], ENT_QUOTES) . $hora_str;
                                     }
                                     $tooltip_attrs = "data-bs-toggle='tooltip' data-bs-placement='top' title='" . implode(' | ', $casais_nomes) . "'";
                                 }
@@ -1308,17 +1643,136 @@ if ($is_admin) {
                     </div>
                 </div>
             </div>
+
         </div>
 
     </div>
 </div>
 
+<div class="modal fade" id="modalNotasGerais" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+    <div class="modal-content border-0 shadow-lg rounded-4" style="background:#fffbf0;">
+      <div class="modal-header border-0 px-4 pt-4 pb-2" style="background:transparent;">
+        <div class="d-flex align-items-center gap-3">
+          <div class="rounded-3 d-flex align-items-center justify-content-center shadow-sm"
+               style="width:42px;height:42px;background:#fef3c7;border:1.5px solid #fcd34d;">
+            <i class="bi bi-journal-text text-warning fs-5"></i>
+          </div>
+          <div>
+            <h5 class="modal-title fw-bold mb-0 text-dark">Bloco de Notas</h5>
+            <span class="text-muted" style="font-size:.73rem;">Anotações gerais da equipe — não vinculadas a nenhum evento ou módulo</span>
+          </div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+
+      <div class="modal-body px-4 pb-4 pt-2">
+        <div class="card border-0 shadow-sm rounded-4 mb-4" id="card-form-nota-geral" style="border: 1.5px solid #fde68a !important; background:#fff;">
+          <div class="card-body p-3 p-sm-4">
+            <button type="button" class="btn d-flex align-items-center gap-2 w-100 p-0 border-0 bg-transparent text-start"
+                    data-bs-toggle="collapse" data-bs-target="#form-nota-geral-collapse" aria-expanded="false">
+              <i class="bi bi-plus-circle-fill text-warning fs-6"></i>
+              <span class="fw-bold text-dark small text-uppercase" id="form-nota-geral-label" style="letter-spacing:.06em;">Nova Nota</span>
+              <i class="bi bi-chevron-down ms-auto" id="form-nota-geral-chevron" style="color:#a16207;font-size:.75rem;"></i>
+            </button>
+            <div class="collapse" id="form-nota-geral-collapse">
+              <div class="d-flex align-items-center gap-3 mb-3 mt-3">
+                <span class="text-muted" style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;">Cor:</span>
+                <?php $cores_lbl_ng = ['amarelo'=>'#facc15','verde'=>'#86efac','azul'=>'#93c5fd','rosa'=>'#f9a8d4','cinza'=>'#cbd5e1']; ?>
+                <?php foreach ($cores_lbl_ng as $corK => $corHex): ?>
+                <label class="d-inline-flex" title="<?= ucfirst($corK) ?>">
+                  <input type="radio" name="cor_nota_geral_ui" class="d-none cor-nota-geral-radio" value="<?= $corK ?>" <?= $corK === 'amarelo' ? 'checked' : '' ?>>
+                  <span class="d-inline-block" style="width:22px;height:22px;border-radius:50%;background:<?= $corHex ?>;border:2px solid #fff;box-shadow:0 0 0 1.5px <?= $corHex ?>;cursor:pointer;"></span>
+                </label>
+                <?php endforeach; ?>
+              </div>
+              <input type="hidden" id="input-nota-geral-id" value="0">
+              <input type="text" id="input-nota-geral-titulo"
+                     class="form-control form-control-sm bg-light fw-bold mb-2"
+                     placeholder="📌  Título da nota…" maxlength="255"
+                     style="font-size:.95rem;padding:.65rem .85rem;">
+              <textarea id="input-nota-geral-conteudo" class="form-control" rows="4" placeholder="Escreva aqui a sua anotação…" style="font-size:.88rem;resize:vertical;padding:.65rem .85rem;line-height:1.7;"></textarea>
+              <div class="d-flex justify-content-between align-items-center mt-3">
+                <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-3 d-none" id="btn-cancelar-nota-geral">
+                  <i class="bi bi-x me-1"></i> Cancelar
+                </button>
+                <button type="button" class="btn btn-sm fw-bold rounded-pill px-4 shadow-sm ms-auto" id="btn-salvar-nota-geral" style="background:#facc15;color:#78350f;">
+                  <i class="bi bi-floppy me-1"></i> Salvar Nota
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="notas-gerais-lista-wrap">
+          <?php if (empty($lista_notas_gerais)): ?>
+          <div class="text-center py-5 text-muted" id="notas-gerais-vazia">
+            <i class="bi bi-journal-x fs-1 d-block mb-2" style="opacity:.25;"></i>
+            <small>Nenhuma nota ainda. Crie a primeira acima!</small>
+          </div>
+          <?php else: $total_notas_gerais = count($lista_notas_gerais); ?>
+          <div class="mb-2 d-flex align-items-center gap-2">
+            <span class="badge bg-warning text-dark rounded-pill px-3 badge-notas-gerais-cont" style="font-size:.68rem;">
+              <i class="bi bi-journals me-1"></i>
+              <span id="notas-gerais-badge-count"><?= $total_notas_gerais ?></span> nota<?= $total_notas_gerais !== 1 ? 's' : '' ?>
+            </span>
+            <span class="text-muted" style="font-size:.68rem;">· mais recentes primeiro</span>
+          </div>
+          <div class="row g-3" id="grid-notas-gerais">
+            <?php
+              $cores_bg_ng  = ['amarelo'=>'#fef08a','verde'=>'#dcfce7','azul'=>'#dbeafe','rosa'=>'#fce7f3','cinza'=>'#f1f5f9'];
+              $cores_brd_ng = ['amarelo'=>'#facc15','verde'=>'#86efac','azul'=>'#93c5fd','rosa'=>'#f9a8d4','cinza'=>'#cbd5e1'];
+              $cores_txt_ng = ['amarelo'=>'#78350f','verde'=>'#14532d','azul'=>'#1e3a8a','rosa'=>'#831843','cinza'=>'#1e293b'];
+              foreach ($lista_notas_gerais as $nota):
+                  $corN = $nota['cor'] ?? 'amarelo';
+                  $bgC  = $cores_bg_ng[$corN]  ?? '#fef08a';
+                  $brdC = $cores_brd_ng[$corN] ?? '#facc15';
+                  $txtC = $cores_txt_ng[$corN] ?? '#78350f';
+          ?>
+            <div class="col-12 col-sm-6 nota-geral-card-wrap" data-id="<?= $nota['id'] ?>">
+              <div class="card border-0 shadow-sm h-100 rounded-4 nota-geral-card" style="background:<?= $bgC ?>; border-left:4px solid <?= $brdC ?> !important;">
+                <div class="card-body p-3">
+                  <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
+                    <h6 class="fw-bold mb-0 text-truncate" style="color:<?= $txtC ?>; font-size:.85rem;"><?= htmlspecialchars($nota['titulo'], ENT_QUOTES, 'UTF-8') ?></h6>
+                    <div class="d-flex gap-1 flex-shrink-0">
+                      <button type="button" class="btn p-1 border-0 bg-transparent btn-editar-nota-geral"
+                              data-id="<?= $nota['id'] ?>"
+                              data-titulo="<?= htmlspecialchars($nota['titulo'], ENT_QUOTES, 'UTF-8') ?>"
+                              data-conteudo="<?= htmlspecialchars($nota['conteudo'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                              data-cor="<?= htmlspecialchars($corN, ENT_QUOTES, 'UTF-8') ?>" title="Editar nota">
+                        <i class="bi bi-pencil-fill" style="font-size:.72rem; color:<?= $txtC ?>; opacity:.55;"></i>
+                      </button>
+                      <button type="button" class="btn p-1 border-0 bg-transparent btn-excluir-nota-geral"
+                              data-id="<?= $nota['id'] ?>" title="Excluir nota">
+                        <i class="bi bi-trash-fill" style="font-size:.72rem; color:#ef4444; opacity:.6;"></i>
+                      </button>
+                    </div>
+                  </div>
+                  <?php if (!empty($nota['conteudo'])): ?>
+                  <p class="mb-1" style="color:<?= $txtC ?>; opacity:.85; white-space:pre-wrap; font-size:.78rem; line-height:1.5;"><?= htmlspecialchars($nota['conteudo'], ENT_QUOTES, 'UTF-8') ?></p>
+                  <?php endif; ?>
+                  <div class="d-flex justify-content-between align-items-center mt-2 pt-2 border-top" style="border-color:<?= $brdC ?> !important;">
+                    <span style="font-size:.62rem; color:<?= $txtC ?>; opacity:.55;"><?= htmlspecialchars($nota['autor'] ?? 'Equipe', ENT_QUOTES, 'UTF-8') ?></span>
+                    <span style="font-size:.6rem; color:<?= $txtC ?>; opacity:.5;"><i class="bi bi-clock me-1"></i><?= date('d/m/Y H:i', strtotime($nota['atualizado_em'])) ?></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          <?php endforeach; ?>
+          </div>
+          <?php endif; ?>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal fade" id="modalNovoCasamento" tabindex="-1" aria-labelledby="modalNovoCasamentoLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
         <div class="modal-content border-0 shadow-lg rounded-4">
-            <div class="modal-header bg-success text-white border-0 rounded-top-4">
+            <div class="modal-header text-white border-0 rounded-top-4" style="background-color: var(--color-primary);">
                 <h5 class="modal-title fw-bold" id="modalNovoCasamentoLabel">
-                    <i class="bi bi-plus-circle-fill me-2"></i> Adicionar Novo Casamento
+                    <i class="bi bi-plus-circle-fill me-2"></i> <?= htmlspecialchars($labels['modal_novo_titulo']) ?>
                 </h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Fechar"></button>
             </div>
@@ -1327,17 +1781,17 @@ if ($is_admin) {
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                     <input type="hidden" name="cadastrar_evento" value="1">
 
-                    <h6 class="fw-bold text-success mb-3 border-bottom pb-2">Acesso e Dados dos Noivos</h6>
+                    <h6 class="fw-bold mb-3 border-bottom pb-2" style="color: var(--color-primary);"><?= htmlspecialchars($labels['secao_acesso_titulo']) ?></h6>
 
                     <div class="row g-3 mb-3">
                         <div class="col-md-6">
-                            <label class="form-label fw-bold text-secondary small">Nome (Noiva / Cônjuge 1) *</label>
-                            <input type="text" name="nome_noiva" class="form-control bg-light" placeholder="Ex: Ana Maria" autocomplete="off" required>
+                            <label class="form-label fw-bold text-secondary small"><?= htmlspecialchars($labels['campo_nome1_label']) ?></label>
+                            <input type="text" name="nome_noiva" class="form-control bg-light" placeholder="<?= htmlspecialchars($labels['campo_nome1_placeholder']) ?>" autocomplete="off" required>
                             <div class="invalid-feedback">O nome é obrigatório.</div>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label fw-bold text-secondary small">Nome (Noivo / Cônjuge 2) *</label>
-                            <input type="text" name="nome_noivo" class="form-control bg-light" placeholder="Ex: Lucas Mendes" autocomplete="off" required>
+                            <label class="form-label fw-bold text-secondary small"><?= htmlspecialchars($labels['campo_nome2_label']) ?></label>
+                            <input type="text" name="nome_noivo" class="form-control bg-light" placeholder="<?= htmlspecialchars($labels['campo_nome2_placeholder']) ?>" autocomplete="off" <?= $labels['campo_nome2_obrigatorio'] ? 'required' : '' ?>>
                         </div>
                     </div>
 
@@ -1363,7 +1817,7 @@ if ($is_admin) {
                         </div>
                     </div>
 
-                    <h6 class="fw-bold text-success mb-3 border-bottom pb-2">Detalhes do Grande Dia</h6>
+                    <h6 class="fw-bold mb-3 border-bottom pb-2" style="color: var(--color-primary);"><?= htmlspecialchars($labels['secao_detalhes_titulo']) ?></h6>
 
                     <div class="row g-3 mb-4">
                         <div class="col-md-4">
@@ -1386,8 +1840,8 @@ if ($is_admin) {
 
                     <div class="d-flex justify-content-end gap-2 mt-4 pt-3 border-top">
                         <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancelar</button>
-                        <button type="submit" class="btn btn-success px-4 fw-bold shadow-sm">
-                            <i class="bi bi-folder-plus me-1"></i> Criar Casamento
+                        <button type="submit" class="btn btn-criar-evento-modulo px-4 fw-bold shadow-sm">
+                            <i class="bi bi-folder-plus me-1"></i> <?= htmlspecialchars($labels['botao_criar_evento']) ?>
                         </button>
                     </div>
                 </form>
@@ -1468,7 +1922,7 @@ if ($is_admin) {
                 <input type="hidden" name="resetar_senha" value="1">
                 <input type="hidden" name="cliente_id" id="input-cliente-id-reset">
                 <div class="modal-body">
-                    <label class="form-label small fw-bold text-muted">Nova Senha do Casal</label>
+                    <label class="form-label small fw-bold text-muted"><?= htmlspecialchars($labels['label_nova_senha']) ?></label>
                     <input type="password" name="nova_senha" class="form-control bg-light" placeholder="Digite a nova senha" minlength="6" required>
                 </div>
                 <div class="modal-footer border-top-0 pt-0">
@@ -1512,7 +1966,7 @@ if ($is_admin) {
     <div class="modal-dialog modal-sm modal-dialog-centered">
         <div class="modal-content rounded-4 border-0 shadow">
             <div class="modal-header border-bottom-0 pb-0">
-                <h6 class="modal-title fw-bold text-primary"><i class="bi bi-pencil-square me-1"></i> Editar Cadastro do Casal</h6>
+                <h6 class="modal-title fw-bold text-primary"><i class="bi bi-pencil-square me-1"></i> <?= htmlspecialchars($labels['modal_editar_cadastro_titulo']) ?></h6>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <form method="POST">
@@ -1521,7 +1975,7 @@ if ($is_admin) {
                 <input type="hidden" name="cliente_id_cadastro" id="input-cliente-id-cadastro">
                 <div class="modal-body">
                     <div class="mb-3">
-                        <label class="form-label small fw-bold text-muted">Nome do Casal</label>
+                        <label class="form-label small fw-bold text-muted"><?= htmlspecialchars($labels['label_nome_cadastro']) ?></label>
                         <input type="text" name="nome_cadastro" id="input-nome-cadastro" class="form-control bg-light" required>
                     </div>
                     <div class="mb-3">
@@ -1561,8 +2015,28 @@ if ($is_admin) {
     </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://unpkg.com/imask"></script>
+<div id="toast-wrap"></div>
+
+<div class="modal fade" id="modalConfirmar" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content border-0 shadow-lg rounded-4 p-3 text-center">
+      <div class="py-2">
+        <div id="confirm-icon-box" class="mx-auto mb-3 rounded-circle bg-danger bg-opacity-10 d-flex align-items-center justify-content-center" style="width:52px;height:52px;">
+          <i id="confirm-icon" class="bi bi-exclamation-triangle-fill text-danger fs-4"></i>
+        </div>
+        <h6 id="confirm-title" class="fw-bold mb-1">Tem certeza?</h6>
+        <p id="confirm-msg" class="text-muted small mb-0">Esta ação não pode ser desfeita.</p>
+      </div>
+      <div class="d-flex justify-content-center gap-2 mt-3">
+        <button class="btn btn-outline-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancelar</button>
+        <button id="btn-confirmar" class="btn btn-danger btn-sm px-4 rounded-pill fw-bold">Confirmar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/imask@7.6.1/dist/imask.min.js"></script>
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
@@ -1603,32 +2077,29 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
-    // Botão "Marcar lidas": some com o badge e limpa a lista exibida
+    // Botão "Marcar lidas": marca só as chaves que estão visíveis agora (deste
+    // módulo) e limpa a lista exibida — não mexe nas de outros módulos/eventos.
     document.getElementById('btn-marcar-lidas')?.addEventListener('click', function (e) {
         e.stopPropagation();
+        const lista = document.getElementById('lista-notificacoes');
+        const chaves = lista ? Array.from(lista.querySelectorAll('.notif-item[data-chave]')).map(el => el.dataset.chave) : [];
         const badge = document.querySelector('#dropdown-notificacoes .badge');
         if (badge) badge.remove();
-        const lista = document.getElementById('lista-notificacoes');
         if (lista) {
             lista.innerHTML = '<div class="text-center text-muted p-4 small"><i class="bi bi-inbox fs-3 d-block mb-2"></i> Nenhuma atividade ainda.</div>';
         }
-        fetch('notificacoes_marcar_lidas.php', { method: 'POST' }).catch(() => {});
+        if (chaves.length) {
+            fetch('notificacoes_marcar_lidas.php?chaves=' + encodeURIComponent(chaves.join(',')), { method: 'POST' }).catch(() => {});
+        }
     });
 
     // Clicar em uma notificação abre o link dela (o item é um <a>) e marca só
-    // ELA como lida via chave individual — não chama notificacoes_marcar_lidas.php
-    // aqui: essa rota marca TODAS as notificações como vistas de uma vez (só
-    // existe um "último visto" geral), e como esta lista só mostra as não
-    // lidas, isso fazia todas as outras "sumirem" na próxima carga da página.
+    // ELA como lida via chave individual — as outras continuam aparecendo
+    // pra quem ainda não abriu.
     document.getElementById('lista-notificacoes')?.addEventListener('click', function (e) {
         const item = e.target.closest('.notif-item');
         if (!item || !item.dataset.chave) return;
-        fetch('notificacoes_marcar_item_lido.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: 'chave=' + encodeURIComponent(item.dataset.chave),
-            keepalive: true
-        }).catch(() => {});
+        fetch('notificacoes_marcar_lidas.php?chave=' + encodeURIComponent(item.dataset.chave), { method: 'POST', keepalive: true }).catch(() => {});
     });
 
     // Inicializa Tooltips do Bootstrap
@@ -2172,6 +2643,232 @@ document.addEventListener('DOMContentLoaded', function () {
     modal.show();
 });
 <?php endif; ?>
+
+/* ---- INFRAESTRUTURA AJAX/TOAST/CONFIRMAÇÃO (mesmo padrão do Bloco de Notas do cliente em gerenciar.php) ---- */
+const SELF       = window.location.href;
+const CSRF_TOKEN = <?= json_encode($csrf_token) ?>;
+
+function toast(msg, tipo = 'verde') {
+    const wrap = document.getElementById('toast-wrap');
+    const el   = document.createElement('div');
+    el.className = `toast-item ${tipo}`;
+    const icons = { verde:'check-circle-fill', verm:'exclamation-circle-fill', info:'info-circle-fill', warn:'exclamation-triangle-fill' };
+    el.innerHTML = `<i class="bi bi-${icons[tipo] || 'check-circle-fill'}"></i> ${msg}`;
+    wrap.appendChild(el);
+    setTimeout(() => {
+        el.style.transition = 'opacity .3s, transform .3s';
+        el.style.opacity    = '0';
+        el.style.transform  = 'translateX(24px)';
+        setTimeout(() => el.remove(), 320);
+    }, 2800);
+}
+
+async function ajax(obj) {
+    obj.csrf_token = CSRF_TOKEN;
+    const fd = new FormData();
+    Object.entries(obj).forEach(([k, v]) => {
+        if (Array.isArray(v)) { v.forEach(item => fd.append(k + '[]', item)); }
+        else { fd.append(k, v); }
+    });
+    const r = await fetch(SELF, { method: 'POST', body: fd, headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    return r.json();
+}
+
+const confirmModal = new bootstrap.Modal(document.getElementById('modalConfirmar'));
+let _confirmAction = null;
+function showConfirm(titulo, msg, onConfirm, opts = {}) {
+    document.getElementById('confirm-title').textContent = titulo;
+    document.getElementById('confirm-msg').textContent   = msg;
+    const box = document.getElementById('confirm-icon-box');
+    box.className = `mx-auto mb-3 rounded-circle d-flex align-items-center justify-content-center ${opts.iconBg || 'bg-danger bg-opacity-10'}`;
+    box.style.cssText = 'width:52px;height:52px;';
+    document.getElementById('confirm-icon').className = opts.icon || 'bi bi-exclamation-triangle-fill text-danger fs-4';
+    const btn = document.getElementById('btn-confirmar');
+    btn.className   = `btn btn-sm px-4 rounded-pill fw-bold ${opts.btnClass || 'btn-danger'}`;
+    btn.textContent = opts.btnText || 'Confirmar';
+    _confirmAction  = onConfirm;
+    confirmModal.show();
+}
+document.getElementById('btn-confirmar').addEventListener('click', () => {
+    if (_confirmAction) { _confirmAction(); _confirmAction = null; }
+    confirmModal.hide();
+});
+
+/* ---- BLOCO DE NOTAS GERAL DO PAINEL (mesmo padrão do Bloco de Notas dentro de cada cliente) ---- */
+const NOTAS_GERAIS_CORES_BG  = { amarelo:'#fef08a', verde:'#dcfce7', azul:'#dbeafe', rosa:'#fce7f3', cinza:'#f1f5f9' };
+const NOTAS_GERAIS_CORES_BRD = { amarelo:'#facc15', verde:'#86efac', azul:'#93c5fd', rosa:'#f9a8d4', cinza:'#cbd5e1' };
+const NOTAS_GERAIS_CORES_TXT = { amarelo:'#78350f', verde:'#14532d', azul:'#1e3a8a', rosa:'#831843', cinza:'#1e293b' };
+
+function notaGeralCorSelecionada() {
+    return document.querySelector('.cor-nota-geral-radio:checked')?.value || 'amarelo';
+}
+
+function resetarFormNotaGeral() {
+    document.getElementById('input-nota-geral-id').value = '0';
+    document.getElementById('input-nota-geral-titulo').value = '';
+    document.getElementById('input-nota-geral-conteudo').value = '';
+    const rd = document.querySelector('.cor-nota-geral-radio[value="amarelo"]');
+    if (rd) rd.checked = true;
+    document.getElementById('form-nota-geral-label').textContent = 'Nova Nota';
+    document.getElementById('btn-cancelar-nota-geral')?.classList.add('d-none');
+    bootstrap.Collapse.getOrCreateInstance(document.getElementById('form-nota-geral-collapse'), { toggle: false }).hide();
+}
+
+function atualizarContadoresNotasGerais() {
+    const total   = document.querySelectorAll('.nota-geral-card-wrap').length;
+    const sufixo  = total !== 1 ? 's' : '';
+    const txt     = total + ' nota' + sufixo;
+
+    const badgeTopo = document.getElementById('notas-gerais-count-badge');
+    if (badgeTopo) badgeTopo.textContent = total;
+
+    const contBadge = document.querySelector('.badge-notas-gerais-cont');
+    if (contBadge) contBadge.innerHTML = `<i class="bi bi-journals me-1"></i>${txt}`;
+}
+
+function notaGeralHtmlCard(r, cor) {
+    const bg  = NOTAS_GERAIS_CORES_BG[cor]  || '#fef08a';
+    const brd = NOTAS_GERAIS_CORES_BRD[cor] || '#facc15';
+    const txt = NOTAS_GERAIS_CORES_TXT[cor] || '#78350f';
+    const conteudoHtml = r.conteudo
+        ? `<p class="mb-1" style="color:${txt};opacity:.85;white-space:pre-wrap;font-size:.78rem;line-height:1.5;">${r.conteudo}</p>`
+        : '';
+    return `
+    <div class="col-12 col-sm-6 nota-geral-card-wrap" data-id="${r.id}">
+      <div class="card border-0 shadow-sm h-100 rounded-4 nota-geral-card" style="background:${bg};border-left:4px solid ${brd}!important;">
+        <div class="card-body p-3">
+          <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
+            <h6 class="fw-bold mb-0 text-truncate" style="color:${txt};font-size:.85rem;">${r.titulo}</h6>
+            <div class="d-flex gap-1 flex-shrink-0">
+              <button type="button" class="btn p-1 border-0 bg-transparent btn-editar-nota-geral"
+                      data-id="${r.id}" data-titulo="${r.titulo}" data-conteudo="${r.conteudo}" data-cor="${cor}" title="Editar nota">
+                <i class="bi bi-pencil-fill" style="font-size:.72rem;color:${txt};opacity:.55;"></i>
+              </button>
+              <button type="button" class="btn p-1 border-0 bg-transparent btn-excluir-nota-geral"
+                      data-id="${r.id}" title="Excluir nota">
+                <i class="bi bi-trash-fill" style="font-size:.72rem;color:#ef4444;opacity:.6;"></i>
+              </button>
+            </div>
+          </div>
+          ${conteudoHtml}
+          <div class="d-flex justify-content-between align-items-center mt-2 pt-2 border-top" style="border-color:${brd}!important;">
+            <span style="font-size:.62rem;color:${txt};opacity:.55;">${r.autor}</span>
+            <span style="font-size:.6rem;color:${txt};opacity:.5;"><i class="bi bi-clock me-1"></i>${r.atualizado}</span>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+document.getElementById('form-nota-geral-collapse')?.addEventListener('show.bs.collapse', () => {
+    document.getElementById('form-nota-geral-chevron')?.classList.replace('bi-chevron-down', 'bi-chevron-up');
+});
+document.getElementById('form-nota-geral-collapse')?.addEventListener('hide.bs.collapse', () => {
+    document.getElementById('form-nota-geral-chevron')?.classList.replace('bi-chevron-up', 'bi-chevron-down');
+});
+
+document.getElementById('btn-salvar-nota-geral')?.addEventListener('click', async () => {
+    const id       = +(document.getElementById('input-nota-geral-id').value || 0);
+    const titulo   = document.getElementById('input-nota-geral-titulo').value.trim();
+    const conteudo = document.getElementById('input-nota-geral-conteudo').value.trim();
+    const cor      = notaGeralCorSelecionada();
+    if (!titulo) { toast('Informe o título da nota.', 'warn'); return; }
+    const btn  = document.getElementById('btn-salvar-nota-geral');
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Salvando…';
+    btn.disabled  = true;
+    try {
+        const r = await ajax({ salvar_nota_geral: '1', nota_id: id, titulo_nota_geral: titulo, conteudo_nota_geral: conteudo, cor_nota_geral: cor });
+        if (r.ok) {
+            document.getElementById('notas-gerais-vazia')?.remove();
+            let grid = document.getElementById('grid-notas-gerais');
+            if (!grid) {
+                const wrap = document.getElementById('notas-gerais-lista-wrap');
+                wrap.innerHTML = `
+                  <div class="mb-2 d-flex align-items-center gap-2">
+                    <span class="badge bg-warning text-dark rounded-pill px-3 badge-notas-gerais-cont" style="font-size:.68rem;">
+                      <i class="bi bi-journals me-1"></i>0 notas
+                    </span>
+                    <span class="text-muted" style="font-size:.68rem;">· mais recentes primeiro</span>
+                  </div>
+                  <div class="row g-3" id="grid-notas-gerais"></div>`;
+                grid = document.getElementById('grid-notas-gerais');
+            }
+            const html = notaGeralHtmlCard(r, cor);
+            if (r.novo) { grid.insertAdjacentHTML('afterbegin', html); }
+            else {
+                const antigo = grid.querySelector(`.nota-geral-card-wrap[data-id="${r.id}"]`);
+                if (antigo) {
+                    const temp = document.createElement('div');
+                    temp.innerHTML = html;
+                    antigo.replaceWith(temp.firstElementChild);
+                }
+            }
+            bindBotoesNotaGeral();
+            resetarFormNotaGeral();
+            atualizarContadoresNotasGerais();
+            toast(r.novo ? 'Nota criada! 📝' : 'Nota atualizada! ✏️', 'verde');
+        } else { toast(r.msg || 'Erro ao salvar nota.', 'verm'); }
+    } catch { toast('Erro de conexão. Tente novamente.', 'verm'); }
+    btn.innerHTML = orig;
+    btn.disabled  = false;
+});
+
+document.getElementById('btn-cancelar-nota-geral')?.addEventListener('click', resetarFormNotaGeral);
+
+function bindBotoesNotaGeral() {
+    document.querySelectorAll('.btn-editar-nota-geral').forEach(btn => {
+        btn.onclick = () => {
+            document.getElementById('input-nota-geral-id').value = btn.dataset.id;
+            document.getElementById('input-nota-geral-titulo').value = btn.dataset.titulo;
+            document.getElementById('input-nota-geral-conteudo').value = btn.dataset.conteudo;
+            const rd = document.querySelector(`.cor-nota-geral-radio[value="${btn.dataset.cor}"]`);
+            if (rd) rd.checked = true;
+            document.getElementById('form-nota-geral-label').textContent = '✏️ Editando Nota';
+            document.getElementById('btn-cancelar-nota-geral')?.classList.remove('d-none');
+            bootstrap.Collapse.getOrCreateInstance(document.getElementById('form-nota-geral-collapse'), { toggle: false }).show();
+            document.getElementById('card-form-nota-geral').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            setTimeout(() => document.getElementById('input-nota-geral-titulo').focus(), 350);
+        };
+    });
+    document.querySelectorAll('.btn-excluir-nota-geral').forEach(btn => {
+        btn.onclick = () => {
+            const id   = btn.dataset.id;
+            const wrap = btn.closest('.nota-geral-card-wrap');
+            showConfirm(
+                'Excluir esta nota?',
+                'Esta ação não pode ser desfeita.',
+                async () => {
+                    try {
+                        const r = await ajax({ excluir_nota_geral: '1', nota_id: id });
+                        if (r.ok) {
+                            wrap.style.transition = 'opacity .25s, transform .25s';
+                            wrap.style.opacity    = '0';
+                            wrap.style.transform  = 'scale(.92)';
+                            setTimeout(() => {
+                                wrap.remove();
+                                const grid = document.getElementById('grid-notas-gerais');
+                                if (grid && !grid.querySelector('.nota-geral-card-wrap')) {
+                                    document.getElementById('notas-gerais-lista-wrap').innerHTML =
+                                        `<div class="text-center py-5 text-muted" id="notas-gerais-vazia">
+                                          <i class="bi bi-journal-x fs-1 d-block mb-2" style="opacity:.25;"></i>
+                                          <small>Nenhuma nota ainda. Crie a primeira acima!</small>
+                                        </div>`;
+                                }
+                                atualizarContadoresNotasGerais();
+                            }, 280);
+                            toast('Nota excluída.', 'verm');
+                        }
+                    } catch { toast('Erro ao excluir nota.', 'verm'); }
+                },
+                { icon: 'bi bi-journal-x text-danger fs-4', btnText: 'Excluir Nota' }
+            );
+        };
+    });
+}
+
+bindBotoesNotaGeral();
+document.getElementById('modalNotasGerais')?.addEventListener('hidden.bs.modal', resetarFormNotaGeral);
 </script>
 
 <?php if ($avisoPopupCentral): ?>

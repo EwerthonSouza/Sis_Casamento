@@ -23,42 +23,73 @@ if (!schema_ja_verificado('notificacoes')) {
     marcar_schema_verificado('notificacoes');
 }
 
-// Migração: leitura POR ITEM de notificação (além do "último visto" geral
-// acima). Sem isso, marcar 1 notificação como lida empurrava o "último visto"
-// pra agora e fazia TODAS as outras (ainda não conferidas) somerem também;
-// e não marcar nada no clique individual fazia a mesma notificação voltar
-// depois de recarregar a página. item_chave identifica a notificação (ex:
-// "nota:12", "comentario:88") já que os itens vêm de tabelas diferentes.
-if (!schema_ja_verificado('notificacoes_item_lida')) {
+// "Última vez que viu" passou a ser por escopo (módulo inteiro, ou um evento
+// específico) — antes era só por conta, então abrir o sino num módulo/evento
+// zerava o contador de todos os outros, mesmo sem ter visto nada lá.
+// (Usado hoje só pelo botão "Marcar lidas em massa" — o clique individual,
+// em qualquer tela, usa o controle item a item de notificacoes_vistas, logo
+// abaixo, que também é o que decide o que aparece na lista.)
+if (!schema_ja_verificado('notificacoes_escopo')) {
     try {
-        $pdo->query("SELECT 1 FROM notificacoes_item_lida LIMIT 1");
+        $pdo->query("SELECT escopo FROM notificacoes_lidas LIMIT 1");
     } catch (Exception $e) {
-        $pdo->exec("
-            CREATE TABLE notificacoes_item_lida (
-                usuario_tipo VARCHAR(20) NOT NULL,
-                usuario_id   INT         NOT NULL,
-                item_chave   VARCHAR(60) NOT NULL,
-                lido_em      DATETIME    NOT NULL,
-                PRIMARY KEY (usuario_tipo, usuario_id, item_chave)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-        ");
+        $pdo->exec("ALTER TABLE notificacoes_lidas ADD COLUMN escopo VARCHAR(50) NOT NULL DEFAULT 'geral'");
+        try { $pdo->exec("ALTER TABLE notificacoes_lidas DROP PRIMARY KEY"); } catch (Exception $e2) {}
+        $pdo->exec("ALTER TABLE notificacoes_lidas ADD PRIMARY KEY (usuario_tipo, usuario_id, escopo)");
     }
-    marcar_schema_verificado('notificacoes_item_lida');
+    marcar_schema_verificado('notificacoes_escopo');
+}
+
+// Controle item a item: cada notificação (tarefa concluída, comentário, RSVP,
+// nota, comentário de nota...) tem uma "chave" própria (ex: "checklist:328",
+// "nota:12"). Clicar numa marca só aquela chave como vista — as outras
+// continuam aparecendo, em vez de um corte por data que apagava a lista
+// inteira de uma vez só. Usado por painel_admin.php, gerenciar.php e
+// noivos.php — o mesmo mecanismo pros três, equipe ou casal.
+if (!schema_ja_verificado('notificacoes_vistas')) {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS notificacoes_vistas (
+        usuario_tipo VARCHAR(20) NOT NULL,
+        usuario_id   INT NOT NULL,
+        chave        VARCHAR(60) NOT NULL,
+        visto_em     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (usuario_tipo, usuario_id, chave)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
+    marcar_schema_verificado('notificacoes_vistas');
+}
+
+// Coluna de data de criação da tarefa do checklist — usada pra saber quais
+// tarefas são "novas" (pra notificar o casal quando a assessoria adiciona
+// checklist). Linhas antigas ganham uma data bem no passado, pra não virar
+// notificação de "tarefa nova" retroativa pra quem já tinha checklist.
+if (!schema_ja_verificado('checklist_criado_em')) {
+    try {
+        $pdo->query("SELECT criado_em FROM checklist LIMIT 1");
+    } catch (Exception $e) {
+        $pdo->exec("ALTER TABLE checklist ADD COLUMN criado_em DATETIME NULL");
+        $pdo->exec("UPDATE checklist SET criado_em = '2000-01-01 00:00:00' WHERE criado_em IS NULL");
+    }
+    marcar_schema_verificado('checklist_criado_em');
 }
 
 /**
  * Busca as notificações mais recentes (tarefas concluídas pelos noivos,
  * comentários dos noivos e confirmações/recusas de presença).
- * Se $evento_id for informado, filtra só aquele evento; senão, traz de todos.
+ * Se $evento_id for informado, filtra só aquele evento; senão, traz de todos
+ * os eventos — mas ainda restrito a $tipo_evento quando informado, pra não
+ * misturar notificação de um módulo enquanto a equipe está administrando outro.
  *
  * $avisos_central_admin_id (Fase de Avisos, 2026-09-15): quando informado
  * (o id do admin logado), soma os avisos da Central (modo sino) dirigidos a
  * ele — só painel_admin.php passa isso; gerenciar.php e noivos.php nunca
  * veem avisos da Central.
+ *
+ * $incluir_financeiro = false tira os avisos de arquivos/comprovantes de
+ * fornecedores (têm valores) — o assistente não vê dados financeiros.
  */
-function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?int $avisos_central_admin_id = null): array
+function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?string $tipo_evento = null, ?int $avisos_central_admin_id = null, bool $incluir_financeiro = true): array
 {
     $itens = [];
+    $filtro_modulo = ($tipo_evento && !$evento_id) ? " AND e.tipo_evento = ?" : "";
 
     // 1. Tarefas concluídas pelos noivos
     $sql1 = "
@@ -67,17 +98,17 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?int $
         INNER JOIN eventos e ON e.id = c.evento_id
         INNER JOIN clientes cl ON cl.id = e.cliente_id
         WHERE c.concluido_por = 'Noivos' AND c.concluido_em IS NOT NULL
-    " . ($evento_id ? " AND c.evento_id = ?" : "") . "
+    " . ($evento_id ? " AND c.evento_id = ?" : $filtro_modulo) . "
         ORDER BY c.concluido_em DESC LIMIT " . (int)$limite;
     $stmt1 = $pdo->prepare($sql1);
-    $stmt1->execute($evento_id ? [$evento_id] : []);
+    $stmt1->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
     foreach ($stmt1->fetchAll() as $r) {
         $itens[] = [
             'tipo'        => 'checklist',
+            'chave'       => 'checklist:' . $r['id'],
             'icone'       => 'bi-check-circle-fill text-success',
             'evento_id'   => (int)$r['evento_id'],
             'evento_nome' => $r['evento_nome'],
-            'chave'       => 'checklist:' . $r['id'],
             'texto'       => 'Concluiu a tarefa "' . $r['tarefa'] . '"',
             'quando'      => $r['quando'],
         ];
@@ -94,17 +125,17 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?int $
         INNER JOIN eventos e ON e.id = COALESCE(ch.evento_id, cc.evento_id)
         INNER JOIN clientes cl ON cl.id = e.cliente_id
         WHERE cc.autor = 'Noivos'
-    " . ($evento_id ? " AND COALESCE(ch.evento_id, cc.evento_id) = ?" : "") . "
+    " . ($evento_id ? " AND COALESCE(ch.evento_id, cc.evento_id) = ?" : $filtro_modulo) . "
         ORDER BY cc.criado_em DESC LIMIT " . (int)$limite;
     $stmt2 = $pdo->prepare($sql2);
-    $stmt2->execute($evento_id ? [$evento_id] : []);
+    $stmt2->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
     foreach ($stmt2->fetchAll() as $r) {
         $itens[] = [
             'tipo'        => 'comentario',
+            'chave'       => 'comentario:' . $r['id'],
             'icone'       => 'bi-chat-left-text-fill text-primary',
             'evento_id'   => (int)$r['evento_id'],
             'evento_nome' => $r['evento_nome'],
-            'chave'       => 'comentario:' . $r['id'],
             'texto'       => 'Comentou em "' . $r['referencia'] . '": ' . mb_substr($r['comentario'], 0, 80, 'UTF-8') . (mb_strlen($r['comentario'], 'UTF-8') > 80 ? '…' : ''),
             'quando'      => $r['quando'],
         ];
@@ -118,18 +149,18 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?int $
         INNER JOIN eventos e ON e.id = co.evento_id
         INNER JOIN clientes cl ON cl.id = e.cliente_id
         WHERE co.data_confirmacao IS NOT NULL
-    " . ($evento_id ? " AND co.evento_id = ?" : "") . "
+    " . ($evento_id ? " AND co.evento_id = ?" : $filtro_modulo) . "
         ORDER BY co.data_confirmacao DESC LIMIT " . (int)$limite;
     $stmt3 = $pdo->prepare($sql3);
-    $stmt3->execute($evento_id ? [$evento_id] : []);
+    $stmt3->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
     foreach ($stmt3->fetchAll() as $r) {
         $recusou = ($r['resposta_rsvp'] === 'recusado');
         $itens[] = [
             'tipo'        => 'rsvp',
+            'chave'       => 'rsvp:' . $r['id'],
             'icone'       => $recusou ? 'bi-x-circle-fill text-danger' : 'bi-emoji-heart-eyes-fill text-danger',
             'evento_id'   => (int)$r['evento_id'],
             'evento_nome' => $r['evento_nome'],
-            'chave'       => 'rsvp:' . $r['id'],
             'texto'       => $recusou
                 ? $r['nome'] . ' avisou que não poderá comparecer'
                 : $r['nome'] . ' confirmou presença',
@@ -154,10 +185,10 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?int $
                 if (mb_strlen($r['anotacao'], 'UTF-8') > 100) $texto .= '…';
                 $itens[] = [
                     'tipo'        => 'agenda',
+                    'chave'       => 'agenda:' . $r['id'],
                     'icone'       => 'bi-alarm-fill text-warning',
                     'evento_id'   => null,
                     'evento_nome' => 'Lembrete da agenda',
-                    'chave'       => 'agenda:' . $r['id'],
                     'texto'       => $texto,
                     'quando'      => $r['quando'],
                 ];
@@ -178,10 +209,10 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?int $
             INNER JOIN eventos e ON e.id = n.evento_id
             INNER JOIN clientes cl ON cl.id = e.cliente_id
             WHERE n.origem = 'Noivos'
-        " . ($evento_id ? " AND n.evento_id = ?" : "") . "
+        " . ($evento_id ? " AND n.evento_id = ?" : $filtro_modulo) . "
             ORDER BY n.criado_em DESC LIMIT " . (int)$limite;
         $stmt6 = $pdo->prepare($sql6);
-        $stmt6->execute($evento_id ? [$evento_id] : []);
+        $stmt6->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
         foreach ($stmt6->fetchAll() as $r) {
             $itens[] = [
                 'tipo'        => 'nota',
@@ -206,10 +237,10 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?int $
             INNER JOIN eventos e ON e.id = n.evento_id
             INNER JOIN clientes cl ON cl.id = e.cliente_id
             WHERE nc.autor = 'Noivos'
-        " . ($evento_id ? " AND n.evento_id = ?" : "") . "
+        " . ($evento_id ? " AND n.evento_id = ?" : $filtro_modulo) . "
             ORDER BY nc.criado_em DESC LIMIT " . (int)$limite;
         $stmt7 = $pdo->prepare($sql7);
-        $stmt7->execute($evento_id ? [$evento_id] : []);
+        $stmt7->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
         foreach ($stmt7->fetchAll() as $r) {
             // Comentário do casal: mostra "Noivos" (papel), não o nome real
             // registrado do casal — é sempre o mesmo texto pra qualquer um
@@ -223,6 +254,41 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?int $
                 'chave'       => 'nota_comentario:' . $r['id'],
                 'texto'       => 'Noivos comentou na nota "' . $r['nota_titulo'] . '": ' . mb_substr($r['comentario'], 0, 80, 'UTF-8') . (mb_strlen($r['comentario'], 'UTF-8') > 80 ? '…' : ''),
                 'quando'      => $r['quando'],
+            ];
+        }
+    } catch (Exception $e) {}
+
+    // 8. Comprovantes que o cliente (casal, aniversariante, empresa...) anexou
+    // aos pagamentos dos fornecedores.
+    // Colunas podem não existir ainda num deploy que nunca abriu
+    // fornecedores_evento.php — ignora silenciosamente, igual às notas acima.
+    // $incluir_financeiro = false (assistente): não mostra, porque tem valores.
+    if ($incluir_financeiro) try {
+        $sql9 = "
+            SELECT p.id, p.fornecedor_id, p.valor, p.comprovante_enviado_em AS quando, f.servico, f.evento_id, e.tipo_evento, cl.nome AS evento_nome
+            FROM fornecedores_pagamentos p
+            INNER JOIN fornecedores_evento f ON f.id = p.fornecedor_id
+            INNER JOIN eventos e ON e.id = f.evento_id
+            INNER JOIN clientes cl ON cl.id = e.cliente_id
+            WHERE p.comprovante_enviado_por = 'Noivos' AND p.comprovante_enviado_em IS NOT NULL
+        " . ($evento_id ? " AND f.evento_id = ?" : $filtro_modulo) . "
+            ORDER BY p.comprovante_enviado_em DESC LIMIT " . (int)$limite;
+        $stmt9 = $pdo->prepare($sql9);
+        $stmt9->execute($evento_id ? [$evento_id] : ($filtro_modulo ? [$tipo_evento] : []));
+        foreach ($stmt9->fetchAll() as $r) {
+            // "O casal" / "O aniversariante" / "O responsável pela empresa"... conforme o módulo
+            $contratante = function_exists('labels_modulo_evento')
+                ? (labels_modulo_evento($r['tipo_evento'] ?? 'casamento')['singular_contratante'] ?? 'cliente')
+                : 'cliente';
+            $itens[] = [
+                'tipo'        => 'arquivo_fornecedor',
+                'chave'       => 'forn_pgto:' . $r['id'],
+                'icone'       => 'bi-receipt text-success',
+                'evento_id'   => (int)$r['evento_id'],
+                'evento_nome' => $r['evento_nome'],
+                'texto'       => 'O ' . $contratante . ' enviou o comprovante de R$ ' . number_format((float)$r['valor'], 2, ',', '.') . ' de "' . $r['servico'] . '"',
+                'quando'      => $r['quando'],
+                'link'        => 'fornecedores_evento.php?id=' . (int)$r['evento_id'] . '&pagamento=' . (int)$r['fornecedor_id'],
             ];
         }
     } catch (Exception $e) {}
@@ -242,6 +308,7 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?int $
         foreach ($stmt5->fetchAll() as $r) {
             $itens[] = [
                 'tipo'        => 'central',
+                'chave'       => 'central:' . $r['id'],
                 'icone'       => 'bi-megaphone-fill text-primary',
                 'evento_id'   => null,
                 'evento_nome' => 'Aviso da Central',
@@ -256,11 +323,16 @@ function buscar_notificacoes(PDO $pdo, ?int $evento_id, int $limite = 20, ?int $
     return array_slice($itens, 0, $limite);
 }
 
-/** Última vez que o usuário logado abriu o sino de notificações (ou null se nunca) */
-function ultima_visualizacao_notificacoes(PDO $pdo, string $usuario_tipo, int $usuario_id): ?string
+/**
+ * Última vez que o usuário logado abriu o sino de notificações (ou null se nunca)
+ * dentro daquele escopo específico — 'modulo:casamento', 'evento:42', etc. Cada
+ * escopo tem seu próprio "visto por último", pra abrir o sino num módulo/evento
+ * não zerar o contador de outro que a pessoa nem chegou a abrir.
+ */
+function ultima_visualizacao_notificacoes(PDO $pdo, string $usuario_tipo, int $usuario_id, string $escopo = 'geral'): ?string
 {
-    $stmt = $pdo->prepare("SELECT ultima_visualizacao FROM notificacoes_lidas WHERE usuario_tipo = ? AND usuario_id = ?");
-    $stmt->execute([$usuario_tipo, $usuario_id]);
+    $stmt = $pdo->prepare("SELECT ultima_visualizacao FROM notificacoes_lidas WHERE usuario_tipo = ? AND usuario_id = ? AND escopo = ?");
+    $stmt->execute([$usuario_tipo, $usuario_id, $escopo]);
     $v = $stmt->fetchColumn();
     if (!$v) return null;
 
@@ -274,42 +346,45 @@ function ultima_visualizacao_notificacoes(PDO $pdo, string $usuario_tipo, int $u
     return $v;
 }
 
-/** Marca UM item específico de notificação como lido pro usuário logado
- *  (clique individual) — sem mexer no "último visto" geral, que só avança
- *  no botão "Marcar lidas". */
-function marcar_item_lido_notificacao(PDO $pdo, string $usuario_tipo, int $usuario_id, string $chave): void
+/** Conta quantos itens da lista são mais recentes que a última visualização
+ *  (usado só pelo botão "Marcar lidas em massa" — o filtro item a item de
+ *  quem já foi vista individualmente é feito com contar_nao_vistas, abaixo,
+ *  que é o mesmo mecanismo pra painel_admin.php, gerenciar.php e noivos.php). */
+function contar_nao_lidas(array $notificacoes, ?string $ultima_vista): int
 {
-    if ($usuario_id <= 0 || $chave === '') return;
-    $pdo->prepare("
-        INSERT INTO notificacoes_item_lida (usuario_tipo, usuario_id, item_chave, lido_em)
-        VALUES (?, ?, ?, NOW())
-        ON DUPLICATE KEY UPDATE lido_em = NOW()
-    ")->execute([$usuario_tipo, $usuario_id, $chave]);
+    if (!$ultima_vista) return count($notificacoes);
+    $n = 0;
+    foreach ($notificacoes as $item) {
+        if ($item['quando'] > $ultima_vista) $n++;
+    }
+    return $n;
 }
 
-/** Conjunto (chave => true) dos itens já dispensados individualmente pelo usuário. */
-function itens_lidos_notificacao(PDO $pdo, string $usuario_tipo, int $usuario_id): array
+/** Chaves de notificação que esse usuário já marcou como vista individualmente */
+function chaves_vistas_usuario(PDO $pdo, string $usuario_tipo, int $usuario_id): array
 {
-    if ($usuario_id <= 0) return [];
-    $stmt = $pdo->prepare("SELECT item_chave FROM notificacoes_item_lida WHERE usuario_tipo = ? AND usuario_id = ?");
+    $stmt = $pdo->prepare("SELECT chave FROM notificacoes_vistas WHERE usuario_tipo = ? AND usuario_id = ?");
     $stmt->execute([$usuario_tipo, $usuario_id]);
     return array_flip($stmt->fetchAll(PDO::FETCH_COLUMN));
 }
 
-/** Um item conta como não lido se for mais novo que o "último visto" geral
- *  E não tiver sido dispensado individualmente. */
-function item_notificacao_nao_lido(array $item, ?string $ultima_vista, array $itens_lidos): bool
+/** Marca uma ou mais chaves de notificação como vistas por esse usuário */
+function marcar_notificacoes_vistas(PDO $pdo, string $usuario_tipo, int $usuario_id, array $chaves): void
 {
-    if (!empty($item['chave']) && isset($itens_lidos[$item['chave']])) return false;
-    return !$ultima_vista || $item['quando'] > $ultima_vista;
+    $chaves = array_values(array_unique(array_filter($chaves, fn($c) => is_string($c) && $c !== '' && strlen($c) <= 60)));
+    if (empty($chaves)) return;
+    $stmt = $pdo->prepare("INSERT IGNORE INTO notificacoes_vistas (usuario_tipo, usuario_id, chave) VALUES (?, ?, ?)");
+    foreach ($chaves as $chave) {
+        $stmt->execute([$usuario_tipo, $usuario_id, $chave]);
+    }
 }
 
-/** Conta quantos itens da lista ainda estão não lidos (ver item_notificacao_nao_lido) */
-function contar_nao_lidas(array $notificacoes, ?string $ultima_vista, array $itens_lidos = []): int
+/** Conta quantos itens da lista NÃO estão no conjunto de chaves já vistas */
+function contar_nao_vistas(array $notificacoes, array $vistas): int
 {
     $n = 0;
     foreach ($notificacoes as $item) {
-        if (item_notificacao_nao_lido($item, $ultima_vista, $itens_lidos)) $n++;
+        if (!isset($vistas[$item['chave']])) $n++;
     }
     return $n;
 }

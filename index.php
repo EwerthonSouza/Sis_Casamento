@@ -2,11 +2,33 @@
 session_start();
 require_once 'conexao.php';
 require_once __DIR__ . '/config/central.php';
+garantir_coluna_ultimo_login_usuarios($pdo);
 
 // Evita que o navegador guarde esta página em cache, já causou telas
 // desatualizadas aparecerem depois de mudanças no sistema.
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 header('Pragma: no-cache');
+
+// Já logado (sessão ainda ativa): não mostra o formulário de novo — vai direto
+// pro painel certo. Sem isso, abrir o endereço principal com a sessão válida
+// (ou uma pré-visualização que volta pra página inicial) parecia um logout.
+// A regra de inatividade (30 min) é checada antes: sessão vencida cai no login.
+require_once 'sessao_timeout.inc.php';
+if (!empty($_SESSION['usuario_tipo']) && $_SERVER['REQUEST_METHOD'] !== 'POST' && !isset($_GET['sessao_expirada'])) {
+    verificar_sessao_ativa();
+    switch ($_SESSION['usuario_tipo']) {
+        case 'desenvolvedor':
+            $destino_logado = 'dev_painel.php';
+            break;
+        case 'noivos':
+            $destino_logado = !empty($_SESSION['evento_id']) ? 'noivos.php' : 'hub_eventos_cliente.php';
+            break;
+        default: // admin / assistente
+            $destino_logado = !empty($_SESSION['modulo_ativo']) ? 'painel_admin.php' : 'hub_modulos.php';
+    }
+    header('Location: ' . $destino_logado);
+    exit;
+}
 
 $erro = "";
 $aviso_sessao_expirada = isset($_GET['sessao_expirada']);
@@ -47,13 +69,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $equipe['nome']
                 );
 
+                // Se ultimo_login ainda tá vazio, é o primeiro login desse usuário —
+                // guarda isso na sessão pra saudação do hub não dizer "de volta" à toa.
+                $_SESSION['primeiro_acesso'] = empty($equipe['ultimo_login']);
+                $pdo->prepare("UPDATE usuarios SET ultimo_login = NOW() WHERE id = ?")->execute([$equipe['id']]);
+
                 centralQueueEvent($pdo, 'user.login', [
                     'external_id' => (string) $equipe['id'],
                     'name' => $equipe['nome'] ?? null,
                     'email' => $equipe['email'] ?? null,
                 ]);
 
-                header("Location: painel_admin.php");
+                if ($equipe['tipo'] === 'desenvolvedor') {
+                    header("Location: dev_painel.php");
+                } else {
+                    header("Location: hub_modulos.php");
+                }
                 exit;
             }
 
@@ -61,13 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
 
             // NOIVOS
-            $stmt = $pdo->prepare("
-                SELECT c.*, e.id AS evento_id
-                FROM clientes c
-                LEFT JOIN eventos e ON e.cliente_id = c.id
-                WHERE c.email = ?
-            ");
-
+            $stmt = $pdo->prepare("SELECT * FROM clientes WHERE email = ?");
             $stmt->execute([$usuario_input]);
             $cliente = $stmt->fetch();
 
@@ -75,7 +100,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if (validarSenha($senha_input, $cliente['senha'])) {
 
-                    if (empty($cliente['evento_id'])) {
+                    $stmt_eventos = $pdo->prepare("SELECT id FROM eventos WHERE cliente_id = ? ORDER BY data_evento DESC");
+                    $stmt_eventos->execute([$cliente['id']]);
+                    $eventos_cliente = $stmt_eventos->fetchAll(PDO::FETCH_COLUMN);
+
+                    if (empty($eventos_cliente)) {
 
                         $erro = "Nenhum evento vinculado ao cadastro.";
 
@@ -85,7 +114,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         $_SESSION['usuario_tipo'] = 'noivos';
                         $_SESSION['usuario_id'] = $cliente['id'];
-                        $_SESSION['evento_id'] = $cliente['evento_id'];
                         $_SESSION['usuario_nome'] = $cliente['nome'] ?? 'Casal';
 
                         centralQueueEvent($pdo, 'user.login', [
@@ -94,7 +122,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             'email' => $cliente['email'] ?? null,
                         ]);
 
-                        header("Location: noivos.php?id=" . $cliente['evento_id']);
+                        if (count($eventos_cliente) === 1) {
+                            $_SESSION['evento_id'] = $eventos_cliente[0];
+                            header("Location: noivos.php?id=" . $eventos_cliente[0]);
+                        } else {
+                            header("Location: hub_eventos_cliente.php");
+                        }
                         exit;
                     }
 
@@ -123,7 +156,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-<link rel="stylesheet" href="css/estilo.css?v=15">
+<link rel="stylesheet" href="css/estilo.css?v=18">
 
 <style>
 
@@ -134,7 +167,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
    se sobrar aquela faixa, ela mostra a foto em vez de um retângulo liso. */
 html{
     background-color:#6f4a2f;
-    background-image: url('img/fundo_login.webp');
+    background-image: url('img/fundo_login.jpg');
     background-repeat:no-repeat;
     background-position:center bottom;
     background-size:cover;
@@ -150,7 +183,7 @@ body{
     position:relative;
     overflow-x:hidden;
     background-color:#6f4a2f;
-    background-image: url('img/fundo_login.webp');
+    background-image: url('img/fundo_login.jpg');
     background-repeat:no-repeat;
     background-attachment:fixed;
     background-position:center;
