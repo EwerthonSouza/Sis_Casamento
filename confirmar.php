@@ -137,7 +137,10 @@ if ($token_convite === '') {
         $busca_candidatos = [];
 
         if ($busca_nome !== '') {
-            $stmt = $pdo->prepare("SELECT id, nome FROM convidados WHERE evento_id = ? AND convidado_principal_id IS NULL AND LOWER(TRIM(nome)) = LOWER(TRIM(?)) ORDER BY id ASC");
+            // Busca parcial (não só nome exato): digitar "Rick" já encontra
+            // "Rick Bruno" e "Rick Teste", e a tela de candidatos deixa o
+            // convidado escolher qual é o dele.
+            $stmt = $pdo->prepare("SELECT id, nome FROM convidados WHERE evento_id = ? AND convidado_principal_id IS NULL AND LOWER(TRIM(nome)) LIKE LOWER(CONCAT('%', TRIM(?), '%')) ORDER BY nome ASC");
             $stmt->execute([$evento_id, $busca_nome]);
             $candidatos = $stmt->fetchAll();
 

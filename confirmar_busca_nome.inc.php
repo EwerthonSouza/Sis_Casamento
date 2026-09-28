@@ -79,14 +79,14 @@
                     <a href="?evento=<?= $evento_id ?>" class="small text-muted">Não é nenhum desses, tentar outro nome</a>
                 </div>
             <?php else: ?>
-                <p class="text-center text-muted mb-4">Pra confirmar sua presença, digite seu nome completo exatamente como está no convite:</p>
+                <p class="text-center text-muted mb-4">Para confirmar sua presença, digite seu nome:</p>
                 <?php if (!empty($busca_erro)): ?>
                     <div class="alert alert-danger small"><?= htmlspecialchars($busca_erro, ENT_QUOTES, 'UTF-8') ?></div>
                 <?php endif; ?>
                 <form method="GET" action="">
                     <input type="hidden" name="evento" value="<?= $evento_id ?>">
                     <div class="mb-3">
-                        <input type="text" name="buscar" class="form-control form-control-lg" placeholder="Seu nome completo"
+                        <input type="text" name="buscar" class="form-control form-control-lg" placeholder="Seu nome"
                                value="<?= htmlspecialchars($busca_nome ?? '', ENT_QUOTES, 'UTF-8') ?>" required autofocus>
                     </div>
                     <div class="d-grid">
