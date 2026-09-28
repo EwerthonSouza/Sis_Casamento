@@ -32,7 +32,7 @@
             overflow: hidden; box-shadow: 0 20px 50px rgba(0, 0, 0, .3);
             animation: fadeIn .5s ease both;
         }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: none; } }
         .rsvp-topo { background: rgba(255, 255, 255, .08); color: #fff; text-align: center; padding: 2.2rem 1.5rem 1.6rem; }
         .rsvp-topo .anel { font-size: 2.4rem; opacity: .9; margin-bottom: .4rem; }
         .rsvp-topo h2 { font-weight: 800; margin-bottom: .2rem; letter-spacing: -.5px; }

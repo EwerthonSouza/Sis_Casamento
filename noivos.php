@@ -1131,7 +1131,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
   <title><?= htmlspecialchars($labels['titulo_pagina_cliente']) ?> - Meu Evento PRO</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css?v=18">
+  <link rel="stylesheet" href="css/estilo.css?v=19">
   <?= estilo_tema_evento($cor_modulo) ?>
   <style>
     :root {
@@ -1328,7 +1328,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     .toast-item.info  { background: #2563eb; }
     @keyframes toastIn {
       from { opacity: 0; transform: translateX(24px); }
-      to   { opacity: 1; transform: translateX(0); }
+      to   { opacity: 1; transform: none; }
     }
 
     /* SWATCHES DE COR DO CONVITE */
@@ -1459,7 +1459,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     }
     @keyframes entraItem {
       from { opacity: 0; transform: scale(.94) translateY(8px); }
-      to   { opacity: 1; transform: scale(1)   translateY(0); }
+      to   { opacity: 1; transform: none; }
     }
 
     /* ---- CHECKLIST — REDESIGN ---- */

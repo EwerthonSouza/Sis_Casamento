@@ -160,7 +160,7 @@ $lista_usuarios = $stmt_lista_usuarios->fetchAll();
     <title>Gerenciar Equipe - Meu Evento PRO</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="css/estilo.css?v=18">
+    <link rel="stylesheet" href="css/estilo.css?v=19">
     <style>
         @media (max-width: 767.98px) {
             .navbar-brand img { height: 26px !important; }

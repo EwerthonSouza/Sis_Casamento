@@ -149,7 +149,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/estilo.css?v=18">
+    <link rel="stylesheet" href="css/estilo.css?v=19">
     <style>
         body {
             font-family: 'Poppins', 'Inter', system-ui, sans-serif;
@@ -166,7 +166,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
 
         @keyframes fadeInUpHub {
             from { opacity: 0; transform: translateY(16px); }
-            to   { opacity: 1; transform: translateY(0); }
+            to   { opacity: 1; transform: none; }
         }
 
         /* Painel que envolve a saudação + o título dos módulos — dá peso visual

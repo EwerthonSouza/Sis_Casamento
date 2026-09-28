@@ -128,10 +128,14 @@ body {
 
 /* Efeito suave ao abrir qualquer página do sistema (aplicado no <body>,
    então vale em todas as telas automaticamente, sem precisar repetir em
-   cada arquivo). */
+   cada arquivo). Só opacidade, nunca transform: qualquer transform aqui
+   (mesmo translateY(0) parado) vira a referência de posicionamento pra
+   tudo com position:fixed dentro do body — inclusive os modais do
+   Bootstrap, que passam a aparecer cortados/deslocados em vez de
+   centralizados na tela. */
 @keyframes paginaFadeIn {
-    from { opacity: 0; transform: translateY(6px); }
-    to   { opacity: 1; transform: translateY(0); }
+    from { opacity: 0; }
+    to   { opacity: 1; }
 }
 
 /* PWA: com viewport-fit=cover + status bar translúcida (iOS), o conteúdo
@@ -173,14 +177,21 @@ body {
 /* ============================================================
    3. ANIMAÇÕES GLOBAIS
    ============================================================ */
+/* As quatro animações abaixo terminam com "transform: none" (não
+   "translateY(0)"/"scale(1)") de propósito: qualquer valor de transform
+   diferente de "none" — mesmo um que não move nada visualmente — vira a
+   referência de posicionamento pra tudo com position:fixed dentro do
+   elemento, inclusive um modal do Bootstrap aninhado ali dentro (já que a
+   animação usa fill-mode "both"/"forwards", o transform final ficava
+   aplicado pra sempre depois da animação acabar, não só durante ela). */
 @keyframes fadeUp {
     from { opacity: 0; transform: translateY(15px); }
-    to { opacity: 1; transform: translateY(0); }
+    to { opacity: 1; transform: none; }
 }
 
 @keyframes toastIn {
     from { opacity: 0; transform: translateX(24px); }
-    to   { opacity: 1; transform: translateX(0); }
+    to   { opacity: 1; transform: none; }
 }
 
 /* ============================================================
@@ -567,7 +578,7 @@ body {
 }
 @keyframes notaEntra {
   from { opacity: 0; transform: scale(.94) translateY(8px); }
-  to   { opacity: 1; transform: scale(1)  translateY(0); }
+  to   { opacity: 1; transform: none; }
 }
 #modalConfirmar {
   z-index: 1075 !important;
@@ -599,7 +610,7 @@ a { transition: color 0.15s ease, opacity 0.15s ease; }
 
 @keyframes dropdownIn {
     from { opacity: 0; transform: translateY(-6px) scale(0.98); }
-    to   { opacity: 1; transform: translateY(0) scale(1); }
+    to   { opacity: 1; transform: none; }
 }
 .dropdown-menu.show { animation: dropdownIn 0.18s ease both; }
 .dropdown-item { transition: background-color 0.15s ease, color 0.15s ease; }

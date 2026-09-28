@@ -1176,7 +1176,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
   <title>Gerenciar Evento - Meu Evento PRO</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
-  <link rel="stylesheet" href="css/estilo.css?v=18">
+  <link rel="stylesheet" href="css/estilo.css?v=19">
   <?= estilo_tema_evento($cor_modulo) ?>
   <style>
     /* ---- VARIÁVEL DE RAIO USADA EM VÁRIOS CARDS (estilo.css não a define) ---- */
@@ -1503,7 +1503,7 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
     #grid-notas .nota-card-wrap { animation: notaEntra .3s ease both; }
     @keyframes notaEntra {
       from { opacity: 0; transform: scale(.94) translateY(8px); }
-      to   { opacity: 1; transform: scale(1)   translateY(0); }
+      to   { opacity: 1; transform: none; }
     }
 
     /* ---- PLAYLIST / MÚSICAS ---- */
