@@ -275,11 +275,21 @@ function garantir_coluna_assessoria_id(PDO $pdo): void {
         'calendario_anotacoes', 'notas_gerais_painel',
     ];
 
+    // Algumas tabelas (ex.: fornecedores_pagamentos, notas_gerais_painel) só são
+    // criadas sob demanda pela própria página que as usa (schema_ja_verificado
+    // de cada uma), na primeira vez que alguém acessa aquela função — o que pode
+    // acontecer bem depois desta migração já ter rodado (ou nunca, se a
+    // funcionalidade nunca for usada). Por isso só marca "tudo verificado" no
+    // final quando TODAS as tabelas da lista já existiam nesta passada; se
+    // alguma ainda não existir, repete a checagem inteira na próxima requisição
+    // (barata: um SELECT ... LIMIT 1 por tabela) até que todas existam.
+    $todas_existem = true;
+
     foreach ($tabelas as $tabela) {
         try { $pdo->query("SELECT assessoria_id FROM $tabela LIMIT 1"); }
         catch (Exception $e) {
             try { $pdo->exec("ALTER TABLE $tabela ADD COLUMN assessoria_id INT NULL"); }
-            catch (Exception $e2) { continue; } // tabela pode não existir nesta instalação
+            catch (Exception $e2) { $todas_existem = false; continue; } // tabela ainda não existe nesta instalação
         }
         // Backfill: como hoje só existe a assessoria padrão, todo dado atual
         // é dela. UPDATE só toca quem ainda estiver NULL — repetir não duplica.
@@ -305,7 +315,9 @@ function garantir_coluna_assessoria_id(PDO $pdo): void {
     try { $pdo->exec("CREATE INDEX idx_usuarios_assessoria ON usuarios (assessoria_id)"); } catch (Exception $e) {}
     try { $pdo->exec("ALTER TABLE usuarios ADD CONSTRAINT fk_usuarios_assessoria FOREIGN KEY (assessoria_id) REFERENCES assessorias(id)"); } catch (Exception $e) {}
 
-    marcar_schema_verificado('assessoria_id_v1');
+    if ($todas_existem) {
+        marcar_schema_verificado('assessoria_id_v1');
+    }
 }
 garantir_coluna_assessoria_id($pdo);
 ?>
