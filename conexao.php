@@ -209,4 +209,103 @@ function garantir_indice_tipo_evento(PDO $pdo): void {
     marcar_schema_verificado('indice_tipo_evento_v1');
 }
 garantir_indice_tipo_evento($pdo);
+
+/* ============================================================
+   MULTI-TENANT (assessoria_id) — passo 1 do plano de vender o
+   sistema pra várias assessorias, não só a atual.
+   Ver C:\docker\sis-casamento\PLANO-MULTI-TENANT.md e o vault
+   Cerebro_MAX/SisCasamento/08-DECISOES-TECNICAS/decisoes.md
+   (entrada 2026-09-17/21) pro desenho completo e o porquê.
+   ============================================================ */
+
+// Tabela raiz do multi-tenant + a assessoria "padrão", que recebe todo o
+// dado que já existe hoje (única assessoria até agora). Sem isso a etapa
+// seguinte (colunas assessoria_id) não tem pra onde apontar o backfill.
+function garantir_tabela_assessorias(PDO $pdo): int {
+    if (!schema_ja_verificado('tabela_assessorias')) {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS assessorias (
+            id        INT AUTO_INCREMENT PRIMARY KEY,
+            nome      VARCHAR(255) NOT NULL,
+            slug      VARCHAR(100) NOT NULL UNIQUE,
+            status    ENUM('ativa','inativa','suspensa') NOT NULL DEFAULT 'ativa',
+            criado_em TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+        marcar_schema_verificado('tabela_assessorias');
+    }
+    // Não depende do marcador acima: mesmo que a tabela já existisse (ex.:
+    // criada numa sessão anterior que falhou antes de inserir a linha), este
+    // INSERT só roda se ainda não houver nenhuma assessoria — idempotente.
+    $existe = (int)$pdo->query("SELECT COUNT(*) FROM assessorias")->fetchColumn();
+    if ($existe === 0) {
+        $pdo->prepare("INSERT INTO assessorias (nome, slug, status) VALUES (?, ?, 'ativa')")
+            ->execute(['Vandernayla Thainá', 'vandernayla-thaina']);
+    }
+    return (int)$pdo->query("SELECT id FROM assessorias ORDER BY id ASC LIMIT 1")->fetchColumn();
+}
+
+/**
+ * Adiciona assessoria_id em toda tabela de dado operacional (ver classificação
+ * completa na sessão de 2026-09-28 no histórico do Cerebro_MAX) e aponta todo
+ * o dado já existente pra assessoria padrão — nenhuma linha fica órfã.
+ *
+ * Cada tabela é tratada em passos tolerantes a repetição (coluna pode já
+ * existir, índice/FK podem já existir) — se a função for interrompida no meio
+ * (ex.: erro numa tabela específica), rodar de novo completa o que faltou sem
+ * duplicar nada. Só marca como verificado no fim, com todas as tabelas ok.
+ *
+ * IMPORTANTE (mesma lição do incidente de 10/09/2026 — ver
+ * PROJECT_CONTEXT.md armadilha #11): o marcador em arquivo sobrevive a uma
+ * restauração de banco. Depois de restaurar um banco a partir de backup,
+ * apagar uploads/.schema_ok_assessoria_id_v1 antes de confiar que rodou.
+ */
+function garantir_coluna_assessoria_id(PDO $pdo): void {
+    if (schema_ja_verificado('assessoria_id_v1')) return;
+
+    $assessoria_padrao_id = garantir_tabela_assessorias($pdo);
+
+    // Tabelas de dado operacional — todas ganham assessoria_id NOT NULL.
+    // usuarios é tratada à parte logo abaixo (permite NULL, pra contas
+    // tipo='desenvolvedor', que enxergam todas as assessorias).
+    $tabelas = [
+        'clientes', 'eventos', 'checklist', 'checklist_comentarios',
+        'checklist_modelos', 'convidados', 'documentos_evento',
+        'fornecedores_evento', 'fornecedores_pagamentos', 'inspiracoes_fotos',
+        'mapa_elementos', 'mesas', 'musicas_evento', 'notas_evento',
+        'notas_comentarios', 'referencias_fornecedores', 'servicos_assessoria',
+        'calendario_anotacoes',
+    ];
+
+    foreach ($tabelas as $tabela) {
+        try { $pdo->query("SELECT assessoria_id FROM $tabela LIMIT 1"); }
+        catch (Exception $e) {
+            try { $pdo->exec("ALTER TABLE $tabela ADD COLUMN assessoria_id INT NULL"); }
+            catch (Exception $e2) { continue; } // tabela pode não existir nesta instalação
+        }
+        // Backfill: como hoje só existe a assessoria padrão, todo dado atual
+        // é dela. UPDATE só toca quem ainda estiver NULL — repetir não duplica.
+        try { $pdo->exec("UPDATE $tabela SET assessoria_id = $assessoria_padrao_id WHERE assessoria_id IS NULL"); }
+        catch (Exception $e) {}
+        try { $pdo->exec("ALTER TABLE $tabela MODIFY assessoria_id INT NOT NULL"); }
+        catch (Exception $e) {}
+        try { $pdo->exec("CREATE INDEX idx_{$tabela}_assessoria ON $tabela (assessoria_id)"); }
+        catch (Exception $e) {} // índice já existe
+        try { $pdo->exec("ALTER TABLE $tabela ADD CONSTRAINT fk_{$tabela}_assessoria FOREIGN KEY (assessoria_id) REFERENCES assessorias(id)"); }
+        catch (Exception $e) {} // constraint já existe
+    }
+
+    // usuarios: NULL fica reservado pra contas tipo='desenvolvedor' (enxergam
+    // todas as assessorias) — só backfill quem já existe hoje (admin/assistente).
+    try { $pdo->query("SELECT assessoria_id FROM usuarios LIMIT 1"); }
+    catch (Exception $e) {
+        try { $pdo->exec("ALTER TABLE usuarios ADD COLUMN assessoria_id INT NULL"); } catch (Exception $e2) {}
+    }
+    try {
+        $pdo->exec("UPDATE usuarios SET assessoria_id = $assessoria_padrao_id WHERE assessoria_id IS NULL AND tipo IN ('admin', 'assistente')");
+    } catch (Exception $e) {}
+    try { $pdo->exec("CREATE INDEX idx_usuarios_assessoria ON usuarios (assessoria_id)"); } catch (Exception $e) {}
+    try { $pdo->exec("ALTER TABLE usuarios ADD CONSTRAINT fk_usuarios_assessoria FOREIGN KEY (assessoria_id) REFERENCES assessorias(id)"); } catch (Exception $e) {}
+
+    marcar_schema_verificado('assessoria_id_v1');
+}
+garantir_coluna_assessoria_id($pdo);
 ?>

@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once 'conexao.php';
+require_once 'tenant.php';
 require_once __DIR__ . '/config/central.php';
 garantir_coluna_ultimo_login_usuarios($pdo);
 
@@ -69,6 +70,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $equipe['nome']
                 );
 
+                // 'desenvolvedor' fica sem assessoria (enxerga todas, de propósito) —
+                // ver tenant.php. admin/assistente sempre têm uma (migração de 2026-09-28).
+                $_SESSION['assessoria_id'] = ($equipe['tipo'] === 'desenvolvedor' || $equipe['assessoria_id'] === null)
+                    ? null : (int)$equipe['assessoria_id'];
+
                 // Se ultimo_login ainda tá vazio, é o primeiro login desse usuário —
                 // guarda isso na sessão pra saudação do hub não dizer "de volta" à toa.
                 $_SESSION['primeiro_acesso'] = empty($equipe['ultimo_login']);
@@ -115,6 +121,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $_SESSION['usuario_tipo'] = 'noivos';
                         $_SESSION['usuario_id'] = $cliente['id'];
                         $_SESSION['usuario_nome'] = $cliente['nome'] ?? 'Casal';
+                        $_SESSION['assessoria_id'] = $cliente['assessoria_id'] !== null ? (int)$cliente['assessoria_id'] : null;
 
                         centralQueueEvent($pdo, 'user.login', [
                             'external_id' => (string) $cliente['id'],
