@@ -513,6 +513,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $texto = trim($_POST['texto_comentario']   ?? '');
         // A coluna `autor` é ENUM('Assessoria','Noivos') — grava o papel, não o nome da pessoa.
         $autor_nome = 'Assessoria';
+        // Confere que a tarefa é mesmo deste evento antes de comentar — sem
+        // isso dava pra comentar numa tarefa de outro evento/assessoria só
+        // trocando o id_tarefa no POST.
+        if ($id > 0) {
+            $chkTarefa = $pdo->prepare("SELECT id FROM checklist WHERE id = ? AND evento_id = ?");
+            $chkTarefa->execute([$id, $evento_id]);
+            if (!$chkTarefa->fetch()) { $id = 0; }
+        }
         if ($id > 0 && $texto !== '') {
             $pdo->prepare("INSERT INTO checklist_comentarios (checklist_id, autor, comentario, assessoria_id) VALUES (?, ?, ?, ?)")
                 ->execute([$id, $autor_nome, $texto, assessoria_atual()]);

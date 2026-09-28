@@ -327,7 +327,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['adicionar_comentario_noivos'])) {
         $id    = (int)$_POST['check_id'];
         $texto = trim($_POST['novo_comentario'] ?? '');
-        if ($texto !== '') {
+        // Confere que a tarefa é mesmo do evento do casal antes de comentar —
+        // sem isso dava pra comentar numa tarefa de outro evento/assessoria
+        // só trocando o check_id no POST.
+        if ($id > 0) {
+            $chkTarefa = $pdo->prepare("SELECT id FROM checklist WHERE id = ? AND evento_id = ?");
+            $chkTarefa->execute([$id, $evento_id]);
+            if (!$chkTarefa->fetch()) { $id = 0; }
+        }
+        if ($id > 0 && $texto !== '') {
             $pdo->prepare("INSERT INTO checklist_comentarios (checklist_id, autor, comentario, assessoria_id) VALUES (?, 'Noivos', ?, ?)")
                 ->execute([$id, $texto, assessoria_atual()]);
             if ($ajax) json_out(['ok' => true, 'autor' => 'Noivos', 'texto' => htmlspecialchars($texto)]);
