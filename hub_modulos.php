@@ -650,6 +650,56 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
             gap: .5rem;
         }
         .lista-recursos-plano li i { color: #16a34a; margin-top: .15rem; flex-shrink: 0; }
+
+        /* Tour guiado (spotlight) — mostrado só no primeiro acesso do usuário
+           (ver $primeiro_acesso). .tour-blocker é um captador de clique
+           invisível cobrindo a tela inteira; .tour-spotlight é só visual
+           (pointer-events: none, deixa os cliques passarem pro blocker por
+           baixo) e usa um box-shadow gigante pra escurecer tudo ao redor do
+           próprio retângulo — assim não precisa de máscara SVG nem de 4
+           divs pra formar a "moldura" escura. */
+        .tour-blocker {
+            position: fixed;
+            inset: 0;
+            z-index: 3000;
+            background: transparent;
+        }
+        .tour-spotlight {
+            position: fixed;
+            z-index: 3001;
+            pointer-events: none;
+            border-radius: 14px;
+            box-shadow: 0 0 0 9999px rgba(15, 17, 26, .74);
+            transition: top .35s ease, left .35s ease, width .35s ease, height .35s ease;
+        }
+        .tour-card {
+            position: fixed;
+            z-index: 3002;
+            max-width: 320px;
+            background: #ffffff;
+            border-radius: 16px;
+            padding: 1.1rem 1.25rem;
+            box-shadow: 0 18px 40px rgba(0,0,0,.28);
+            transition: top .35s ease, left .35s ease;
+        }
+        .tour-card-titulo { font-weight: 700; font-size: .98rem; color: #1f2233; margin-bottom: .35rem; }
+        .tour-card-texto { font-size: .86rem; color: #565a6b; line-height: 1.45; }
+        .tour-card-rodape { display: flex; align-items: center; justify-content: space-between; margin-top: 1rem; gap: .75rem; }
+        .tour-card-passo { font-size: .76rem; color: #9096a6; font-weight: 600; }
+        .tour-card-botao {
+            border: none;
+            border-radius: 999px;
+            padding: .45rem 1.1rem;
+            font-size: .82rem;
+            font-weight: 600;
+            color: #fff;
+            background: linear-gradient(135deg, #6366f1, #a855f7);
+            transition: opacity .15s ease;
+        }
+        .tour-card-botao:hover { opacity: .88; }
+        @media (max-width: 576px) {
+            .tour-card { max-width: calc(100vw - 2rem); }
+        }
     </style>
 </head>
 <body>
@@ -670,7 +720,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
 
 <?php $primeiro_acesso = !empty($_SESSION['primeiro_acesso']); ?>
 <div class="container mt-3 mb-4 my-md-5">
-    <div class="painel-boas-vindas" style="background-image: linear-gradient(120deg, #ffffff, <?= htmlspecialchars($pastel_casamento) ?>, <?= htmlspecialchars($pastel_aniversario) ?>, <?= htmlspecialchars($pastel_corporativo) ?>, <?= htmlspecialchars($pastel_academico) ?>, #ffffff);">
+    <div id="tour-hero" class="painel-boas-vindas" style="background-image: linear-gradient(120deg, #ffffff, <?= htmlspecialchars($pastel_casamento) ?>, <?= htmlspecialchars($pastel_aniversario) ?>, <?= htmlspecialchars($pastel_corporativo) ?>, <?= htmlspecialchars($pastel_academico) ?>, #ffffff);">
         <div class="decor-blob decor-blob-1" style="background: <?= htmlspecialchars($blob_casamento) ?>;"></div>
         <div class="decor-blob decor-blob-2" style="background: <?= htmlspecialchars($blob_corporativo) ?>;"></div>
 
@@ -691,7 +741,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
     <div class="alert alert-success text-center rounded-4 mb-4"><i class="bi bi-check-circle-fill me-2"></i><?= htmlspecialchars($msg_sucesso) ?></div>
     <?php endif; ?>
 
-    <div class="row g-2 g-md-3 mb-3 mb-md-4 stats-hub-atraso">
+    <div id="tour-stats" class="row g-2 g-md-3 mb-3 mb-md-4 stats-hub-atraso">
         <div class="col-3">
             <div class="stat-chip-hub">
                 <div class="stat-icone-hub" style="background: linear-gradient(135deg, #6366f1, #a855f7);"><i class="bi bi-unlock-fill"></i></div>
@@ -732,7 +782,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
 
     <?php $tem_modulos_bloqueados = !empty($modulos_bloqueados); ?>
     <div class="row g-4 conteudo-modulos-atraso">
-        <div class="<?= $tem_modulos_bloqueados ? 'col-lg-8' : 'col-lg-12' ?>">
+        <div id="tour-modulos-ativos" class="<?= $tem_modulos_bloqueados ? 'col-lg-8' : 'col-lg-12' ?>">
             <div class="cabecalho-secao-hub mb-3">
                 <div class="icone-secao-hub" style="background: linear-gradient(135deg, #16a34a, #22c55e);"><i class="bi bi-check-lg"></i></div>
                 <div>
@@ -782,7 +832,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
         </div>
 
         <?php if ($tem_modulos_bloqueados): ?>
-        <div class="col-lg-4">
+        <div id="tour-disponiveis" class="col-lg-4">
             <div class="painel-upsell">
                 <div class="cabecalho-secao-hub mb-3">
                     <div class="icone-secao-hub" style="background: linear-gradient(135deg, #6366f1, #a855f7);"><i class="bi bi-stars"></i></div>
@@ -1009,6 +1059,90 @@ window.addEventListener('pageshow', function (e) {
     overlay.dataset.emAndamento = '';
     document.body.classList.remove('transicao-modulo-ativa');
 });
+
+// Tour guiado (spotlight), só no primeiro acesso do usuário — ver
+// $primeiro_acesso no PHP (fica verdadeiro só na sessão do primeiríssimo
+// login, calculado a partir de usuarios.ultimo_login estar vazio antes
+// desse login). sessionStorage evita repetir o tour se o usuário navegar
+// pra outra página e voltar pro hub ainda dentro dessa mesma sessão.
+(function () {
+    var primeiroAcesso = <?= $primeiro_acesso ? 'true' : 'false' ?>;
+    if (!primeiroAcesso || sessionStorage.getItem('tour_hub_visto')) return;
+
+    var passos = [
+        { seletor: '#tour-hero', titulo: 'Bem-vindo ao Meu Evento PRO!', texto: 'Aqui você escolhe qual tipo de evento vai administrar. Vamos fazer um tour rápido pra você conhecer a tela.' },
+        { seletor: '#tour-stats', titulo: 'Seus números em um relance', texto: 'Quantos módulos estão ativos, quantos eventos já foram cadastrados, quantos módulos ainda dá pra contratar e se você tem algum pedido de upgrade pendente.' },
+        { seletor: '#tour-modulos-ativos', titulo: 'Seus módulos ativos', texto: 'Clique em um módulo pra entrar no painel daquele tipo de evento. Você também pode personalizar a cor de cada módulo no seletor de cor do card.' },
+        { seletor: '#tour-disponiveis', titulo: 'Módulos disponíveis', texto: 'Aqui aparecem os módulos que você ainda não tem — clique pra ver os detalhes do plano e solicitar a contratação.' }
+    ].filter(function (p) { return document.querySelector(p.seletor); });
+
+    if (passos.length === 0) return;
+
+    var indice = 0;
+    var blocker = document.createElement('div');
+    blocker.className = 'tour-blocker';
+    var spotlight = document.createElement('div');
+    spotlight.className = 'tour-spotlight';
+    var card = document.createElement('div');
+    card.className = 'tour-card';
+    card.innerHTML =
+        '<div class="tour-card-titulo"></div>' +
+        '<div class="tour-card-texto"></div>' +
+        '<div class="tour-card-rodape">' +
+            '<span class="tour-card-passo"></span>' +
+            '<button type="button" class="tour-card-botao">Próximo</button>' +
+        '</div>';
+    document.body.append(blocker, spotlight, card);
+
+    function posicionar() {
+        var passo = passos[indice];
+        var alvo = document.querySelector(passo.seletor);
+        if (!alvo) { finalizar(); return; }
+
+        var rect = alvo.getBoundingClientRect();
+        var pad = 8;
+        spotlight.style.top = (rect.top - pad) + 'px';
+        spotlight.style.left = (rect.left - pad) + 'px';
+        spotlight.style.width = (rect.width + pad * 2) + 'px';
+        spotlight.style.height = (rect.height + pad * 2) + 'px';
+
+        card.querySelector('.tour-card-titulo').textContent = passo.titulo;
+        card.querySelector('.tour-card-texto').textContent = passo.texto;
+        card.querySelector('.tour-card-passo').textContent = (indice + 1) + ' de ' + passos.length;
+        card.querySelector('.tour-card-botao').textContent = (indice === passos.length - 1) ? 'Finalizar tutorial' : 'Próximo';
+
+        // Card abaixo do alvo por padrão; se não couber, mostra acima.
+        var cardAltura = card.offsetHeight || 160;
+        var espacoAbaixo = window.innerHeight - rect.bottom;
+        var topoCard = (espacoAbaixo > cardAltura + 24)
+            ? rect.bottom + pad + 16
+            : Math.max(16, rect.top - pad - cardAltura - 16);
+        var esquerdaCard = Math.min(Math.max(16, rect.left), window.innerWidth - card.offsetWidth - 16);
+
+        card.style.top = topoCard + 'px';
+        card.style.left = esquerdaCard + 'px';
+    }
+
+    function finalizar() {
+        blocker.remove();
+        spotlight.remove();
+        card.remove();
+        window.removeEventListener('resize', posicionar);
+        sessionStorage.setItem('tour_hub_visto', '1');
+    }
+
+    card.querySelector('.tour-card-botao').addEventListener('click', function () {
+        if (indice === passos.length - 1) {
+            finalizar();
+        } else {
+            indice++;
+            posicionar();
+        }
+    });
+
+    window.addEventListener('resize', posicionar);
+    posicionar();
+})();
 </script>
 </body>
 </html>
