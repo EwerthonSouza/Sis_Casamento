@@ -71,9 +71,9 @@ function adicionar_modulo_liberado_usuario(PDO $pdo, int $usuario_id, string $ti
 // depois de combinar o pagamento por fora (Pix, WhatsApp etc).
 const PLANOS_MODULO = [
     'casamento'   => ['nome' => 'Plano Casamentos',    'preco' => 59.90],
-    'aniversario' => ['nome' => 'Plano Aniversários',  'preco' => 39.90],
+    'aniversario' => ['nome' => 'Plano Aniversários',  'preco' => 79.90],
     'corporativo' => ['nome' => 'Plano Corporativo',   'preco' => 79.90],
-    'academico'   => ['nome' => 'Plano Acadêmico',     'preco' => 69.90],
+    'academico'   => ['nome' => 'Plano Acadêmico',     'preco' => 79.90],
 ];
 
 // Monta o array de plano (com o cálculo de promoção ativa) a partir de uma linha
