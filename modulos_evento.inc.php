@@ -224,13 +224,10 @@ function cores_todos_modulos(PDO $pdo): array {
     return $cores;
 }
 
-// Cor de identidade do evento específico: o próprio cliente escolhe a dele (cor_convite,
-// hoje editável em noivos.php) e ela passa a valer em todo o painel daquele evento
-// (cliente e equipe). Sem cor própria ainda, cai na cor padrão do módulo (definida no hub).
+// Cor do painel do evento (cliente e equipe): sempre a cor do módulo, definida
+// no hub. `cor_convite` é um conceito separado — só personaliza a tela pública
+// de convite (confirmar.php), nunca o painel administrativo.
 function cor_painel_evento(PDO $pdo, array $evento): string {
-    if (!empty($evento['cor_convite']) && preg_match('/^#[0-9a-fA-F]{6}$/', $evento['cor_convite'])) {
-        return $evento['cor_convite'];
-    }
     return cor_modulo_evento($pdo, $evento['tipo_evento'] ?? null);
 }
 
