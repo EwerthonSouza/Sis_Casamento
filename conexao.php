@@ -159,6 +159,20 @@ function garantir_coluna_ultimo_login_usuarios(PDO $pdo): void {
     marcar_schema_verificado('coluna_ultimo_login_usuarios');
 }
 
+// Controla quem já viu o tour guiado do hub de módulos (2026-09-29) — nasce
+// 0 (não visto) pra TODO mundo, inclusive contas que já usam o sistema há
+// meses, de propósito: é um recurso novo, todo usuário deve ver uma vez a
+// partir de agora, não só quem nunca logou (diferente de $primeiro_acesso).
+function garantir_coluna_tour_hub_visto_usuarios(PDO $pdo): void {
+    if (schema_ja_verificado('coluna_tour_hub_visto_usuarios')) return;
+    try {
+        $pdo->query("SELECT tour_hub_visto FROM usuarios LIMIT 1");
+    } catch (Exception $e) {
+        $pdo->exec("ALTER TABLE usuarios ADD COLUMN tour_hub_visto TINYINT(1) NOT NULL DEFAULT 0");
+    }
+    marcar_schema_verificado('coluna_tour_hub_visto_usuarios');
+}
+
 // Preço (e promoção opcional, com período) de cada módulo — editável pelo
 // desenvolvedor em dev_painel.php. Sem linha aqui, cai nos valores padrão
 // de PLANOS_MODULO (modulos_evento.inc.php).

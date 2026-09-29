@@ -21,6 +21,7 @@ garantir_tabela_modulos_config($pdo);
 garantir_tabela_central_modulos_liberados($pdo);
 garantir_tabela_solicitacoes_upgrade($pdo);
 garantir_tabela_planos_modulo($pdo);
+garantir_coluna_tour_hub_visto_usuarios($pdo);
 
 $modulos_liberados = modulos_liberados_sessao($pdo);
 
@@ -40,6 +41,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'salvar_
         salvar_cor_modulo_evento($pdo, $tipo_cor, $cor_escolhida);
     }
     header("Location: hub_modulos.php");
+    exit;
+}
+
+// Marca que o usuário terminou (ou fechou) o tour guiado — chamado via fetch()
+// no fim do tour, nunca recarrega a página. Sem CSRF aqui de propósito: só
+// liga uma flag booleana da própria conta logada, sem efeito sensível.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'marcar_tour_hub_visto') {
+    header('Content-Type: application/json');
+    $pdo->prepare("UPDATE usuarios SET tour_hub_visto = 1 WHERE id = ?")->execute([(int)$_SESSION['usuario_id']]);
+    echo json_encode(['ok' => true]);
     exit;
 }
 
@@ -713,12 +724,21 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
             <?php if ($eh_desenvolvedor): ?>
             <a href="dev_painel.php" class="btn btn-sm btn-outline-light rounded-pill"><i class="bi bi-braces-asterisk"></i> Painel do Desenvolvedor</a>
             <?php endif; ?>
+            <button type="button" id="btn-ver-tour-hub" class="btn btn-sm btn-outline-light rounded-pill"><i class="bi bi-question-circle"></i> Ver tour</button>
             <a href="logout.php" class="btn btn-sm btn-outline-light rounded-pill"><i class="bi bi-box-arrow-right"></i> Sair</a>
         </div>
     </div>
 </nav>
 
-<?php $primeiro_acesso = !empty($_SESSION['primeiro_acesso']); ?>
+<?php
+$primeiro_acesso = !empty($_SESSION['primeiro_acesso']);
+// Tour guiado: independente de $primeiro_acesso (esse fica só pra saudação
+// "bem-vindo" vs "bem-vindo de volta") — dispara pra qualquer conta que
+// ainda não marcou tour_hub_visto, inclusive quem já usa o sistema há meses.
+$stmt_tour = $pdo->prepare("SELECT tour_hub_visto FROM usuarios WHERE id = ?");
+$stmt_tour->execute([(int)$_SESSION['usuario_id']]);
+$tour_hub_pendente = !(bool)$stmt_tour->fetchColumn();
+?>
 <div class="container mt-3 mb-4 my-md-5">
     <div id="tour-hero" class="painel-boas-vindas" style="background-image: linear-gradient(120deg, #ffffff, <?= htmlspecialchars($pastel_casamento) ?>, <?= htmlspecialchars($pastel_aniversario) ?>, <?= htmlspecialchars($pastel_corporativo) ?>, <?= htmlspecialchars($pastel_academico) ?>, #ffffff);">
         <div class="decor-blob decor-blob-1" style="background: <?= htmlspecialchars($blob_casamento) ?>;"></div>
@@ -1060,15 +1080,14 @@ window.addEventListener('pageshow', function (e) {
     document.body.classList.remove('transicao-modulo-ativa');
 });
 
-// Tour guiado (spotlight), só no primeiro acesso do usuário — ver
-// $primeiro_acesso no PHP (fica verdadeiro só na sessão do primeiríssimo
-// login, calculado a partir de usuarios.ultimo_login estar vazio antes
-// desse login). sessionStorage evita repetir o tour se o usuário navegar
-// pra outra página e voltar pro hub ainda dentro dessa mesma sessão.
-(function () {
-    var primeiroAcesso = <?= $primeiro_acesso ? 'true' : 'false' ?>;
-    if (!primeiroAcesso || sessionStorage.getItem('tour_hub_visto')) return;
-
+// Tour guiado (spotlight) — dispara sozinho quando o servidor diz que esta
+// conta ainda não marcou tour_hub_visto (ver $tour_hub_pendente no PHP,
+// pendente pra qualquer conta a partir do deploy desta função, não só quem
+// nunca logou) e também pode ser reaberto a qualquer momento pelo botão
+// "Ver tour". Terminar marca tour_hub_visto=1 no servidor (fetch,
+// fire-and-forget) — nunca mais dispara sozinho depois disso, mas o botão
+// continua disponível pra rever quando quiser.
+function iniciarTourHub(aoTerminarMarcarVisto) {
     var passos = [
         { seletor: '#tour-hero', titulo: 'Bem-vindo ao Meu Evento PRO!', texto: 'Aqui você escolhe qual tipo de evento vai administrar. Vamos fazer um tour rápido pra você conhecer a tela.' },
         { seletor: '#tour-stats', titulo: 'Seus números em um relance', texto: 'Quantos módulos estão ativos, quantos eventos já foram cadastrados, quantos módulos ainda dá pra contratar e se você tem algum pedido de upgrade pendente.' },
@@ -1128,7 +1147,14 @@ window.addEventListener('pageshow', function (e) {
         spotlight.remove();
         card.remove();
         window.removeEventListener('resize', posicionar);
-        sessionStorage.setItem('tour_hub_visto', '1');
+        if (aoTerminarMarcarVisto) {
+            fetch('hub_modulos.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'acao=marcar_tour_hub_visto',
+                keepalive: true
+            }).catch(function () {});
+        }
     }
 
     card.querySelector('.tour-card-botao').addEventListener('click', function () {
@@ -1142,7 +1168,15 @@ window.addEventListener('pageshow', function (e) {
 
     window.addEventListener('resize', posicionar);
     posicionar();
-})();
+}
+
+<?php if ($tour_hub_pendente): ?>
+iniciarTourHub(true);
+<?php endif; ?>
+
+document.getElementById('btn-ver-tour-hub')?.addEventListener('click', function () {
+    iniciarTourHub(false);
+});
 </script>
 </body>
 </html>
