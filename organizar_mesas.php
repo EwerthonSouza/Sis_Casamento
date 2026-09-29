@@ -2354,7 +2354,7 @@ window.addEventListener('afterprint', () => document.body.classList.remove('impr
     handle.addEventListener('touchstart', e => { e.stopPropagation(); const t = e.touches[0]; iniciarRotacao(el, t.clientX, t.clientY); }, { passive: true });
   }
 
-  area.querySelectorAll('.mapa-mesa-chip').forEach(chip => {
+  function bindChip(chip) {
     chip.addEventListener('mousedown', e => {
       if (e.target.closest('.mesa-resize-handle')) return;
       e.preventDefault();
@@ -2377,12 +2377,9 @@ window.addEventListener('afterprint', () => document.body.classList.remove('impr
       resizeHandle.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); iniciarResizeMesa(e.clientX, e.clientY); });
       resizeHandle.addEventListener('touchstart', e => { e.stopPropagation(); const t = e.touches[0]; iniciarResizeMesa(t.clientX, t.clientY); }, { passive: true });
     }
-  });
+  }
 
-  area.querySelectorAll('.mapa-palco-item').forEach(bindPalco);
-
-  const entradaEl = area.querySelector('.mapa-entrada');
-  if (entradaEl) {
+  function bindEntrada(entradaEl) {
     entradaEl.addEventListener('mousedown', e => {
       if (e.target.closest('.elemento-rotate-handle') || e.target.closest('.entrada-resize-handle')) return;
       e.preventDefault();
@@ -2407,6 +2404,20 @@ window.addEventListener('afterprint', () => document.body.classList.remove('impr
       entradaResizeHandle.addEventListener('touchstart', e => { e.stopPropagation(); const t = e.touches[0]; iniciarResizeEntrada(t.clientX, t.clientY); }, { passive: true });
     }
   }
+
+  // Liga (ou religa, depois de repintar o mapa via AJAX) os elementos
+  // arrastáveis à área atual — cada chamada opera sobre os elementos que
+  // existem no DOM naquele momento, então serve tanto pra primeira carga
+  // quanto pra depois de #mapa-mesas-area ser substituído inteiro.
+  function bindElementosMapa() {
+    area.querySelectorAll('.mapa-mesa-chip').forEach(bindChip);
+    area.querySelectorAll('.mapa-palco-item').forEach(bindPalco);
+    const entradaEl = area.querySelector('.mapa-entrada');
+    if (entradaEl) bindEntrada(entradaEl);
+  }
+
+  bindElementosMapa();
+  window.__religarMapaMesas = bindElementosMapa;
 
   document.addEventListener('mousemove', e => mover(e.clientX, e.clientY));
   document.addEventListener('touchmove', e => {
@@ -2809,6 +2820,16 @@ document.addEventListener('DOMContentLoaded', function () {
         const cMesas = document.getElementById('mesas-container');
         const nMesas = doc.getElementById('mesas-container');
         if (cMesas && nMesas) cMesas.innerHTML = nMesas.innerHTML;
+
+        // Mapa de Mesas (modal): sem isso, uma mesa criada/apagada só aparecia
+        // ali depois de um F5 — o resto da tela já atualizava sozinho, essa
+        // área específica não fazia parte da sincronização.
+        const cMapa = document.getElementById('mapa-mesas-area');
+        const nMapa = doc.getElementById('mapa-mesas-area');
+        if (cMapa && nMapa) {
+          cMapa.innerHTML = nMapa.innerHTML;
+          window.__religarMapaMesas && window.__religarMapaMesas();
+        }
 
         initSortables();
         applyFilter();
