@@ -395,10 +395,10 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
             0%, 100% { transform: scaleY(1) rotate(0deg); }
             50%      { transform: scaleY(1.1) rotate(-6deg); }
         }
-        .icone-anim-academico { animation: rodarChapeu 3.2s linear infinite; }
-        @keyframes rodarChapeu {
-            from { transform: rotate(0deg); }
-            to   { transform: rotate(360deg); }
+        .icone-anim-academico { animation: balancarChapeu 2.2s ease-in-out infinite; }
+        @keyframes balancarChapeu {
+            0%, 100% { transform: translateY(0) rotate(0deg); }
+            50%      { transform: translateY(-4px) rotate(-10deg); }
         }
         @media (prefers-reduced-motion: reduce) {
             .icone-anim-casamento, .icone-anim-aniversario, .icone-anim-corporativo, .icone-anim-academico {
