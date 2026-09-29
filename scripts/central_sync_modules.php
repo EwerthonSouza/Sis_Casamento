@@ -14,9 +14,13 @@ require_once __DIR__ . '/../modulos_evento.inc.php';
 | Roda só via cron. Falha aqui nunca vira erro visível pro usuário — só log,
 | tenta de novo no próximo ciclo; a tabela local mantém o último valor bom.
 |
-| Uma assessoria é identificada pra Central pelo próprio slug (identity_
-| external_id) — precisa estar vinculada a um Cliente lá (mesma tela /identities
-| já usada pra Avisos) pra /config resolver alguma coisa; sem vínculo, a
+| Uma assessoria é identificada pra Central pelo usuario_id do seu admin mais
+| antigo (identity_external_id) — é a mesma convenção já usada pros eventos
+| user.login/user.created (external_id = usuarios.id), então reaproveita uma
+| identidade que muito provavelmente já existe e já foi vinculada manualmente
+| a um Cliente em /identities (confirmado: a Thainá, usuario_id=7, já está
+| vinculada desde a fase de Avisos — nenhuma ação manual nova foi necessária
+| pra ela). Sem vínculo (assessoria nova, cujo admin nunca foi linkado), a
 | Central responde "sem assinatura" e a assessoria fica só com o módulo
 | padrão (Casamentos), nunca sem nenhum.
 */
@@ -37,13 +41,26 @@ if ($config['base_url'] === '' || $config['token'] === '') {
     exit;
 }
 
-$assessorias = $pdo->query("SELECT id, slug FROM assessorias WHERE status = 'ativa'")->fetchAll(PDO::FETCH_ASSOC);
+$assessorias = $pdo->query("
+    SELECT a.id, a.slug, (
+        SELECT u.id FROM usuarios u
+        WHERE u.assessoria_id = a.id AND u.tipo = 'admin'
+        ORDER BY u.id ASC LIMIT 1
+    ) AS admin_usuario_id
+    FROM assessorias a
+    WHERE a.status = 'ativa'
+")->fetchAll(PDO::FETCH_ASSOC);
 
 $sincronizadas = 0;
 $falhas = 0;
 
 foreach ($assessorias as $assessoria) {
-    $ch = curl_init($config['base_url'] . '/api/v1/config?identity_external_id=' . urlencode($assessoria['slug']));
+    if ($assessoria['admin_usuario_id'] === null) {
+        centralSyncModulesLog("assessoria={$assessoria['slug']}: sem usuário admin cadastrado ainda, pulando.");
+        continue;
+    }
+
+    $ch = curl_init($config['base_url'] . '/api/v1/config?identity_external_id=' . urlencode((string) $assessoria['admin_usuario_id']));
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 2);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
