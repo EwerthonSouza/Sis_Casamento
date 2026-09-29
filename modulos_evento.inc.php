@@ -10,13 +10,14 @@ function modulo_evento_valido(?string $tipo): bool {
     return in_array($tipo, MODULOS_EVENTO_VALIDOS, true);
 }
 
-// Módulos que um usuário de equipe (admin/assistente) pode ver no hub. Enquanto o
-// desenvolvedor não configurar nada pra esse usuário (linha nenhuma na tabela),
-// o padrão é só liberar Casamentos — o módulo histórico, já em uso antes desta
-// funcionalidade — pra não tirar acesso de ninguém sem querer nesse meio-tempo.
-function modulos_liberados_usuario(PDO $pdo, int $usuario_id): array {
-    $stmt = $pdo->prepare("SELECT tipo_evento FROM usuarios_modulos_liberados WHERE usuario_id = ?");
-    $stmt->execute([$usuario_id]);
+// Módulos que uma assessoria pode ver no hub. Enquanto o sync com a Central
+// nunca rodou (ou a assessoria ainda não foi vinculada a um cliente lá), o
+// padrão é só liberar Casamentos — o módulo histórico, já em uso antes desta
+// funcionalidade — pra não tirar acesso de ninguém por causa de uma falha de
+// sincronização.
+function modulos_liberados_assessoria(PDO $pdo, int $assessoria_id): array {
+    $stmt = $pdo->prepare("SELECT tipo_evento FROM central_modulos_liberados WHERE assessoria_id = ?");
+    $stmt->execute([$assessoria_id]);
     $liberados = $stmt->fetchAll(PDO::FETCH_COLUMN);
     if (empty($liberados)) {
         return ['casamento'];
@@ -24,45 +25,30 @@ function modulos_liberados_usuario(PDO $pdo, int $usuario_id): array {
     return array_values(array_intersect($liberados, MODULOS_EVENTO_VALIDOS));
 }
 
-// Versão em lote pra telas que listam vários usuários (dev_painel.php) — 1 consulta
-// pra todo mundo em vez de 1 por usuário. Retorna [usuario_id => [tipos liberados]];
-// usuário sem nenhuma linha simplesmente não aparece no array (chame com `?? ['casamento']`).
-function modulos_liberados_todos_usuarios(PDO $pdo): array {
-    $stmt = $pdo->query("SELECT usuario_id, tipo_evento FROM usuarios_modulos_liberados");
-    $por_usuario = [];
-    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $linha) {
-        if (!in_array($linha['tipo_evento'], MODULOS_EVENTO_VALIDOS, true)) continue;
-        $por_usuario[(int)$linha['usuario_id']][] = $linha['tipo_evento'];
+// Substitui, pra uma assessoria, a lista de módulos liberados — chamado só
+// pelo cron de sync (scripts/central_sync_modules.php), nunca por uma página
+// vista por usuário real.
+function salvar_modulos_liberados_assessoria(PDO $pdo, int $assessoria_id, array $modulos): void {
+    $modulos = array_values(array_intersect($modulos, MODULOS_EVENTO_VALIDOS));
+    $pdo->prepare("DELETE FROM central_modulos_liberados WHERE assessoria_id = ?")->execute([$assessoria_id]);
+    $stmt = $pdo->prepare("INSERT INTO central_modulos_liberados (assessoria_id, tipo_evento) VALUES (?, ?)");
+    foreach ($modulos as $tipo) {
+        $stmt->execute([$assessoria_id, $tipo]);
     }
-    return $por_usuario;
 }
 
-// Versão ciente da sessão: o desenvolvedor enxerga e usa todos os módulos sempre,
-// sem depender de linha nenhuma em usuarios_modulos_liberados (essa tabela só
-// controla o acesso de admin/assistente).
+// Versão ciente da sessão: o desenvolvedor enxerga e usa todos os módulos
+// sempre; equipe/noivos ficam presos aos módulos liberados pra assessoria do
+// evento/sessão atual (assessoria_atual(), ver tenant.php).
 function modulos_liberados_sessao(PDO $pdo): array {
     if (($_SESSION['usuario_tipo'] ?? '') === 'desenvolvedor') {
         return MODULOS_EVENTO_VALIDOS;
     }
-    return modulos_liberados_usuario($pdo, (int)($_SESSION['usuario_id'] ?? 0));
-}
-
-function salvar_modulos_liberados_usuario(PDO $pdo, int $usuario_id, array $modulos): void {
-    $modulos = array_values(array_intersect($modulos, MODULOS_EVENTO_VALIDOS));
-    $pdo->prepare("DELETE FROM usuarios_modulos_liberados WHERE usuario_id = ?")->execute([$usuario_id]);
-    $stmt = $pdo->prepare("INSERT INTO usuarios_modulos_liberados (usuario_id, tipo_evento) VALUES (?, ?)");
-    foreach ($modulos as $tipo) {
-        $stmt->execute([$usuario_id, $tipo]);
+    $assessoria_id = assessoria_atual();
+    if ($assessoria_id === null) {
+        return ['casamento'];
     }
-}
-
-function adicionar_modulo_liberado_usuario(PDO $pdo, int $usuario_id, string $tipo): void {
-    if (!modulo_evento_valido($tipo)) return;
-    $atuais = modulos_liberados_usuario($pdo, $usuario_id);
-    if (!in_array($tipo, $atuais, true)) {
-        $atuais[] = $tipo;
-        salvar_modulos_liberados_usuario($pdo, $usuario_id, $atuais);
-    }
+    return modulos_liberados_assessoria($pdo, $assessoria_id);
 }
 
 // Vitrine de planos pagos mostrada nos módulos bloqueados do hub — puramente

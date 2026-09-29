@@ -57,17 +57,21 @@ function garantir_tabela_modulos_config(PDO $pdo): void {
     marcar_schema_verificado('tabela_modulos_config');
 }
 
-// Controla quais módulos cada usuário da equipe (admin/assistente) pode ver no hub.
-// Só o desenvolvedor (usuarios.tipo = 'desenvolvedor') mexe nisso, em dev_painel.php.
-function garantir_tabela_modulos_liberados(PDO $pdo): void {
-    if (schema_ja_verificado('tabela_modulos_liberados')) return;
-    $pdo->exec("CREATE TABLE IF NOT EXISTS usuarios_modulos_liberados (
-        usuario_id INT NOT NULL,
+// Controla quais módulos cada assessoria pode ver no hub — espelho local do
+// que a Central liberou pra ela (ver scripts/central_sync_modules.php), nunca
+// escrito por uma página vista por usuário (só pelo cron de sync). Substituiu
+// a antiga usuarios_modulos_liberados (por usuário, controlada por um
+// dev_painel.php que não existe mais neste codebase) em 2026-09-29: quem paga
+// é a assessoria, não o login individual — todo mundo dela vê os mesmos módulos.
+function garantir_tabela_central_modulos_liberados(PDO $pdo): void {
+    if (schema_ja_verificado('tabela_central_modulos_liberados')) return;
+    $pdo->exec("CREATE TABLE IF NOT EXISTS central_modulos_liberados (
+        assessoria_id INT NOT NULL,
         tipo_evento VARCHAR(20) NOT NULL,
-        PRIMARY KEY (usuario_id, tipo_evento),
-        CONSTRAINT fk_uml_usuario FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+        atualizado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (assessoria_id, tipo_evento)
     )");
-    marcar_schema_verificado('tabela_modulos_liberados');
+    marcar_schema_verificado('tabela_central_modulos_liberados');
 }
 
 // Registra quem cadastrou cada usuário da equipe (o admin "dono" de cada assistente) —

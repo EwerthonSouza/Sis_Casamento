@@ -100,6 +100,18 @@ function centralAnnouncementsConfig(): array
 }
 
 /**
+ * GET /api/v1/config (módulos liberados por assessoria) — a rota exige a
+ * mesma ability announcements:read no lado da Central (nenhuma ability
+ * dedicada existe pra /config hoje), então reaproveita o token de avisos em
+ * vez de pedir um terceiro token pra produção. Usado só por
+ * scripts/central_sync_modules.php (2026-09-29).
+ */
+function centralModulesConfig(): array
+{
+    return centralAnnouncementsConfig();
+}
+
+/**
  * UUID v4 canônico (com hífen, 8-4-4-4-12) — a Central valida esse formato
  * exato. Não existe gerador de UUID neste codebase; formatado a partir de
  * random_bytes(16), mesma base já usada em outros lugares do projeto.

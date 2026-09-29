@@ -14,7 +14,7 @@ require_once 'tenant.php';
 require_once 'modulos_evento.inc.php';
 garantir_coluna_tipo_evento($pdo);
 garantir_tabela_modulos_config($pdo);
-garantir_tabela_modulos_liberados($pdo);
+garantir_tabela_central_modulos_liberados($pdo);
 garantir_coluna_tipo_evento_checklist_modelos($pdo);
 
 // Módulo ativo: cada módulo tem sua própria lista de modelos de checklist,

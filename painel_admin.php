@@ -19,7 +19,7 @@ if (!isset($_SESSION['usuario_tipo']) || !in_array($_SESSION['usuario_tipo'], ['
 
 garantir_coluna_tipo_evento($pdo);
 garantir_tabela_modulos_config($pdo);
-garantir_tabela_modulos_liberados($pdo);
+garantir_tabela_central_modulos_liberados($pdo);
 garantir_coluna_nome_secundario_cliente($pdo);
 
 // ============================================================

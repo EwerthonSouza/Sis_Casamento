@@ -33,7 +33,7 @@ if (!isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'admin') 
     exit;
 }
 
-garantir_tabela_modulos_liberados($pdo);
+garantir_tabela_central_modulos_liberados($pdo);
 garantir_coluna_criado_por($pdo);
 garantir_coluna_tipo_evento($pdo);
 garantir_tabela_modulos_config($pdo);
@@ -84,13 +84,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adicionar_usuario']))
             $stmt = $pdo->prepare("INSERT INTO usuarios (nome, email, senha, tipo, criado_por, assessoria_id) VALUES (?, ?, ?, ?, ?, ?)");
             $stmt->execute([$nome, $email, $senha_hash, $tipo, (int)$_SESSION['usuario_id'], assessoria_atual()]);
             $novo_usuario_id = (int)$pdo->lastInsertId();
-
-            // O novo usuário entra com os mesmos módulos já liberados pra quem está
-            // cadastrando (o admin da assessoria) — sem isso, todo usuário novo cairia
-            // no padrão de só Casamentos, mesmo que a assessoria já tenha outros módulos
-            // liberados pelo desenvolvedor. O desenvolvedor ainda pode ajustar depois.
-            $modulos_do_admin = modulos_liberados_usuario($pdo, (int)$_SESSION['usuario_id']);
-            salvar_modulos_liberados_usuario($pdo, $novo_usuario_id, $modulos_do_admin);
 
             centralQueueEvent($pdo, 'user.created', [
                 'external_id' => (string) $novo_usuario_id,
