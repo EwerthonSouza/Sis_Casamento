@@ -724,7 +724,7 @@ $pedidos_pendentes_usuario = count(array_filter($modulos_bloqueados, fn($c) => $
             <?php if ($eh_desenvolvedor): ?>
             <a href="dev_painel.php" class="btn btn-sm btn-outline-light rounded-pill"><i class="bi bi-braces-asterisk"></i> Painel do Desenvolvedor</a>
             <?php endif; ?>
-            <button type="button" id="btn-ver-tour-hub" class="btn btn-sm btn-outline-light rounded-pill"><i class="bi bi-question-circle"></i> Ver tour</button>
+            <button type="button" id="btn-ver-tour-hub" class="btn btn-sm btn-outline-light rounded-pill"><i class="bi bi-question-circle"></i> Tour</button>
             <a href="logout.php" class="btn btn-sm btn-outline-light rounded-pill"><i class="bi bi-box-arrow-right"></i> Sair</a>
         </div>
     </div>
