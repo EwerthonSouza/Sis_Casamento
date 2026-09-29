@@ -14,15 +14,17 @@ require_once __DIR__ . '/../modulos_evento.inc.php';
 | Roda só via cron. Falha aqui nunca vira erro visível pro usuário — só log,
 | tenta de novo no próximo ciclo; a tabela local mantém o último valor bom.
 |
-| Uma assessoria é identificada pra Central pelo usuario_id do seu admin mais
-| antigo (identity_external_id) — é a mesma convenção já usada pros eventos
-| user.login/user.created (external_id = usuarios.id), então reaproveita uma
-| identidade que muito provavelmente já existe e já foi vinculada manualmente
-| a um Cliente em /identities (confirmado: a Thainá, usuario_id=7, já está
-| vinculada desde a fase de Avisos — nenhuma ação manual nova foi necessária
-| pra ela). Sem vínculo (assessoria nova, cujo admin nunca foi linkado), a
-| Central responde "sem assinatura" e a assessoria fica só com o módulo
-| padrão (Casamentos), nunca sem nenhum.
+| Uma assessoria é identificada pra Central pelo usuario_id de algum membro
+| dela (identity_external_id) — mesma convenção já usada pros eventos
+| user.login/user.created (external_id = usuarios.id). Uma assessoria pode
+| ter mais de um usuário tipo='admin' (achado real: existe uma conta "Admin"
+| genérica além da conta pessoal da dona), e só um deles pode estar vinculado
+| a um Cliente em /identities — por isso tenta TODOS os usuários da
+| assessoria (admin antes de assistente, id crescente) até um resolver
+| alguma coisa, em vez de assumir que o de menor id é o certo. Sem nenhum
+| vinculado ainda (assessoria nova), a Central responde "sem assinatura" pra
+| todos e a assessoria fica só com o módulo padrão (Casamentos), nunca sem
+| nenhum.
 */
 
 function centralSyncModulesLog(string $mensagem): void
@@ -34,33 +36,14 @@ function centralSyncModulesLog(string $mensagem): void
     );
 }
 
-$config = centralModulesConfig();
-
-if ($config['base_url'] === '' || $config['token'] === '') {
-    centralSyncModulesLog('Ignorado: config/central.local.php sem announcements_token.');
-    exit;
-}
-
-$assessorias = $pdo->query("
-    SELECT a.id, a.slug, (
-        SELECT u.id FROM usuarios u
-        WHERE u.assessoria_id = a.id AND u.tipo = 'admin'
-        ORDER BY u.id ASC LIMIT 1
-    ) AS admin_usuario_id
-    FROM assessorias a
-    WHERE a.status = 'ativa'
-")->fetchAll(PDO::FETCH_ASSOC);
-
-$sincronizadas = 0;
-$falhas = 0;
-
-foreach ($assessorias as $assessoria) {
-    if ($assessoria['admin_usuario_id'] === null) {
-        centralSyncModulesLog("assessoria={$assessoria['slug']}: sem usuário admin cadastrado ainda, pulando.");
-        continue;
-    }
-
-    $ch = curl_init($config['base_url'] . '/api/v1/config?identity_external_id=' . urlencode((string) $assessoria['admin_usuario_id']));
+/**
+ * Chama GET /config na Central pra um external_id específico. Retorna o
+ * array de módulos em caso de sucesso com pelo menos 1 módulo, ou null se
+ * não resolveu nada / deu erro (o chamador decide o que fazer com null).
+ */
+function centralBuscarModulos(array $config, string $identityExternalId, string $assessoriaSlug): ?array
+{
+    $ch = curl_init($config['base_url'] . '/api/v1/config?identity_external_id=' . urlencode($identityExternalId));
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 2);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
@@ -75,33 +58,68 @@ foreach ($assessorias as $assessoria) {
     curl_close($ch);
 
     if ($resposta === false) {
-        centralSyncModulesLog("assessoria={$assessoria['slug']}: falha ao contatar a Central: {$erroCurl}");
-        $falhas++;
-        continue;
+        centralSyncModulesLog("assessoria={$assessoriaSlug} identity={$identityExternalId}: falha ao contatar a Central: {$erroCurl}");
+        return null;
     }
 
     if ($statusCode !== 200) {
-        centralSyncModulesLog("assessoria={$assessoria['slug']}: HTTP {$statusCode}: resposta inesperada: {$resposta}");
-        $falhas++;
-        continue;
+        centralSyncModulesLog("assessoria={$assessoriaSlug} identity={$identityExternalId}: HTTP {$statusCode}: resposta inesperada: {$resposta}");
+        return null;
     }
 
     $corpo = json_decode($resposta, true) ?? [];
     $modulos = $corpo['data']['modules'] ?? [];
 
-    if (!is_array($modulos)) {
-        centralSyncModulesLog("assessoria={$assessoria['slug']}: campo modules ausente/inválido na resposta.");
-        $falhas++;
+    if (!is_array($modulos) || empty($modulos)) {
+        return null;
+    }
+
+    return $modulos;
+}
+
+$config = centralModulesConfig();
+
+if ($config['base_url'] === '' || $config['token'] === '') {
+    centralSyncModulesLog('Ignorado: config/central.local.php sem announcements_token.');
+    exit;
+}
+
+$assessorias = $pdo->query("SELECT id, slug FROM assessorias WHERE status = 'ativa'")->fetchAll(PDO::FETCH_ASSOC);
+
+$stmtUsuarios = $pdo->prepare("
+    SELECT id FROM usuarios
+    WHERE assessoria_id = ? AND tipo IN ('admin', 'assistente')
+    ORDER BY (tipo = 'admin') DESC, id ASC
+");
+
+$sincronizadas = 0;
+$semResultado = 0;
+
+foreach ($assessorias as $assessoria) {
+    $stmtUsuarios->execute([$assessoria['id']]);
+    $usuarioIds = $stmtUsuarios->fetchAll(PDO::FETCH_COLUMN);
+
+    if (empty($usuarioIds)) {
+        centralSyncModulesLog("assessoria={$assessoria['slug']}: nenhum usuário cadastrado ainda, pulando.");
         continue;
     }
 
-    // Sem assinatura resolvida na Central (nunca vinculada, ou vínculo caiu),
-    // a Central responde modules=[] — mas aqui isso significaria "bloquear
-    // tudo", o oposto do padrão de segurança já estabelecido (nunca trancar
-    // ninguém por causa de uma falha de integração). Só substitui a lista
-    // local quando a Central mandou pelo menos um módulo de verdade.
-    if (empty($modulos)) {
-        centralSyncModulesLog("assessoria={$assessoria['slug']}: Central não retornou nenhum módulo (sem assinatura vinculada?) — mantendo o último valor local.");
+    $modulos = null;
+    foreach ($usuarioIds as $usuarioId) {
+        $modulos = centralBuscarModulos($config, (string) $usuarioId, $assessoria['slug']);
+        if ($modulos !== null) {
+            break;
+        }
+    }
+
+    // Nenhum usuário da assessoria tem identidade vinculada a um Cliente na
+    // Central ainda (ou a Central está fora do ar) — isso aqui significaria
+    // "bloquear tudo", o oposto do padrão de segurança já estabelecido
+    // (nunca trancar ninguém por causa de uma falha de integração). Mantém
+    // o último valor local em vez de zerar.
+    if ($modulos === null) {
+        centralSyncModulesLog("assessoria={$assessoria['slug']}: nenhum dos " . count($usuarioIds) . " usuário(s) resolveu módulo na Central — mantendo o último valor local.");
+        $semResultado++;
         continue;
     }
 
@@ -110,5 +128,5 @@ foreach ($assessorias as $assessoria) {
 }
 
 centralSyncModulesLog(
-    'assessorias=' . count($assessorias) . " sincronizadas={$sincronizadas} falhas={$falhas}"
+    'assessorias=' . count($assessorias) . " sincronizadas={$sincronizadas} sem_resultado={$semResultado}"
 );
