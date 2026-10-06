@@ -1316,7 +1316,7 @@ if ($is_admin) {
                                     <p class="text-center text-muted py-5"><i class="bi bi-inbox fs-3 d-block mb-2"></i><?= htmlspecialchars($labels['vazio_futuros']) ?></p>
                                 <?php else: ?>
                                     <?php foreach ($casamentos_futuros as $i => $cas): ?>
-                                    <div class="border rounded-3 p-3 mb-2<?= $i >= 5 ? ' d-none casamento-extra-futuros' : '' ?>">
+                                    <div class="border rounded-3 p-3 mb-2 text-center<?= $i >= 5 ? ' d-none casamento-extra-futuros' : '' ?>">
                                         <span class="text-dark fw-bold fs-6 d-block mb-2"><?= htmlspecialchars($cas['nome_noivos']) ?></span>
                                         <button type="button" class="btn-data-evento-card btn-abrir-modal-data"
                                                 data-evento-id="<?= (int)$cas['evento_id'] ?>" data-data="<?= htmlspecialchars($cas['data_evento']) ?>" data-hora="<?= htmlspecialchars($cas['hora_evento'] ?? '') ?>"
@@ -1422,12 +1422,12 @@ if ($is_admin) {
                                     <p class="text-center text-muted py-5"><i class="bi bi-inbox fs-3 d-block mb-2"></i>Nenhum histórico disponível.</p>
                                 <?php else: ?>
                                     <?php foreach ($casamentos_realizados as $i => $cas): ?>
-                                    <div class="border rounded-3 p-3 mb-2<?= $i >= 5 ? ' d-none casamento-extra-historico' : '' ?>">
-                                        <span class="text-dark fw-bold"><?= htmlspecialchars($cas['nome_noivos']) ?></span>
+                                    <div class="border rounded-3 p-3 mb-2 text-center<?= $i >= 5 ? ' d-none casamento-extra-historico' : '' ?>">
+                                        <span class="text-dark fw-bold d-block mb-1"><?= htmlspecialchars($cas['nome_noivos']) ?></span>
                                         <div class="text-muted mt-1" style="font-size: 0.8rem;">
                                             <i class="bi bi-envelope"></i> <?= htmlspecialchars($cas['email_noivos']) ?>
                                         </div>
-                                        <span class="badge bg-light text-secondary border p-2 w-100 text-start mt-2">
+                                        <span class="badge bg-light text-secondary border p-2 w-100 text-center mt-2">
                                             <i class="bi bi-calendar-check me-1"></i> <?= date('d/m/Y', strtotime($cas['data_evento'])) ?>
                                         </span>
                                         <div class="d-flex justify-content-center flex-wrap gap-1 mt-2">
