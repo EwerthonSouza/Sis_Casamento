@@ -1812,17 +1812,27 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
   </div>
 </div>
 
-<?php if ($is_admin): ?>
-<form id="form-import-com-rec" method="POST" action="?id=<?= $evento_id ?>" hidden>
+<?php if ($is_admin):
+  // Modelos de checklist disponíveis para importar (nomes livres, definidos
+  // pela própria assessoria por módulo — sem mais "com/sem recepção" fixos,
+  // 2026-09-29).
+  $stmt_modelos_import = $pdo->prepare("
+      SELECT tipo_padrao, MIN(id) AS primeiro_id, COUNT(*) AS total
+      FROM checklist_modelos
+      WHERE tipo_evento = ? AND assessoria_id = ?
+      GROUP BY tipo_padrao
+      ORDER BY primeiro_id ASC
+  ");
+  $stmt_modelos_import->execute([$modulo_ativo, assessoria_atual()]);
+  $modelos_import = $stmt_modelos_import->fetchAll(PDO::FETCH_ASSOC);
+?>
+<?php foreach ($modelos_import as $mi): $id_form_import = 'form-import-' . substr(md5($mi['tipo_padrao']), 0, 10); ?>
+<form id="<?= $id_form_import ?>" method="POST" action="?id=<?= $evento_id ?>" hidden>
   <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
   <input type="hidden" name="gerar_padrao" value="1">
-  <input type="hidden" name="tipo_padrao" value="com_recepcao">
+  <input type="hidden" name="tipo_padrao" value="<?= htmlspecialchars($mi['tipo_padrao']) ?>">
 </form>
-<form id="form-import-sem-rec" method="POST" action="?id=<?= $evento_id ?>" hidden>
-  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
-  <input type="hidden" name="gerar_padrao" value="1">
-  <input type="hidden" name="tipo_padrao" value="sem_recepcao">
-</form>
+<?php endforeach; ?>
 <form id="form-limpar-checklist" method="POST" action="?id=<?= $evento_id ?>" hidden>
   <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
   <input type="hidden" name="excluir_todo_checklist" value="1">
@@ -2087,20 +2097,16 @@ $notificacoes    = array_values(array_filter($notificacoes, fn($item) => !isset(
           </div>
         </div>
 
-        <div class="d-flex flex-nowrap gap-2 align-items-center checklist-btns-row">
+        <div class="d-flex flex-wrap gap-2 align-items-center checklist-btns-row">
           <?php if ($is_admin): ?>
+          <?php foreach ($modelos_import as $mi): $id_form_import = 'form-import-' . substr(md5($mi['tipo_padrao']), 0, 10); ?>
           <button type="button" class="btn btn-sm btn-outline-success rounded-3 btn-import-padrao text-nowrap"
-                  data-form="form-import-com-rec"
-                  data-msg="Isso adicionará todas as tarefas padrão (com recepção) ao evento."
+                  data-form="<?= $id_form_import ?>"
+                  data-msg="Isso adicionará todas as tarefas do modelo &quot;<?= htmlspecialchars($mi['tipo_padrao']) ?>&quot; ao evento."
                   data-titulo="Importar cronograma?">
-            <i class="bi bi-download me-1"></i> Com Recepção
+            <i class="bi bi-download me-1"></i> <?= htmlspecialchars($mi['tipo_padrao']) ?>
           </button>
-          <button type="button" class="btn btn-sm btn-outline-secondary rounded-3 btn-import-padrao text-nowrap"
-                  data-form="form-import-sem-rec"
-                  data-msg="Isso adicionará todas as tarefas padrão (sem recepção) ao evento."
-                  data-titulo="Importar cronograma?">
-            <i class="bi bi-download me-1"></i> Sem Recepção
-          </button>
+          <?php endforeach; ?>
           <button type="button" class="btn btn-sm btn-primary rounded-3 text-nowrap" data-bs-toggle="modal" data-bs-target="#modalManual">
             <i class="bi bi-plus-lg me-1"></i> Manual
           </button>

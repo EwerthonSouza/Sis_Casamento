@@ -147,12 +147,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header("Location: " . $_SERVER['PHP_SELF']);
         exit;
     }
+
+    // 5. RENOMEAR MODELO (renomeia todas as tarefas do modelo de uma vez)
+    if (isset($_POST['renomear_modelo'])) {
+        $tipo_atual = trim($_POST['tipo_padrao_atual'] ?? '');
+        $novo_nome  = trim($_POST['novo_nome'] ?? '');
+
+        if ($tipo_atual !== '' && $novo_nome !== '' && $novo_nome !== $tipo_atual) {
+            $stmt_dup = $pdo->prepare("SELECT COUNT(*) FROM checklist_modelos WHERE tipo_padrao = ? AND tipo_evento = ? AND assessoria_id = ?");
+            $stmt_dup->execute([$novo_nome, $modulo_ativo, assessoria_atual()]);
+            if ((int) $stmt_dup->fetchColumn() > 0) {
+                $_SESSION['mensagem'] = "Já existe um modelo com esse nome.";
+                $_SESSION['tipo_msg'] = "warning";
+                $_SESSION['aba_ativa'] = $tipo_atual;
+            } else {
+                $stmt = $pdo->prepare("UPDATE checklist_modelos SET tipo_padrao = ? WHERE tipo_padrao = ? AND tipo_evento = ? AND assessoria_id = ?");
+                $stmt->execute([$novo_nome, $tipo_atual, $modulo_ativo, assessoria_atual()]);
+                $_SESSION['mensagem'] = "Modelo renomeado para <strong>" . htmlspecialchars($novo_nome) . "</strong>!";
+                $_SESSION['tipo_msg'] = "success";
+                $_SESSION['aba_ativa'] = $novo_nome;
+            }
+        } else {
+            $_SESSION['mensagem'] = "Informe um nome válido e diferente do atual.";
+            $_SESSION['tipo_msg'] = "warning";
+            $_SESSION['aba_ativa'] = $tipo_atual;
+        }
+        header("Location: " . $_SERVER['PHP_SELF']);
+        exit;
+    }
+
+    // 6. EXCLUIR MODELO INTEIRO (remove todas as tarefas do modelo de uma vez)
+    if (isset($_POST['excluir_modelo_completo'])) {
+        $tipo_excluir = trim($_POST['tipo_padrao_excluir'] ?? '');
+
+        if ($tipo_excluir !== '') {
+            $stmt = $pdo->prepare("DELETE FROM checklist_modelos WHERE tipo_padrao = ? AND tipo_evento = ? AND assessoria_id = ?");
+            $stmt->execute([$tipo_excluir, $modulo_ativo, assessoria_atual()]);
+            $_SESSION['mensagem'] = "Modelo <strong>" . htmlspecialchars($tipo_excluir) . "</strong> excluído.";
+            $_SESSION['tipo_msg'] = "success";
+        }
+        header("Location: " . $_SERVER['PHP_SELF']);
+        exit;
+    }
 }
 
 // --- RECUPERAR MENSAGENS E ESTADO DA SESSÃO ---
 $mensagem    = $_SESSION['mensagem']    ?? '';
 $tipo_msg    = $_SESSION['tipo_msg']    ?? '';
-$aba_ativa   = $_SESSION['aba_ativa']   ?? 'com_recepcao';
+$aba_ativa_sessao = $_SESSION['aba_ativa'] ?? null;
 $etapa_aberta = $_SESSION['etapa_aberta'] ?? null;
 unset($_SESSION['mensagem'], $_SESSION['tipo_msg'], $_SESSION['aba_ativa'], $_SESSION['etapa_aberta']);
 
@@ -162,20 +204,40 @@ $stmt_modelos = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_evento
 $stmt_modelos->execute([$modulo_ativo, assessoria_atual()]);
 $modelos_cadastrados = $stmt_modelos->fetchAll();
 
-// Agrupar
-$modelos_com_recepcao = [];
-$modelos_sem_recepcao = [];
-foreach ($modelos_cadastrados as $mod) {
-    if ($mod['tipo_padrao'] === 'com_recepcao') {
-        $modelos_com_recepcao[$mod['etapa']][] = $mod;
-    } else {
-        $modelos_sem_recepcao[$mod['etapa']][] = $mod;
-    }
+// Lista de modelos: cada nome distinto de tipo_padrao é um modelo com nome
+// livre, definido pela própria assessoria (sem mais "com/sem recepção" fixos,
+// 2026-09-29). Ordenados pela ordem de criação (primeiro id de cada grupo).
+$stmt_nomes = $pdo->prepare("
+    SELECT tipo_padrao, MIN(id) AS primeiro_id, COUNT(*) AS total
+    FROM checklist_modelos
+    WHERE tipo_evento = ? AND assessoria_id = ?
+    GROUP BY tipo_padrao
+    ORDER BY primeiro_id ASC
+");
+$stmt_nomes->execute([$modulo_ativo, assessoria_atual()]);
+$modelos_lista = $stmt_nomes->fetchAll(PDO::FETCH_ASSOC);
+$nomes_modelos = array_column($modelos_lista, 'tipo_padrao');
+
+// Aba ativa: mantém a da sessão (ex.: após salvar/editar) se ainda existir;
+// senão cai no primeiro modelo da lista; se não houver nenhum modelo, fica vazia.
+if ($aba_ativa_sessao !== null && in_array($aba_ativa_sessao, $nomes_modelos, true)) {
+    $aba_ativa = $aba_ativa_sessao;
+} else {
+    $aba_ativa = $modelos_lista[0]['tipo_padrao'] ?? '';
 }
 
-// Contadores
-$total_com = count(array_filter($modelos_cadastrados, fn($m) => $m['tipo_padrao'] === 'com_recepcao'));
-$total_sem = count($modelos_cadastrados) - $total_com;
+// Agrupar tarefas por modelo > etapa
+$modelos_agrupados = [];
+foreach ($modelos_cadastrados as $mod) {
+    $modelos_agrupados[$mod['tipo_padrao']][$mod['etapa']][] = $mod;
+}
+
+$total_geral = count($modelos_cadastrados);
+
+// Id HTML estável (sem espaços/acentos) para as abas de cada modelo
+function slug_modelo(string $nome): string {
+    return 'md_' . substr(md5($nome), 0, 10);
+}
 
 // Helper: ícone por tipo de mensagem
 $icones = ['success' => 'check-circle-fill', 'danger' => 'x-circle-fill', 'warning' => 'exclamation-triangle-fill', 'info' => 'info-circle-fill'];
@@ -191,6 +253,7 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
     <link rel="stylesheet" href="css/estilo.css?v=19">
+    <?= estilo_tema_evento($cor_modulo) ?>
     <style>
         .tarefa-row { transition: background-color .15s; }
         .tarefa-row:hover { background-color: #f8f9fa; }
@@ -201,6 +264,59 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
         .accordion-button:not(.collapsed) { font-weight: 700; }
         .highlight { background-color: #fff3cd !important; transition: background-color 1s; }
         .busca-group { max-width: 220px; }
+
+        .cabecalho-modelos {
+            position: relative; overflow: hidden;
+            background: linear-gradient(135deg, var(--color-primary-light) 0%, #fff 55%, var(--color-primary-light) 130%);
+            border: 1px solid rgba(169,116,79,.12);
+        }
+        .cabecalho-modelos::before, .cabecalho-modelos::after {
+            content: ''; position: absolute; border-radius: 50%;
+            background: rgba(169,116,79,.08); pointer-events: none;
+        }
+        .cabecalho-modelos::before { width: 220px; height: 220px; top: -110px; right: 120px; }
+        .cabecalho-modelos::after  { width: 160px; height: 160px; bottom: -90px; right: -40px; }
+
+        .cabecalho-modelos-icone-wrap { position: relative; flex-shrink: 0; }
+        .cabecalho-modelos-icone {
+            width: 72px; height: 72px; border-radius: 20px;
+            display: flex; align-items: center; justify-content: center;
+            background: linear-gradient(135deg, var(--color-primary-light) 0%, #f7dcc4 100%);
+            color: var(--color-primary-dark); font-size: 1.9rem;
+        }
+        .cabecalho-modelos-icone-badge {
+            position: absolute; right: -6px; bottom: -6px;
+            width: 28px; height: 28px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            background: var(--color-primary); color: #fff; font-size: .75rem;
+            border: 3px solid #fff;
+        }
+        .cabecalho-modelos-texto h2 { color: #1e293b; letter-spacing: -.3px; }
+
+        .cabecalho-modelos-features {
+            display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 0;
+            margin-top: .6rem; font-size: .82rem; color: #7a6553;
+        }
+        .cabecalho-modelos-features span.item { display: flex; align-items: center; gap: .4rem; padding: 0 .8rem; }
+        .cabecalho-modelos-features span.item:first-child { padding-left: 0; }
+        .cabecalho-modelos-features span.divisor { width: 1px; height: 16px; background: rgba(169,116,79,.25); }
+        .cabecalho-modelos-features i { color: var(--color-primary); }
+
+        .cabecalho-modelos-stats { position: relative; flex-shrink: 0; }
+        .stat-card {
+            background: #fff; border-radius: var(--radius-md, 12px);
+            box-shadow: 0 4px 14px rgba(0,0,0,.06);
+            padding: .7rem 1.1rem; display: flex; align-items: center; gap: .7rem;
+            min-width: 168px;
+        }
+        .stat-card-icone {
+            width: 42px; height: 42px; border-radius: 12px; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center; font-size: 1.15rem;
+        }
+        .stat-card-icone.tema-primario { background: var(--color-primary-light); color: var(--color-primary-dark); }
+        .stat-card-icone.tema-sucesso  { background: rgba(34,197,94,.14); color: var(--color-success); }
+        .stat-card-valor { font-weight: 800; font-size: 1.4rem; color: #1e293b; line-height: 1.1; display: block; }
+        .stat-card-label { font-size: .74rem; color: #8a7a6c; white-space: nowrap; }
 
         @media (max-width: 767.98px) {
             .busca-group { max-width: 100%; }
@@ -221,11 +337,17 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
                 display: flex; align-items: center; justify-content: center; gap: .3rem;
             }
 
-            .cabecalho-checklist-texto h2 { line-height: 1.25; letter-spacing: -.2px; }
-            .cabecalho-checklist-texto p { font-size: .82rem; line-height: 1.4; }
+            .cabecalho-modelos-texto h2 { font-size: 1.15rem; line-height: 1.25; letter-spacing: -.2px; }
+            .cabecalho-modelos-texto p { font-size: .82rem; line-height: 1.4; }
+            .cabecalho-modelos-icone { width: 54px; height: 54px; font-size: 1.4rem; border-radius: 16px; }
+            .cabecalho-modelos-icone-badge { width: 22px; height: 22px; font-size: .62rem; }
+            .cabecalho-modelos-features { display: none; }
 
-            .badges-tipo-checklist { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-            .badges-tipo-checklist .badge.fs-6 { font-size: .68rem !important; padding: .4rem .55rem; white-space: nowrap; }
+            .cabecalho-modelos-stats { width: 100%; }
+            .stat-card { flex: 1 1 0; min-width: 0; padding: .55rem .6rem; }
+            .stat-card-icone { width: 34px; height: 34px; font-size: .95rem; }
+            .stat-card-valor { font-size: 1.05rem; }
+            .stat-card-label { font-size: .64rem; white-space: normal; }
         }
     </style>
 </head>
@@ -246,14 +368,39 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
 <div class="container my-3 my-md-5">
 
     <!-- Cabeçalho -->
-    <div class="bg-white p-3 p-md-4 rounded shadow-sm mb-4 d-flex align-items-start justify-content-between flex-wrap gap-2">
-        <div class="cabecalho-checklist-texto">
-            <h2 class="mb-0 fs-5 fs-md-2"><i class="bi bi-list-check text-primary me-1"></i> Gerenciar Modelos de Checklist</h2>
-            <p class="text-muted mb-0 mt-1">Crie e edite as tarefas padrão que poderão ser importadas para os eventos.</p>
+    <div class="cabecalho-modelos p-3 p-md-4 rounded shadow-sm mb-4 d-flex align-items-center justify-content-between flex-wrap gap-3">
+        <div class="d-flex align-items-center gap-3" style="position: relative;">
+            <div class="cabecalho-modelos-icone-wrap">
+                <span class="cabecalho-modelos-icone"><i class="bi bi-clipboard2-check"></i></span>
+                <span class="cabecalho-modelos-icone-badge"><i class="bi bi-gear-fill"></i></span>
+            </div>
+            <div class="cabecalho-modelos-texto">
+                <h2 class="mb-0 fs-5 fs-md-3 fw-bold">Gerenciar Modelos de Checklist</h2>
+                <p class="text-muted mb-0 mt-1">Crie e edite as tarefas padrão que poderão ser importadas para os eventos.</p>
+                <div class="cabecalho-modelos-features">
+                    <span class="item"><i class="bi bi-stack"></i> Organize os modelos</span>
+                    <span class="divisor"></span>
+                    <span class="item"><i class="bi bi-clipboard-check"></i> Defina as tarefas padrão</span>
+                    <span class="divisor"></span>
+                    <span class="item"><i class="bi bi-arrow-repeat"></i> Importe para os eventos</span>
+                </div>
+            </div>
         </div>
-        <div class="d-flex flex-nowrap gap-2 badges-tipo-checklist">
-            <span class="badge bg-success fs-6"><?= $total_com ?> tarefas COM recepção</span>
-            <span class="badge bg-secondary fs-6"><?= $total_sem ?> tarefas SEM recepção</span>
+        <div class="d-flex gap-2 cabecalho-modelos-stats">
+            <div class="stat-card">
+                <span class="stat-card-icone tema-primario"><i class="bi bi-file-earmark-text"></i></span>
+                <div>
+                    <span class="stat-card-valor"><?= count($modelos_lista) ?></span>
+                    <span class="stat-card-label">Modelo<?= count($modelos_lista) === 1 ? '' : 's' ?> de checklist</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <span class="stat-card-icone tema-sucesso"><i class="bi bi-check-circle-fill"></i></span>
+                <div>
+                    <span class="stat-card-valor"><?= $total_geral ?></span>
+                    <span class="stat-card-label">Tarefa<?= $total_geral === 1 ? '' : 's' ?> no total</span>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -278,13 +425,17 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
                     <form method="POST" action="" id="formCadastrar" novalidate>
                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
                         <div class="mb-3">
-                            <label class="form-label fw-bold">Padrão do Evento <span class="text-danger">*</span></label>
-                            <select name="tipo_padrao" class="form-select" required id="selectTipoPadrao">
-                                <option value="">Selecione...</option>
-                                <option value="com_recepcao">COM Recepção</option>
-                                <option value="sem_recepcao">SEM Recepção</option>
-                            </select>
-                            <div class="invalid-feedback">Selecione o padrão do evento.</div>
+                            <label class="form-label fw-bold">Modelo <span class="text-danger">*</span></label>
+                            <input type="text" name="tipo_padrao" id="inputTipoPadrao" class="form-control"
+                                list="listaModelos" maxlength="50" required
+                                placeholder="Ex: Com Recepção, Chá de Panela...">
+                            <datalist id="listaModelos">
+                                <?php foreach ($modelos_lista as $ml): ?>
+                                <option value="<?= htmlspecialchars($ml['tipo_padrao']) ?>">
+                                <?php endforeach; ?>
+                            </datalist>
+                            <div class="form-text">Nome de um modelo já existente adiciona a tarefa nele; um nome novo cria um modelo.</div>
+                            <div class="invalid-feedback">Informe o nome do modelo.</div>
                         </div>
                         <div class="mb-3">
                             <label class="form-label fw-bold">Etapa (Número) <span class="text-danger">*</span></label>
@@ -327,23 +478,40 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
                 </div>
                 <div class="card-body pb-2">
 
-                    <!-- Abas -->
-                    <ul class="nav nav-tabs mb-3" id="checklistTabs" role="tablist">
-                        <li class="nav-item" role="presentation">
-                            <button class="nav-link <?= $aba_ativa === 'com_recepcao' ? 'active' : '' ?> fw-bold text-success" id="com-tab"
-                                data-bs-toggle="tab" data-bs-target="#com-pane" type="button" role="tab">
-                                <i class="bi bi-bookmark-star-fill"></i> COM Recepção
-                                <span class="badge bg-success ms-1"><?= $total_com ?></span>
+                    <?php if (empty($modelos_lista)): ?>
+                    <div class="text-center py-5 text-muted">
+                        <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+                        Nenhum modelo cadastrado ainda neste módulo.<br>
+                        Crie o primeiro preenchendo o formulário ao lado.
+                    </div>
+                    <?php else: ?>
+                    <!-- Abas (uma por modelo, nomes livres definidos pela assessoria) -->
+                    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+                        <ul class="nav nav-tabs flex-grow-1" id="checklistTabs" role="tablist">
+                            <?php foreach ($modelos_lista as $ml):
+                                $id_aba = slug_modelo($ml['tipo_padrao']);
+                                $ativo  = $ml['tipo_padrao'] === $aba_ativa;
+                            ?>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link <?= $ativo ? 'active' : '' ?> fw-bold" id="<?= $id_aba ?>-tab"
+                                    data-bs-toggle="tab" data-bs-target="#<?= $id_aba ?>-pane" type="button" role="tab"
+                                    data-tipo-padrao="<?= htmlspecialchars($ml['tipo_padrao']) ?>" data-total="<?= (int) $ml['total'] ?>">
+                                    <i class="bi bi-bookmark-star-fill"></i> <?= htmlspecialchars($ml['tipo_padrao']) ?>
+                                    <span class="badge bg-secondary ms-1"><?= (int) $ml['total'] ?></span>
+                                </button>
+                            </li>
+                            <?php endforeach; ?>
+                        </ul>
+                        <div class="d-flex gap-1">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="btnRenomearModelo" title="Renomear modelo atual">
+                                <i class="bi bi-pencil"></i> Renomear
                             </button>
-                        </li>
-                        <li class="nav-item" role="presentation">
-                            <button class="nav-link <?= $aba_ativa === 'sem_recepcao' ? 'active' : '' ?> fw-bold text-secondary" id="sem-tab"
-                                data-bs-toggle="tab" data-bs-target="#sem-pane" type="button" role="tab">
-                                <i class="bi bi-bookmark"></i> SEM Recepção
-                                <span class="badge bg-secondary ms-1"><?= $total_sem ?></span>
+                            <button type="button" class="btn btn-sm btn-outline-danger" id="btnExcluirModelo" title="Excluir modelo atual">
+                                <i class="bi bi-trash"></i> Excluir modelo
                             </button>
-                        </li>
-                    </ul>
+                        </div>
+                    </div>
+                    <?php endif; ?>
 
                     <!-- Contador de resultados da busca -->
                     <div id="resultadoBusca" class="text-muted small mb-2" style="display:none;"></div>
@@ -493,11 +661,9 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
                                                         <input type="hidden" name="csrf_token" value="' . htmlspecialchars($csrf_token) . '">
                                                         <input type="hidden" name="id_editar" value="' . $id . '">
                                                         <div class="mb-3">
-                                                            <label class="form-label fw-bold">Padrão <span class="text-danger">*</span></label>
-                                                            <select name="tipo_padrao_edit" class="form-select" required>
-                                                                <option value="com_recepcao" ' . ($tipo_padrao == 'com_recepcao' ? 'selected' : '') . '>COM Recepção</option>
-                                                                <option value="sem_recepcao" ' . ($tipo_padrao == 'sem_recepcao' ? 'selected' : '') . '>SEM Recepção</option>
-                                                            </select>
+                                                            <label class="form-label fw-bold">Modelo <span class="text-danger">*</span></label>
+                                                            <input type="text" name="tipo_padrao_edit" class="form-control" list="listaModelos" maxlength="50" required value="' . $tipo_padrao . '">
+                                                            <div class="invalid-feedback">Informe o nome do modelo.</div>
                                                         </div>
                                                         <div class="mb-3">
                                                             <label class="form-label fw-bold">Etapa <span class="text-danger">*</span></label>
@@ -572,13 +738,16 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
                         }
                         ?>
 
-                        <div class="tab-pane fade <?= $aba_ativa === 'com_recepcao' ? 'show active' : '' ?>" id="com-pane" role="tabpanel">
-                            <?php $modais_com_html = renderizarTabela($modelos_com_recepcao, 'success', 'com_recepcao', $etapa_aberta); ?>
+                        <?php
+                        $modais_acumulados = '';
+                        foreach ($modelos_lista as $ml):
+                            $id_aba = slug_modelo($ml['tipo_padrao']);
+                            $ativo  = $ml['tipo_padrao'] === $aba_ativa;
+                        ?>
+                        <div class="tab-pane fade <?= $ativo ? 'show active' : '' ?>" id="<?= $id_aba ?>-pane" role="tabpanel">
+                            <?php $modais_acumulados .= renderizarTabela($modelos_agrupados[$ml['tipo_padrao']] ?? [], 'primary', $id_aba, $etapa_aberta); ?>
                         </div>
-
-                        <div class="tab-pane fade <?= $aba_ativa === 'sem_recepcao' ? 'show active' : '' ?>" id="sem-pane" role="tabpanel">
-                            <?php $modais_sem_html = renderizarTabela($modelos_sem_recepcao, 'secondary', 'sem_recepcao', $etapa_aberta); ?>
-                        </div>
+                        <?php endforeach; ?>
 
                     </div>
                 </div>
@@ -589,8 +758,38 @@ $icone_msg = $icones[$tipo_msg] ?? 'info-circle-fill';
 </div><!-- /container -->
 
 <!-- Modais impressos fora do .card (veja comentário em renderizarTabela) -->
-<?= $modais_com_html ?? '' ?>
-<?= $modais_sem_html ?? '' ?>
+<?= $modais_acumulados ?? '' ?>
+
+<!-- Form oculto: excluir modelo inteiro (confirm() já pergunta antes de enviar) -->
+<form method="POST" action="" id="formExcluirModeloCompleto" class="d-none">
+    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
+    <input type="hidden" name="tipo_padrao_excluir" id="inputTipoPadraoExcluir" value="">
+    <input type="hidden" name="excluir_modelo_completo" value="1">
+</form>
+
+<!-- Modal: renomear modelo (afeta todas as tarefas do modelo de uma vez) -->
+<div class="modal fade" id="modalRenomearModelo" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content shadow">
+            <div class="modal-header bg-primary text-white">
+                <h5 class="modal-title"><i class="bi bi-pencil-square"></i> Renomear Modelo</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST" action="">
+                <div class="modal-body">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token) ?>">
+                    <input type="hidden" name="tipo_padrao_atual" id="inputTipoPadraoAtualRenomear" value="">
+                    <label class="form-label fw-bold">Novo nome do modelo</label>
+                    <input type="text" name="novo_nome" id="inputNovoNomeModelo" class="form-control" maxlength="50" required>
+                </div>
+                <div class="modal-footer bg-light">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" name="renomear_modelo" class="btn btn-primary"><i class="bi bi-floppy"></i> Salvar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
@@ -679,24 +878,53 @@ function filtrarTarefas() {
     }
 }
 
-// Preenche automaticamente a aba do formulário conforme a aba ativa
+// Preenche automaticamente o campo "Modelo" do formulário conforme a aba ativa
 document.querySelectorAll('#checklistTabs button').forEach(btn => {
     btn.addEventListener('shown.bs.tab', function (e) {
-        const aba = e.target.id === 'com-tab' ? 'com_recepcao' : 'sem_recepcao';
-        const select = document.getElementById('selectTipoPadrao');
-        if (select) select.value = aba;
+        const input = document.getElementById('inputTipoPadrao');
+        if (input) input.value = e.target.dataset.tipoPadrao || '';
     });
 });
 
-// Sincroniza select do form com a aba já ativa ao carregar
+// Sincroniza o campo com a aba já ativa ao carregar
 (function () {
     const abaAtiva = document.querySelector('#checklistTabs .nav-link.active');
-    if (abaAtiva) {
-        const aba = abaAtiva.id === 'com-tab' ? 'com_recepcao' : 'sem_recepcao';
-        const select = document.getElementById('selectTipoPadrao');
-        if (select) select.value = aba;
-    }
+    const input = document.getElementById('inputTipoPadrao');
+    if (abaAtiva && input) input.value = abaAtiva.dataset.tipoPadrao || '';
 })();
+
+// Botões "Renomear" / "Excluir modelo" agem sobre o modelo da aba ativa
+function abaAtivaInfo() {
+    const btn = document.querySelector('#checklistTabs .nav-link.active');
+    if (!btn) return null;
+    return { tipoPadrao: btn.dataset.tipoPadrao || '', total: parseInt(btn.dataset.total || '0', 10) };
+}
+
+const btnRenomear = document.getElementById('btnRenomearModelo');
+if (btnRenomear) {
+    btnRenomear.addEventListener('click', () => {
+        const info = abaAtivaInfo();
+        if (!info) return;
+        document.getElementById('inputTipoPadraoAtualRenomear').value = info.tipoPadrao;
+        document.getElementById('inputNovoNomeModelo').value = info.tipoPadrao;
+        new bootstrap.Modal(document.getElementById('modalRenomearModelo')).show();
+    });
+}
+
+const btnExcluir = document.getElementById('btnExcluirModelo');
+if (btnExcluir) {
+    btnExcluir.addEventListener('click', () => {
+        const info = abaAtivaInfo();
+        if (!info) return;
+        const aviso = info.total > 0
+            ? `Isso vai excluir o modelo "${info.tipoPadrao}" e ${info.total === 1 ? 'sua 1 tarefa' : 'suas ' + info.total + ' tarefas'}. Eventos que já importaram esse cronograma não são afetados. Esta ação não pode ser desfeita.`
+            : `Excluir o modelo "${info.tipoPadrao}"?`;
+        if (confirm(aviso)) {
+            document.getElementById('inputTipoPadraoExcluir').value = info.tipoPadrao;
+            document.getElementById('formExcluirModeloCompleto').submit();
+        }
+    });
+}
 </script>
 </body>
 </html>

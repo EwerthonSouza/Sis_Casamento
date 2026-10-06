@@ -552,9 +552,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $evento_id = $pdo->lastInsertId();
 
                     if (!empty($modelo_checklist)) {
-                        // Só modelos da própria assessoria (multi-tenant, 2026-09-28)
-                        $stmt_mod = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ? AND assessoria_id = ?");
-                        $stmt_mod->execute([$modelo_checklist, $assessoria_id_sessao]);
+                        // Só modelos da própria assessoria E do módulo ativo (multi-tenant,
+                        // 2026-09-28) — sem o filtro de tipo_evento, um modelo com o mesmo
+                        // nome em outro módulo poderia vazar tarefas erradas pro evento.
+                        $stmt_mod = $pdo->prepare("SELECT * FROM checklist_modelos WHERE tipo_padrao = ? AND tipo_evento = ? AND assessoria_id = ?");
+                        $stmt_mod->execute([$modelo_checklist, $modulo_ativo, $assessoria_id_sessao]);
                         $modelos = $stmt_mod->fetchAll(PDO::FETCH_ASSOC);
 
                         if (!empty($modelos)) {
@@ -740,6 +742,19 @@ $meses_pt = [
 $msg_erro_session    = $_SESSION['msg_erro'] ?? "";
 $msg_sucesso_session = $_SESSION['msg_sucesso'] ?? "";
 unset($_SESSION['msg_erro'], $_SESSION['msg_sucesso']);
+
+// Modelos de checklist do módulo ativo, pra popular o select de importação
+// automática ao cadastrar um evento (nomes livres, definidos pela própria
+// assessoria — sem mais "com/sem recepção" fixos, 2026-09-29).
+$stmt_modelos_disp = $pdo->prepare("
+    SELECT tipo_padrao, MIN(id) AS primeiro_id
+    FROM checklist_modelos
+    WHERE tipo_evento = ? AND assessoria_id = ?
+    GROUP BY tipo_padrao
+    ORDER BY primeiro_id ASC
+");
+$stmt_modelos_disp->execute([$modulo_ativo, assessoria_atual()]);
+$modelos_checklist_disponiveis = $stmt_modelos_disp->fetchAll(PDO::FETCH_ASSOC);
 
 // Notificações do módulo ativo (atividade dos clientes só dos eventos deste
 // módulo — sem isso, quem tá administrando Aniversários via notificação de
@@ -1869,8 +1884,9 @@ if ($is_admin) {
                             <label class="form-label fw-bold text-secondary small">Checklist Padrão</label>
                             <select name="modelo_checklist" class="form-select bg-light">
                                 <option value="">Não importar tarefas</option>
-                                <option value="com_recepcao">Modelo Padrão (Com Recepção)</option>
-                                <option value="sem_recepcao">Simplificado (Sem Recepção)</option>
+                                <?php foreach ($modelos_checklist_disponiveis as $mcd): ?>
+                                <option value="<?= htmlspecialchars($mcd['tipo_padrao']) ?>"><?= htmlspecialchars($mcd['tipo_padrao']) ?></option>
+                                <?php endforeach; ?>
                             </select>
                         </div>
                     </div>
