@@ -138,6 +138,7 @@ unset($_SESSION['msg_sucesso'], $_SESSION['msg_erro']);
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
     <link rel="stylesheet" href="css/estilo.css?v=19">
+    <?= estilo_tema_evento($cor_modulo) ?>
     <style>
         .card-ref { transition: box-shadow .2s, transform .2s; }
         .card-ref:hover { box-shadow: 0 8px 20px rgba(0,0,0,.08); transform: translateY(-2px); }
