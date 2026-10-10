@@ -32,3 +32,16 @@
 <IfModule mod_deflate.c>
     AddOutputFilterByType DEFLATE text/html text/css text/plain text/xml application/javascript text/javascript application/json image/svg+xml
 </IfModule>
+
+# ============================================================
+# Site/convite público do casal: /convite/nome-do-casal -> site.php
+# ============================================================
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^convite/([a-z0-9-]+)/?$ site.php?s=$1 [L,QSA]
+</IfModule>
+
+# Repassa o cabeçalho Authorization ao PHP (usado pela API de liberação do site: site_liberar.php)
+<IfModule mod_setenvif.c>
+    SetEnvIfNoCase ^Authorization$ "(.+)" HTTP_AUTHORIZATION=$1
+</IfModule>

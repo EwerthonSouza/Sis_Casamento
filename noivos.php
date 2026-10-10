@@ -11,6 +11,7 @@ if (!isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'noivos')
 require_once 'conexao.php';
 require_once 'tenant.php';
 require_once 'modulos_evento.inc.php';
+require_once 'site_convite.inc.php';
 require_once 'notificacoes.inc.php';
 
 garantir_coluna_tipo_evento($pdo);
@@ -1218,6 +1219,22 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
     .info-tile-val { font-weight: 700; color: #fff; font-size: 1.02rem; line-height: 1.15; white-space: nowrap; }
     .info-tile-lbl { font-size: .66rem; color: rgba(255,255,255,.65); margin-top: .1rem; white-space: nowrap; }
 
+    /* Cabeçalho mais compacto no computador (o celular não muda) */
+    @media (min-width: 768px) {
+      .header-topo.p-md-4 { padding: 1rem 1.4rem !important; }
+      .header-topo .header-top-actions { margin-bottom: .55rem !important; }
+      .header-topo .header-top-actions .btn { padding: .3rem .85rem; font-size: .8rem; }
+      .header-topo .nome-noivos-titulo { font-size: clamp(1.5rem, 2.3vw, 2rem); letter-spacing: -.01em; }
+      .header-hero-label { font-size: .66rem; margin-bottom: .15rem; }
+      .header-hero-subtitle { font-size: .8rem; }
+      .header-hero-accent { padding-left: .8rem; }
+      .info-tiles { margin-top: .6rem; gap: .5rem !important; }
+      .info-tile { gap: .5rem; padding: .3rem .75rem .3rem .35rem; border-radius: 11px; }
+      .info-tile-icon { width: 30px; height: 30px; border-radius: 8px; font-size: .85rem; }
+      .info-tile-val { font-size: .88rem; }
+      .info-tile-lbl { font-size: .58rem; margin-top: 0; }
+    }
+
     .info-tile-destaque { background: rgba(220,252,231,.94); border-color: rgba(220,252,231,.94); }
     .info-tile-destaque .info-tile-icon { background: #22c55e; color: #fff; }
     .info-tile-destaque .info-tile-val,
@@ -1954,6 +1971,21 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
               <div class="info-tile-lbl">Contagem regressiva</div>
             </div>
           </div>
+          <?php endif; ?>
+          <?php if (($evento['tipo_evento'] ?? 'casamento') === 'casamento'):
+              // O site é um item contratado à parte: só abre o editor depois que a Central libera (após o pagamento)
+              site_garantir_schema($pdo);
+              $site_acesso = site_acesso($pdo, $evento_id);
+              $site_liberado = $site_acesso['status'] === 'liberado';
+              $site_gate_ativo = !$site_liberado;
+          ?>
+          <a href="<?= $site_liberado ? 'site_editar.php' : '#' ?>" <?= $site_liberado ? '' : 'data-site-gate' ?> class="info-tile text-decoration-none" title="<?= $site_liberado ? 'Editar o site/convite online do casal' : 'Conheça o site do casamento' ?>">
+            <span class="info-tile-icon"><i class="bi <?= $site_liberado ? 'bi-globe2' : 'bi-lock-fill' ?>"></i></span>
+            <div>
+              <div class="info-tile-val">Meu site</div>
+              <div class="info-tile-lbl"><?= $site_liberado ? 'Site do casamento' : ($site_acesso['status'] === 'solicitado' ? 'Aguardando pagamento' : 'Conheça · convite online') ?></div>
+            </div>
+          </a>
           <?php endif; ?>
         </div>
       </div>
@@ -2699,6 +2731,7 @@ $dias = $diff->invert ? -$diff->days : $diff->days;
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<?php if (!empty($site_gate_ativo)) { include __DIR__ . '/site_gate.inc.php'; } ?>
 <script>
 /* ============================================================
    HELPERS
